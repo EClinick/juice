@@ -209,6 +209,24 @@ public final class JuiceStore: @unchecked Sendable {
         }
     }
 
+    /// The earliest yyyy-MM-dd day with any rollup data, or nil when the
+    /// rollup table is empty.
+    public func earliestRollupDay() throws -> String? {
+        try dbQueue.read { db in
+            try String.fetchOne(db, sql: "SELECT MIN(day) FROM energy_rollup")
+        }
+    }
+
+    /// Number of distinct rollup days on or after the given yyyy-MM-dd day.
+    public func rollupDayCount(sinceDay: String) throws -> Int {
+        try dbQueue.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(DISTINCT day) FROM energy_rollup WHERE day >= ?",
+                arguments: [sinceDay]) ?? 0
+        }
+    }
+
     // MARK: - Rollup watermark
 
     public func watermark() throws -> Date? {

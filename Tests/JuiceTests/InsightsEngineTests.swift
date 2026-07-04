@@ -276,3 +276,59 @@ struct InsightsEngineTests {
         #expect(first.map(\.severity) == [.warning, .notice, .notice, .info])
     }
 }
+
+@Suite("filterPartialCoverageDays")
+struct FilterPartialCoverageDaysTests {
+
+    @Test func partialDayIsExcluded() {
+        let appDays = [
+            appDay(dayMinus2, "com.a", 0.1),
+            appDay(dayMinus2, "com.b", 0.1),
+            appDay(dayMinus1, "com.a", 10.0),
+        ]
+        let filtered = InsightsEngine.filterPartialCoverageDays(
+            appDays: appDays, todayKey: today)
+        #expect(filtered.map(\.day) == [dayMinus1])
+    }
+
+    @Test func todayIsNeverExcluded() {
+        let appDays = [
+            appDay(today, "com.a", 0.1)
+        ]
+        let filtered = InsightsEngine.filterPartialCoverageDays(
+            appDays: appDays, todayKey: today)
+        #expect(filtered.count == 1)
+        #expect(filtered[0].day == today)
+    }
+
+    @Test func dayAtExactlyThresholdIsKept() {
+        let appDays = [
+            appDay(dayMinus1, "com.a", 2.5),
+            appDay(dayMinus1, "com.b", 2.5),
+        ]
+        let filtered = InsightsEngine.filterPartialCoverageDays(
+            appDays: appDays, todayKey: today)
+        #expect(filtered.count == 2)
+    }
+
+    @Test func partialFirstDayPreventsFalseAppAnomaly() {
+        // Scenario: powerlog data starts late on dayMinus3, so that day's
+        // total is only 0.2 Wh. Without filtering, its tiny per-app value
+        // poisons the "typical Wh/day" median and the app looks anomalous.
+        let appDays = [
+            appDay(dayMinus3, "com.vscode", 0.2, name: "VS Code"),
+            appDay(dayMinus2, "com.vscode", 8.0, name: "VS Code"),
+            appDay(dayMinus1, "com.vscode", 9.0, name: "VS Code"),
+            appDay(today, "com.vscode", 12.0, name: "VS Code"),
+        ]
+        let filtered = InsightsEngine.filterPartialCoverageDays(
+            appDays: appDays, todayKey: today)
+
+        // Only 2 prior days survive, so the 3-prior-day anomaly gate
+        // cannot fire.
+        #expect(filtered.filter { $0.day != today }.map(\.day).sorted()
+            == [dayMinus2, dayMinus1].sorted())
+        let insights = run(appDays: filtered)
+        #expect(!insights.contains { $0.kind == .appAnomaly })
+    }
+}

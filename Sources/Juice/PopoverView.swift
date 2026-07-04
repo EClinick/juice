@@ -12,6 +12,7 @@ struct PopoverView: View {
     @State private var timeline: [BatterySample] = []
     @State private var usingLiveData = false
     @State private var insights: [Insight] = []
+    @State private var coverageDayCount: Int?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -64,6 +65,11 @@ struct PopoverView: View {
                     }
                 }
                 TopAppsView(apps: topApps, range: $range)
+                if let days = coverageDayCount {
+                    Text("History covers \(days) day\(days == 1 ? "" : "s") so far")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
 
                 Divider()
 
@@ -162,6 +168,23 @@ struct PopoverView: View {
     }
 
     private func loadTopApps() async {
+        let range = self.range
+        coverageDayCount = nil
+
+        // Today stays on the live helper path (fresher than the 15-minute
+        // rollup cadence). Historical ranges come from the app's own rollup
+        // store, which accumulates indefinitely - the live powerlog database
+        // only retains about three days.
+        if range != .today, let store = JuiceApp.sampler?.store {
+            if let apps = try? await StoreEnergySource(store: store).topApps(range: range),
+               !apps.isEmpty {
+                self.topApps = apps
+                usingLiveData = true
+                updateCoverage(store: store, range: range)
+                return
+            }
+        }
+
         if let apps = try? await liveSource.topApps(range: range), !apps.isEmpty {
             self.topApps = apps
             usingLiveData = true
@@ -169,5 +192,17 @@ struct PopoverView: View {
             self.topApps = apps
             usingLiveData = false
         }
+    }
+
+    /// Shows how many days of history the store actually has when it covers
+    /// less than the selected historical range.
+    private func updateCoverage(store: JuiceStore, range: EnergyRange) {
+        guard range != .today else { return }
+        let rangeStart = StoreEnergySource.sinceDay(for: range)
+        guard let earliest = try? store.earliestRollupDay(),
+              earliest > rangeStart,
+              let count = try? store.rollupDayCount(sinceDay: rangeStart)
+        else { return }
+        coverageDayCount = count
     }
 }

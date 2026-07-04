@@ -70,6 +70,25 @@ public struct InsightsEngine {
         return result
     }
 
+    /// Drops rows belonging to days with too little total energy to be a
+    /// trustworthy baseline day (e.g. the first day of data collection,
+    /// which may cover only a few minutes before midnight). Days whose
+    /// summed wh across all apps is below `minDayTotalWh` are removed,
+    /// except `todayKey`, which is always kept.
+    public static func filterPartialCoverageDays(
+        appDays: [InsightAppDay],
+        todayKey: String,
+        minDayTotalWh: Double = 5.0
+    ) -> [InsightAppDay] {
+        var totalByDay: [String: Double] = [:]
+        for entry in appDays {
+            totalByDay[entry.day, default: 0] += entry.wh
+        }
+        return appDays.filter { entry in
+            entry.day == todayKey || totalByDay[entry.day, default: 0] >= minDayTotalWh
+        }
+    }
+
     /// Median of `values`; `nil` for an empty array.
     /// Even counts average the two middle values.
     public static func medianOf(_ values: [Double]) -> Double? {

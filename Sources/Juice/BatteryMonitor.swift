@@ -64,7 +64,9 @@ struct BatteryMonitor {
         var health: Int? = nil
         if let design = int("DesignCapacity"), design > 0,
            let rawMax = int("AppleRawMaxCapacity") ?? int("NominalChargeCapacity") {
-            health = Int((Double(rawMax) / Double(design) * 100).rounded())
+            // New batteries can report a raw max capacity above the design
+            // capacity; cap at 100% so health never reads as >100.
+            health = min(100, Int((Double(rawMax) / Double(design) * 100).rounded()))
         }
 
         return BatteryReading(

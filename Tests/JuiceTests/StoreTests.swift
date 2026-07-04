@@ -78,6 +78,33 @@ private func makeStore() throws -> JuiceStore {
         #expect(abs(updated.timeIntervalSince1970 - second.timeIntervalSince1970) < 1e-6)
     }
 
+    @Test func earliestRollupDayReturnsMinDay() throws {
+        let store = try makeStore()
+        #expect(try store.earliestRollupDay() == nil)
+
+        try store.upsertRollups([
+            DailyEnergyRollup(day: "2026-07-02", appKey: "a", wh: 1, cpuHours: 1),
+            DailyEnergyRollup(day: "2026-06-30", appKey: "b", wh: 2, cpuHours: 2),
+            DailyEnergyRollup(day: "2026-07-01", appKey: "a", wh: 3, cpuHours: 3),
+        ])
+        #expect(try store.earliestRollupDay() == "2026-06-30")
+    }
+
+    @Test func rollupDayCountCountsDistinctDaysSince() throws {
+        let store = try makeStore()
+        #expect(try store.rollupDayCount(sinceDay: "2026-01-01") == 0)
+
+        try store.upsertRollups([
+            DailyEnergyRollup(day: "2026-06-30", appKey: "a", wh: 1, cpuHours: 1),
+            DailyEnergyRollup(day: "2026-07-01", appKey: "a", wh: 2, cpuHours: 2),
+            DailyEnergyRollup(day: "2026-07-01", appKey: "b", wh: 3, cpuHours: 3),
+            DailyEnergyRollup(day: "2026-07-02", appKey: "a", wh: 4, cpuHours: 4),
+        ])
+        #expect(try store.rollupDayCount(sinceDay: "2026-07-01") == 2)
+        #expect(try store.rollupDayCount(sinceDay: "2026-06-01") == 3)
+        #expect(try store.rollupDayCount(sinceDay: "2026-07-03") == 0)
+    }
+
     @Test func pruneRemovesOnlyOldSamples() throws {
         let store = try makeStore()
         let now = Date(timeIntervalSince1970: 1_700_000_000)

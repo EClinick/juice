@@ -37,6 +37,12 @@ struct InsightsProvider {
             )
         }
 
-        return InsightsEngine.insights(samples: samples, appDays: appDays, now: now)
+        // Days with barely any recorded energy (e.g. the first, partial day
+        // of data collection) would poison the per-app baselines.
+        let todayKey = dayFormatter.string(from: now)
+        let filteredAppDays = InsightsEngine.filterPartialCoverageDays(
+            appDays: appDays, todayKey: todayKey)
+
+        return InsightsEngine.insights(samples: samples, appDays: filteredAppDays, now: now)
     }
 }

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import JuiceXPCShared
 
@@ -66,10 +67,69 @@ struct PowerlogEnergySource: EnergySource {
         }
     }
 
-    /// Placeholder naming: last dot-component of the identifier, capitalized.
-    /// A proper bundle-id-to-name map comes later.
+    /// Curated names for identifiers that resolve poorly (or not at all)
+    /// through NSWorkspace. Keys are matched case-insensitively.
+    private static let curatedNames: [String: String] = [
+        "com.apple.windowserver": "WindowServer",
+        "com.apple.kernel_task": "macOS Kernel",
+        "kernel_task": "macOS Kernel",
+        "com.apple.spotlight": "Spotlight",
+        // ToDesktop-wrapped apps ship opaque bundle ids; the NSWorkspace
+        // lookup below usually resolves them too, but keep the override
+        // as belt-and-braces.
+        "com.todesktop.230313mzl4w4u92": "Cursor",
+    ]
+
+    private static let nameCacheLock = NSLock()
+    private static var nameCache: [String: String] = [:]
+
+    /// Human-readable name for a bundle identifier or launchd coalition name:
+    /// curated overrides first, then the installed bundle's display name via
+    /// NSWorkspace, then a last-dot-component heuristic. Results are cached;
+    /// this is called per row per refresh.
     static func displayName(for identifier: String) -> String {
+        nameCacheLock.lock()
+        if let cached = nameCache[identifier] {
+            nameCacheLock.unlock()
+            return cached
+        }
+        nameCacheLock.unlock()
+
+        let name = resolveDisplayName(for: identifier)
+
+        nameCacheLock.lock()
+        nameCache[identifier] = name
+        nameCacheLock.unlock()
+        return name
+    }
+
+    private static func resolveDisplayName(for identifier: String) -> String {
+        if let curated = curatedNames[identifier.lowercased()] {
+            return curated
+        }
+        if let bundleName = bundleDisplayName(for: identifier) {
+            return bundleName
+        }
+        // Fallback heuristic: last dot-component, capitalized.
         let last = identifier.split(separator: ".").last.map(String.init) ?? identifier
         return last.capitalized
+    }
+
+    /// Resolves the installed application's display name for a bundle id.
+    private static func bundleDisplayName(for identifier: String) -> String? {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) else {
+            return nil
+        }
+        if let bundle = Bundle(url: url),
+           let name = (bundle.infoDictionary?["CFBundleDisplayName"] as? String)
+            ?? (bundle.infoDictionary?["CFBundleName"] as? String),
+           !name.isEmpty {
+            return name
+        }
+        var fileName = FileManager.default.displayName(atPath: url.path)
+        if fileName.hasSuffix(".app") {
+            fileName = String(fileName.dropLast(4))
+        }
+        return fileName.isEmpty ? nil : fileName
     }
 }
