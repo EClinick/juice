@@ -38,8 +38,8 @@ struct PopoverView: View {
                 HStack {
                     if let health = r.healthPercent {
                         Text("Health \(health)%")
+                        Text("·")
                     }
-                    Text("·")
                     Text("\(r.cycleCount) cycles")
                     Spacer()
                 }

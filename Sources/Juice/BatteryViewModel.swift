@@ -21,6 +21,7 @@ final class BatteryViewModel: ObservableObject {
             reading = try BatteryMonitor.read()
             lastError = nil
         } catch {
+            reading = nil
             lastError = "Could not read battery state: \(error)"
         }
     }

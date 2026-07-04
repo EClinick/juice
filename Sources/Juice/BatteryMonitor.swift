@@ -36,16 +36,25 @@ struct BatteryMonitor {
         }
 
         func int(_ key: String) -> Int? { props[key] as? Int }
+        func signedInt64(_ key: String) -> Int64? { (props[key] as? NSNumber)?.int64Value }
         func bool(_ key: String) -> Bool { props[key] as? Bool ?? false }
 
         let installed = bool("BatteryInstalled")
-        let current = int("CurrentCapacity") ?? 0
-        let max = int("MaxCapacity") ?? 100
-        let percent = max > 0 ? Int((Double(current) / Double(max) * 100).rounded()) : 0
+
+        // Require the core fields; don't fabricate readings from missing data.
+        guard let current = int("CurrentCapacity"),
+              let max = int("MaxCapacity"), max > 0,
+              let rawVoltage = int("Voltage"),
+              let rawAmperage = signedInt64("Amperage") else {
+            throw BatteryMonitorError.propertiesUnreadable
+        }
+        let percent = Int((Double(current) / Double(max) * 100).rounded())
 
         // Amperage is in mA (negative while discharging), Voltage in mV.
-        let amperage = Double(int("Amperage") ?? 0)
-        let voltage = Double(int("Voltage") ?? 0)
+        // IOKit can publish Amperage as a wrapped UInt64; NSNumber.int64Value
+        // reinterprets the low 64 bits as a signed value correctly.
+        let amperage = Double(rawAmperage)
+        let voltage = Double(rawVoltage)
         let watts = -(amperage / 1000.0) * (voltage / 1000.0)
 
         // 65535 means "still calculating".
