@@ -141,7 +141,7 @@ struct PopoverView: View {
             if let timeline = try? await StoreEnergySource(store: store).batteryTimeline(hours: 24) {
                 self.timeline = timeline
             }
-            insights = InsightsProvider(store: store).currentInsights()
+            insights = await InsightsProvider(store: store).currentInsights()
         }
     }
 

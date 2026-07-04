@@ -39,7 +39,10 @@ public struct DailyEnergyRollup: Sendable, Equatable {
 
 /// The app's local SQLite store: raw battery samples, daily per-app energy
 /// rollups, and a small key/value meta table.
-public final class JuiceStore {
+///
+/// `@unchecked Sendable`: the only stored property is a GRDB `DatabaseQueue`,
+/// which serializes all database access and is safe to share across threads.
+public final class JuiceStore: @unchecked Sendable {
     private let dbQueue: DatabaseQueue
 
     private static let watermarkKey = "rollup_watermark"
@@ -148,6 +151,42 @@ public final class JuiceStore {
                         """,
                     arguments: [rollup.day, rollup.appKey, rollup.wh, rollup.cpuHours])
             }
+        }
+    }
+
+    /// Atomically replaces all rollup rows for the given days with `rollups`.
+    ///
+    /// Callers must ensure `rollups` holds complete totals for every day in
+    /// `days` (i.e. the source data was fetched from each day's local start),
+    /// because existing rows for those days are deleted first - including
+    /// rows for app keys absent from `rollups`.
+    public func replaceRollups(
+        _ rollups: [DailyEnergyRollup], coveringDays days: Set<String>
+    ) throws {
+        guard !days.isEmpty else { return }
+        try dbQueue.write { db in
+            for day in days.sorted() {
+                try db.execute(
+                    sql: "DELETE FROM energy_rollup WHERE day = ?",
+                    arguments: [day])
+            }
+            for rollup in rollups {
+                try db.execute(
+                    sql: """
+                        INSERT INTO energy_rollup (day, app_key, wh, cpu_hours)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                    arguments: [rollup.day, rollup.appKey, rollup.wh, rollup.cpuHours])
+            }
+        }
+    }
+
+    /// Deletes rollup rows strictly older than the given yyyy-MM-dd day.
+    public func pruneRollups(olderThanDay day: String) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "DELETE FROM energy_rollup WHERE day < ?",
+                arguments: [day])
         }
     }
 

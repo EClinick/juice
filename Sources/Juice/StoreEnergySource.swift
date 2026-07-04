@@ -17,6 +17,8 @@ struct StoreEnergySource: EnergySource {
         throw StoreEnergySourceError.notImplemented
     }
 
+    // Nonisolated async, so the synchronous store read runs on the
+    // cooperative pool rather than the caller's (main) actor.
     func batteryTimeline(hours: Int) async throws -> [BatterySample] {
         let since = Date().addingTimeInterval(-Double(hours) * 3600)
         return try store.samples(since: since).map { sample in

@@ -26,8 +26,12 @@ struct JuiceApp: App {
     /// the 15-minute staleness check makes the frequent calls cheap.
     private static func handleReading(_ reading: BatteryReading) {
         guard let sampler else { return }
-        sampler.recordSample(reading)
-        Task { await sampler.updateRollupsIfStale() }
+        // One sequential Task so the sample insert lands before the refresh
+        // and the two never interleave.
+        Task {
+            await sampler.recordSample(reading)
+            await sampler.updateRollupsIfStale()
+        }
     }
 
     /// SF Symbol for the menu bar, derived from the current reading:

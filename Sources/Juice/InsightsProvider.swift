@@ -6,7 +6,9 @@ import JuiceCore
 struct InsightsProvider {
     let store: JuiceStore
 
-    func currentInsights(now: Date = Date()) -> [Insight] {
+    /// Async (and never actor-isolated) so the synchronous store reads run on
+    /// the cooperative pool instead of blocking the main actor.
+    func currentInsights(now: Date = Date()) async -> [Insight] {
         let weekAgo = now.addingTimeInterval(-7 * 24 * 3600)
 
         let samples = ((try? store.samples(since: weekAgo)) ?? []).map {
@@ -19,10 +21,12 @@ struct InsightsProvider {
             )
         }
 
-        let dayFormatter = DateFormatter()
-        dayFormatter.locale = Locale(identifier: "en_US_POSIX")
-        dayFormatter.dateFormat = "yyyy-MM-dd"
-        let sinceDay = dayFormatter.string(from: now.addingTimeInterval(-8 * 24 * 3600))
+        // Day keys must come from the same calendar as RollupBuilder so the
+        // lookback boundary agrees with the stored rollup day strings.
+        let calendar = Calendar.current
+        let dayFormatter = RollupBuilder.dayFormatter(calendar: calendar)
+        let lookbackStart = calendar.date(byAdding: .day, value: -8, to: now) ?? now
+        let sinceDay = dayFormatter.string(from: lookbackStart)
 
         let appDays = ((try? store.rollups(sinceDay: sinceDay)) ?? []).map {
             InsightAppDay(

@@ -8,15 +8,23 @@ public enum RollupBuilder {
     ///
     /// The app key is the bundle identifier when non-empty, else the launchd
     /// coalition name when non-empty; intervals with neither are skipped.
-    public static func dailyRollups(
-        from intervals: [EnergyInterval],
-        calendar: Calendar = .current
-    ) -> [DailyEnergyRollup] {
+    /// The shared yyyy-MM-dd day-key formatter: every producer and consumer
+    /// of rollup day strings must derive them from the same calendar so day
+    /// boundaries agree everywhere.
+    public static func dayFormatter(calendar: Calendar = .current) -> DateFormatter {
         let formatter = DateFormatter()
         formatter.calendar = calendar
         formatter.timeZone = calendar.timeZone
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }
+
+    public static func dailyRollups(
+        from intervals: [EnergyInterval],
+        calendar: Calendar = .current
+    ) -> [DailyEnergyRollup] {
+        let formatter = dayFormatter(calendar: calendar)
 
         struct Key: Hashable {
             var day: String
