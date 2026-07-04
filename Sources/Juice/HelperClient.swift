@@ -17,7 +17,21 @@ final class HelperClient {
     private let lock = NSLock()
 
     /// Last known helper state, updated by ``checkState()``.
-    private(set) var state: HelperState = .unavailable
+    /// The backing storage is protected by ``lock`` because it is written
+    /// from XPC callback queues.
+    private var _state: HelperState = .unavailable
+    private(set) var state: HelperState {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _state
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            _state = newValue
+        }
+    }
 
     // MARK: - Connection management
 
@@ -109,11 +123,18 @@ final class HelperClient {
             }
             proxy.fetchEnergyIntervals(sinceEpoch: since.timeIntervalSince1970) { data, error in
                 resumed.run {
-                    if let data {
+                    // The protocol guarantees exactly one of (data, error) is
+                    // set. Anything else is a protocol violation we must not
+                    // silently accept.
+                    switch (data, error) {
+                    case let (data?, nil):
                         continuation.resume(returning: data)
-                    } else {
-                        continuation.resume(throwing: error ?? HelperError.error(
-                            .internalError, message: "Helper returned neither data nor error"))
+                    case let (nil, error?):
+                        continuation.resume(throwing: error)
+                    default:
+                        continuation.resume(throwing: HelperError.error(
+                            .internalError,
+                            message: "Helper reply violated protocol: expected exactly one of data or error"))
                     }
                 }
             }

@@ -118,10 +118,18 @@ struct PowerlogReader {
         defer { sqlite3_finalize(stmt) }
 
         var presentColumns = Set<String>()
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        var stepResult = sqlite3_step(stmt)
+        while stepResult == SQLITE_ROW {
             if let namePointer = sqlite3_column_text(stmt, 1) {
                 presentColumns.insert(String(cString: namePointer))
             }
+            stepResult = sqlite3_step(stmt)
+        }
+        guard stepResult == SQLITE_DONE else {
+            throw HelperError.error(
+                .internalError,
+                message: "Failed to inspect columns of \(Self.table): \(String(cString: sqlite3_errmsg(db)))"
+            )
         }
 
         let missing = Self.requiredColumns.subtracting(presentColumns)
@@ -152,7 +160,12 @@ struct PowerlogReader {
         }
         defer { sqlite3_finalize(stmt) }
 
-        sqlite3_bind_double(stmt, 1, sinceEpoch)
+        guard sqlite3_bind_double(stmt, 1, sinceEpoch) == SQLITE_OK else {
+            throw HelperError.error(
+                .internalError,
+                message: "Failed to bind interval query parameter: \(String(cString: sqlite3_errmsg(db)))"
+            )
+        }
 
         var intervals: [EnergyInterval] = []
         while true {
@@ -204,7 +217,12 @@ struct PowerlogReader {
 
         // SQLITE_TRANSIENT: have SQLite copy the string immediately.
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        sqlite3_bind_text(stmt, 1, textParameter, -1, transient)
+        guard sqlite3_bind_text(stmt, 1, textParameter, -1, transient) == SQLITE_OK else {
+            throw HelperError.error(
+                .internalError,
+                message: "Failed to bind query parameter: \(String(cString: sqlite3_errmsg(db)))"
+            )
+        }
 
         guard sqlite3_step(stmt) == SQLITE_ROW else {
             throw HelperError.error(

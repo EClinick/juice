@@ -14,6 +14,8 @@ build-helper-dev:
 # Installs a dev (ad-hoc signed) build of the helper as a launchd daemon.
 # Requires sudo. Pairs with an ad-hoc signed app (see dev-app-sign).
 dev-helper-install: build-helper-dev
+	@echo "WARNING: installs a DEV-signed helper with a weak (identifier-only) client check."
+	@echo "WARNING: Local development machines only. Run 'make dev-helper-uninstall' when done."
 	sudo launchctl bootout system/$(HELPER_LABEL) 2>/dev/null || true
 	sudo cp .build/release/JuiceHelper $(HELPER_DEST)
 	sudo chown root:wheel $(HELPER_DEST)
@@ -25,7 +27,9 @@ dev-helper-install: build-helper-dev
 	sudo launchctl bootstrap system $(PLIST_DEST)
 
 dev-helper-uninstall:
-	sudo launchctl bootout system/$(HELPER_LABEL) 2>/dev/null || true
+	# Ignore bootout failure: 'service not loaded' is the expected benign
+	# outcome when the helper was never bootstrapped or already removed.
+	-sudo launchctl bootout system/$(HELPER_LABEL) 2>/dev/null
 	sudo rm -f $(HELPER_DEST) $(PLIST_DEST)
 
 # Ad-hoc signs the debug app build with the bundle identifier the helper's

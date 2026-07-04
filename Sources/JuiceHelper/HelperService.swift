@@ -18,7 +18,12 @@ final class HelperService: NSObject, HelperProtocol {
 
     func fetchEnergyIntervals(sinceEpoch: Double, reply: @escaping (Data?, NSError?) -> Void) {
         do {
-            let intervals = try reader.fetchIntervals(sinceEpoch: sinceEpoch)
+            guard sinceEpoch.isFinite,
+                  sinceEpoch <= Date().timeIntervalSince1970 + 86400 else {
+                throw HelperError.error(.internalError, message: "invalid sinceEpoch")
+            }
+            let clampedSinceEpoch = max(sinceEpoch, 0)
+            let intervals = try reader.fetchIntervals(sinceEpoch: clampedSinceEpoch)
             let data = try JSONEncoder().encode(intervals)
             reply(data, nil)
         } catch let error as NSError where error.domain == HelperError.domain {
