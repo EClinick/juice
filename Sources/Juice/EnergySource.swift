@@ -30,5 +30,8 @@ enum EnergyRange: String, CaseIterable {
 /// the real implementation later, letting the UI stay unchanged.
 protocol EnergySource {
     func topApps(range: EnergyRange) async throws -> [AppEnergy]
-    func batteryTimeline(hours: Int) async throws -> [BatterySample]
+    /// Battery samples covering the window `[until - hours, until]`. The
+    /// caller supplies `until` so the chart's x-domain and the sample query
+    /// agree on the exact same window.
+    func batteryTimeline(hours: Int, until: Date) async throws -> [BatterySample]
 }

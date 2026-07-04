@@ -6,7 +6,7 @@ import JuiceXPCShared
 /// helper.
 ///
 /// Not yet wired into the UI; integration happens once the helper is
-/// installed (M3+). ``batteryTimeline(hours:)`` returns an empty array
+/// installed (M3+). ``batteryTimeline(hours:until:)`` returns an empty array
 /// until M4 introduces the local sample store.
 struct PowerlogEnergySource: EnergySource {
     let client: HelperClient
@@ -48,7 +48,7 @@ struct PowerlogEnergySource: EnergySource {
             .map { $0 }
     }
 
-    func batteryTimeline(hours: Int) async throws -> [BatterySample] {
+    func batteryTimeline(hours: Int, until: Date) async throws -> [BatterySample] {
         // Real timeline data arrives in M4 from the local sample store.
         // Return an empty timeline so the UI renders an empty chart.
         []

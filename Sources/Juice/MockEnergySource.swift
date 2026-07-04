@@ -34,8 +34,8 @@ struct MockEnergySource: EnergySource {
         }
     }
 
-    func batteryTimeline(hours: Int) async throws -> [BatterySample] {
-        let now = Date()
+    func batteryTimeline(hours: Int, until: Date) async throws -> [BatterySample] {
+        let now = until
         let interval: TimeInterval = 30 * 60
         let count = max(1, hours * 2)   // one sample every 30 minutes
 

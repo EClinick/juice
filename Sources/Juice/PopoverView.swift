@@ -10,6 +10,7 @@ struct PopoverView: View {
     @State private var range: EnergyRange = .today
     @State private var topApps: [AppEnergy] = []
     @State private var timeline: [BatterySample] = []
+    @State private var timelineWindowEnd = Date()
     @State private var usingLiveData = false
     @State private var insights: [Insight] = []
     @State private var coverageDayCount: Int?
@@ -81,7 +82,11 @@ struct PopoverView: View {
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 } else {
-                    ChargeTimelineView(samples: timeline)
+                    ChargeTimelineView(
+                        samples: timeline,
+                        windowStart: timelineWindowEnd.addingTimeInterval(-24 * 3600),
+                        windowEnd: timelineWindowEnd
+                    )
                 }
 
                 if !insights.isEmpty {
@@ -142,10 +147,14 @@ struct PopoverView: View {
 
     private func loadEnergy() async {
         await loadTopApps()
-        // Charge history comes from the local sample store.
+        // Charge history comes from the local sample store. One captured
+        // window end anchors both the store query and the chart's x-domain.
         if let store = JuiceApp.sampler?.store {
-            if let timeline = try? await StoreEnergySource(store: store).batteryTimeline(hours: 24) {
+            let windowEnd = Date()
+            if let timeline = try? await StoreEnergySource(store: store)
+                .batteryTimeline(hours: 24, until: windowEnd) {
                 self.timeline = timeline
+                self.timelineWindowEnd = windowEnd
             }
             insights = await InsightsProvider(store: store).currentInsights()
         }

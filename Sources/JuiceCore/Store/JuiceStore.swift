@@ -111,14 +111,18 @@ public final class JuiceStore: @unchecked Sendable {
     }
 
     public func samples(since: Date) throws -> [StoredBatterySample] {
+        try samples(since: since, until: Date())
+    }
+
+    public func samples(since: Date, until: Date) throws -> [StoredBatterySample] {
         try dbQueue.read { db in
             let rows = try Row.fetchAll(
                 db,
                 sql: """
                     SELECT ts, percent, on_ac, is_charging, watts
-                    FROM battery_sample WHERE ts >= ? ORDER BY ts
+                    FROM battery_sample WHERE ts >= ? AND ts <= ? ORDER BY ts
                     """,
-                arguments: [since.timeIntervalSince1970])
+                arguments: [since.timeIntervalSince1970, until.timeIntervalSince1970])
             return rows.map { row in
                 StoredBatterySample(
                     date: Date(timeIntervalSince1970: row["ts"]),

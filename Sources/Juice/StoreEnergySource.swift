@@ -38,9 +38,9 @@ struct StoreEnergySource: EnergySource {
             .map { $0 }
     }
 
-    func batteryTimeline(hours: Int) async throws -> [BatterySample] {
-        let since = Date().addingTimeInterval(-Double(hours) * 3600)
-        return try store.samples(since: since).map { sample in
+    func batteryTimeline(hours: Int, until: Date) async throws -> [BatterySample] {
+        let since = until.addingTimeInterval(-Double(hours) * 3600)
+        return try store.samples(since: since, until: until).map { sample in
             BatterySample(
                 date: sample.date,
                 percent: sample.percent,

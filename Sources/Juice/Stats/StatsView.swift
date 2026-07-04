@@ -14,6 +14,7 @@ struct StatsView: View {
     @State private var range: EnergyRange = .today
     @State private var apps: [AppEnergy] = []
     @State private var timeline: [BatterySample] = []
+    @State private var timelineWindowEnd = Date()
     @State private var refreshedAt = Date()
 
     private var totalEnergy: Double {
@@ -123,7 +124,11 @@ struct StatsView: View {
                     .foregroundStyle(.tertiary)
                 Spacer()
             } else {
-                StatsTimelineChart(samples: timeline, hours: Self.timelineHours)
+                StatsTimelineChart(
+                    samples: timeline,
+                    hours: Self.timelineHours,
+                    windowEnd: timelineWindowEnd
+                )
                     .frame(maxHeight: .infinity)
             }
         }
@@ -155,8 +160,13 @@ struct StatsView: View {
 
     private func load() async {
         await loadApps()
-        if let timeline = try? await timelineSource.batteryTimeline(hours: Self.timelineHours) {
+        // One captured window end anchors both the store query and the
+        // chart's x-domain.
+        let windowEnd = Date()
+        if let timeline = try? await timelineSource.batteryTimeline(
+            hours: Self.timelineHours, until: windowEnd) {
             self.timeline = timeline
+            self.timelineWindowEnd = windowEnd
         }
         refreshedAt = Date()
     }
