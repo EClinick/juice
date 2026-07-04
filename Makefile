@@ -1,0 +1,34 @@
+HELPER_LABEL := com.eclinick.juice.helper
+HELPER_DEST := /Library/PrivilegedHelperTools/$(HELPER_LABEL)
+PLIST_SRC := Scripts/dev/$(HELPER_LABEL).plist
+PLIST_DEST := /Library/LaunchDaemons/$(HELPER_LABEL).plist
+
+.PHONY: build build-helper-dev dev-helper-install dev-helper-uninstall dev-app-sign
+
+build:
+	swift build
+
+build-helper-dev:
+	swift build -c release -Xswiftc -DDEV_HELPER
+
+# Installs a dev (ad-hoc signed) build of the helper as a launchd daemon.
+# Requires sudo. Pairs with an ad-hoc signed app (see dev-app-sign).
+dev-helper-install: build-helper-dev
+	sudo launchctl bootout system/$(HELPER_LABEL) 2>/dev/null || true
+	sudo cp .build/release/JuiceHelper $(HELPER_DEST)
+	sudo chown root:wheel $(HELPER_DEST)
+	sudo chmod 755 $(HELPER_DEST)
+	sudo codesign --force -s - -i $(HELPER_LABEL) $(HELPER_DEST)
+	sudo cp $(PLIST_SRC) $(PLIST_DEST)
+	sudo chown root:wheel $(PLIST_DEST)
+	sudo chmod 644 $(PLIST_DEST)
+	sudo launchctl bootstrap system $(PLIST_DEST)
+
+dev-helper-uninstall:
+	sudo launchctl bootout system/$(HELPER_LABEL) 2>/dev/null || true
+	sudo rm -f $(HELPER_DEST) $(PLIST_DEST)
+
+# Ad-hoc signs the debug app build with the bundle identifier the helper's
+# dev code-signing requirement expects.
+dev-app-sign:
+	codesign --force -s - -i com.eclinick.juice .build/debug/Juice

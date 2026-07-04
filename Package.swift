@@ -5,6 +5,15 @@ let package = Package(
     name: "Juice",
     platforms: [.macOS(.v14)],
     targets: [
-        .executableTarget(name: "Juice", path: "Sources/Juice")
+        .target(name: "JuiceXPCShared"),
+        .executableTarget(
+            name: "JuiceHelper",
+            dependencies: ["JuiceXPCShared"]
+        ),
+        .executableTarget(
+            name: "Juice",
+            dependencies: ["JuiceXPCShared"],
+            path: "Sources/Juice"
+        )
     ]
 )
