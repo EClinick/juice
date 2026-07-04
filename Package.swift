@@ -33,7 +33,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "JuiceXPCProbe",
-            dependencies: ["JuiceXPCShared"]
+            dependencies: ["JuiceXPCShared", "JuiceCore"]
         ),
         .testTarget(
             name: "JuiceTests",

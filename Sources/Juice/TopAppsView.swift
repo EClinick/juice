@@ -22,16 +22,27 @@ struct TopAppsView: View {
 
             VStack(spacing: 6) {
                 ForEach(apps) { app in
-                    AppEnergyRow(app: app, fraction: app.energyWh / maxEnergy)
+                    AppEnergyRow(app: app, fraction: app.energyWh / maxEnergy) {
+                        AppDetailPresenter.shared.show(
+                            appKey: app.bundleId,
+                            displayName: app.displayName,
+                            range: range
+                        )
+                    }
                 }
             }
         }
     }
 }
 
+/// One tappable row; tapping opens the per-app detail window. A chevron
+/// appears on hover to hint at the interaction.
 private struct AppEnergyRow: View {
     let app: AppEnergy
     let fraction: Double
+    let onTap: () -> Void
+
+    @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -60,7 +71,15 @@ private struct AppEnergyRow: View {
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
                 .frame(width: 56, alignment: .trailing)
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .opacity(hovering ? 1 : 0)
         }
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .onTapGesture(perform: onTap)
     }
 }
 

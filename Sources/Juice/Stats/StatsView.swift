@@ -99,7 +99,13 @@ struct StatsView: View {
                             StatsAppRow(
                                 app: app,
                                 share: app.energyWh / totalEnergy
-                            )
+                            ) {
+                                AppDetailPresenter.shared.show(
+                                    appKey: app.bundleId,
+                                    displayName: app.displayName,
+                                    range: range
+                                )
+                            }
                         }
                     }
                     .padding(.trailing, 4)
@@ -179,10 +185,14 @@ struct StatsView: View {
 }
 
 /// One row in the full app-energy table: icon, name, Wh, CPU hours, and a
-/// share-of-total bar.
+/// share-of-total bar. Tapping opens the per-app detail window; a chevron
+/// appears on hover to hint at the interaction.
 private struct StatsAppRow: View {
     let app: AppEnergy
     let share: Double
+    let onTap: () -> Void
+
+    @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -215,7 +225,15 @@ private struct StatsAppRow: View {
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
                 .frame(width: 72, alignment: .trailing)
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .opacity(hovering ? 1 : 0)
         }
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .onTapGesture(perform: onTap)
     }
 }
 

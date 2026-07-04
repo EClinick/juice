@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import JuiceCore
 import JuiceXPCShared
 
 /// An ``EnergySource`` backed by real powerlog data from the privileged
@@ -46,6 +47,15 @@ struct PowerlogEnergySource: EnergySource {
             .sorted { $0.energyWh > $1.energyWh }
             .prefix(8)
             .map { $0 }
+    }
+
+    /// Fetches the raw energy intervals for a single app over `range`.
+    ///
+    /// `appKey` follows the same keying as ``topApps(range:)``: the bundle id
+    /// when present and non-empty, otherwise the launchd coalition name.
+    func appIntervals(appKey: String, range: EnergyRange) async throws -> [EnergyInterval] {
+        try await client.fetchIntervals(since: Self.rangeStart(for: range))
+            .filter { BreakdownBuilder.appKey(for: $0) == appKey }
     }
 
     func batteryTimeline(hours: Int, until: Date) async throws -> [BatterySample] {
