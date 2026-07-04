@@ -32,7 +32,7 @@ final class StatsWindowPresenter {
 
         let controller = NSHostingController(rootView: root)
         let window = NSWindow(contentViewController: controller)
-        window.title = "Juice — Stats"
+        window.title = "Juice - Stats"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.setContentSize(NSSize(width: 720, height: 480))
         window.setFrameAutosaveName("JuiceStatsWindow")

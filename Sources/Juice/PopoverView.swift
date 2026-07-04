@@ -1,4 +1,5 @@
 import SwiftUI
+import JuiceCore
 
 struct PopoverView: View {
     @ObservedObject var model: BatteryViewModel
@@ -10,6 +11,7 @@ struct PopoverView: View {
     @State private var topApps: [AppEnergy] = []
     @State private var timeline: [BatterySample] = []
     @State private var usingLiveData = false
+    @State private var insights: [Insight] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -69,11 +71,29 @@ struct PopoverView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if timeline.isEmpty {
-                    Text("Charge history arrives with the local sample store (M4).")
+                    Text("Collecting charge history - check back in a few minutes.")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 } else {
                     ChargeTimelineView(samples: timeline)
+                }
+
+                if !insights.isEmpty {
+                    Divider()
+                    ForEach(insights.prefix(2)) { insight in
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Image(systemName: iconName(for: insight.severity))
+                                .foregroundStyle(color(for: insight.severity))
+                                .font(.caption)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(insight.title).font(.caption.weight(.medium))
+                                Text(insight.detail)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                        }
+                    }
                 }
             } else if let err = model.lastError {
                 Text(err).font(.caption).foregroundStyle(.red)
@@ -86,6 +106,13 @@ struct PopoverView: View {
 
             HStack {
                 Button("Refresh") { model.refresh() }
+                Button("Stats") {
+                    StatsWindowPresenter.shared.show(
+                        energySource: usingLiveData ? liveSource : fallbackSource,
+                        timelineSource: timelineSource,
+                        reading: model.reading
+                    )
+                }
                 Spacer()
                 Button("Quit Juice") { NSApp.terminate(nil) }
             }
@@ -100,12 +127,37 @@ struct PopoverView: View {
         }
     }
 
+    private var timelineSource: EnergySource {
+        if let store = JuiceApp.sampler?.store {
+            return StoreEnergySource(store: store)
+        }
+        return fallbackSource
+    }
+
     private func loadEnergy() async {
         await loadTopApps()
         // Charge history comes from the local sample store.
-        if let store = JuiceApp.sampler?.store,
-           let timeline = try? await StoreEnergySource(store: store).batteryTimeline(hours: 24) {
-            self.timeline = timeline
+        if let store = JuiceApp.sampler?.store {
+            if let timeline = try? await StoreEnergySource(store: store).batteryTimeline(hours: 24) {
+                self.timeline = timeline
+            }
+            insights = InsightsProvider(store: store).currentInsights()
+        }
+    }
+
+    private func iconName(for severity: InsightSeverity) -> String {
+        switch severity {
+        case .warning: return "exclamationmark.triangle"
+        case .notice: return "lightbulb"
+        case .info: return "info.circle"
+        }
+    }
+
+    private func color(for severity: InsightSeverity) -> Color {
+        switch severity {
+        case .warning: return .orange
+        case .notice: return .yellow
+        case .info: return .blue
         }
     }
 
