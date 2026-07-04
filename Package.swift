@@ -14,6 +14,10 @@ let package = Package(
             name: "Juice",
             dependencies: ["JuiceXPCShared"],
             path: "Sources/Juice"
+        ),
+        .executableTarget(
+            name: "JuiceXPCProbe",
+            dependencies: ["JuiceXPCShared"]
         )
     ]
 )
