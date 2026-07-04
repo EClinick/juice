@@ -144,7 +144,9 @@ public struct BreakdownBuilder {
                 "The Neural Engine contributed \(anePercent)% - on-device machine learning work.")
         }
 
-        let activeHourCount = b.hourlyWh.filter { $0.wh > 0 }.count
+        // A window of N hours can touch N+1 partial clock-hour buckets;
+        // cap the reported count so we never claim "25 of the last 24 hours".
+        let activeHourCount = min(b.hourlyWh.filter { $0.wh > 0 }.count, windowHours)
         if windowHours > 0 {
             let fraction = Double(activeHourCount) / Double(windowHours)
             var activity = "It was active in \(activeHourCount) of the last \(windowHours) hours"
