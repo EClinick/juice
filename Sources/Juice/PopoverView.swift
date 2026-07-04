@@ -102,8 +102,9 @@ struct PopoverView: View {
 
     private func loadEnergy() async {
         await loadTopApps()
-        // Real charge history arrives in M4; the live source returns [] until then.
-        if let timeline = try? await liveSource.batteryTimeline(hours: 24) {
+        // Charge history comes from the local sample store.
+        if let store = JuiceApp.sampler?.store,
+           let timeline = try? await StoreEnergySource(store: store).batteryTimeline(hours: 24) {
             self.timeline = timeline
         }
     }

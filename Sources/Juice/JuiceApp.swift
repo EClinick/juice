@@ -1,12 +1,33 @@
 import SwiftUI
+import JuiceCore
 
 @main
 struct JuiceApp: App {
-    @StateObject private var model = BatteryViewModel()
+    /// Shared sampler backed by the local store; nil only if the store
+    /// cannot be opened (e.g. Application Support is unwritable).
+    static let sampler: SamplerService? = {
+        do {
+            return SamplerService(store: try JuiceStore.appDefault())
+        } catch {
+            NSLog("Juice: failed to open local store: \(error)")
+            return nil
+        }
+    }()
+
+    @StateObject private var model = BatteryViewModel(onReading: JuiceApp.handleReading)
 
     init() {
         // Menu bar only: no Dock icon, no main window.
         NSApplication.shared.setActivationPolicy(.accessory)
+        Task { await Self.sampler?.updateRollupsIfStale() }
+    }
+
+    /// Persists each reading and opportunistically refreshes the rollups;
+    /// the 15-minute staleness check makes the frequent calls cheap.
+    private static func handleReading(_ reading: BatteryReading) {
+        guard let sampler else { return }
+        sampler.recordSample(reading)
+        Task { await sampler.updateRollupsIfStale() }
     }
 
     /// SF Symbol for the menu bar, derived from the current reading:

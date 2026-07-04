@@ -6,9 +6,13 @@ final class BatteryViewModel: ObservableObject {
     @Published var reading: BatteryReading?
     @Published var lastError: String?
 
+    /// Invoked after each successful refresh with the fresh reading.
+    var onReading: ((BatteryReading) -> Void)?
+
     private var timer: AnyCancellable?
 
-    init() {
+    init(onReading: ((BatteryReading) -> Void)? = nil) {
+        self.onReading = onReading
         refresh()
         // Background cadence; the popover triggers an immediate refresh on open.
         timer = Timer.publish(every: 60, on: .main, in: .common)
@@ -18,8 +22,10 @@ final class BatteryViewModel: ObservableObject {
 
     func refresh() {
         do {
-            reading = try BatteryMonitor.read()
+            let fresh = try BatteryMonitor.read()
+            reading = fresh
             lastError = nil
+            onReading?(fresh)
         } catch {
             reading = nil
             lastError = "Could not read battery state: \(error)"
