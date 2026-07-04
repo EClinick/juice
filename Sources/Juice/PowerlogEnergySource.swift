@@ -23,7 +23,11 @@ struct PowerlogEnergySource: EnergySource {
         }
         var totals: [String: Totals] = [:]
         for interval in intervals {
-            guard let key = interval.bundleID ?? interval.launchdName else { continue }
+            // powerlog stores empty-string (not NULL) BundleIds for system
+            // coalitions like WindowServer; fall back to LaunchdName for those.
+            let bundleID = interval.bundleID.flatMap { $0.isEmpty ? nil : $0 }
+            let launchdName = interval.launchdName.flatMap { $0.isEmpty ? nil : $0 }
+            guard let key = bundleID ?? launchdName else { continue }
             totals[key, default: Totals()].joules +=
                 interval.energyNJ + interval.gpuEnergyNJ + interval.aneEnergyNJ
             totals[key, default: Totals()].cpuSeconds += interval.cpuTime
