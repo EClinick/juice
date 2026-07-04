@@ -3,6 +3,12 @@ import SwiftUI
 struct PopoverView: View {
     @ObservedObject var model: BatteryViewModel
 
+    private let energySource: EnergySource = MockEnergySource()
+
+    @State private var range: EnergyRange = .today
+    @State private var topApps: [AppEnergy] = []
+    @State private var timeline: [BatterySample] = []
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let r = model.reading, r.hasBattery {
@@ -42,9 +48,17 @@ struct PopoverView: View {
 
                 Divider()
 
-                Text("Per-app energy rankings coming in M2–M3.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                Text("Top energy users")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TopAppsView(apps: topApps, range: $range)
+
+                Divider()
+
+                Text("Charge — last 24 h")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ChargeTimelineView(samples: timeline)
             } else if let err = model.lastError {
                 Text(err).font(.caption).foregroundStyle(.red)
             } else {
@@ -62,7 +76,24 @@ struct PopoverView: View {
             .controlSize(.small)
         }
         .padding(14)
-        .frame(width: 300)
+        .frame(width: 320)
         .onAppear { model.refresh() }
+        .task { await loadEnergy() }
+        .onChange(of: range) {
+            Task { await loadTopApps() }
+        }
+    }
+
+    private func loadEnergy() async {
+        await loadTopApps()
+        if let timeline = try? await energySource.batteryTimeline(hours: 24) {
+            self.timeline = timeline
+        }
+    }
+
+    private func loadTopApps() async {
+        if let apps = try? await energySource.topApps(range: range) {
+            self.topApps = apps
+        }
     }
 }
