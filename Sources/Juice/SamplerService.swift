@@ -80,8 +80,12 @@ actor SamplerService {
     /// The watermark only tracks the last successful refresh time; the fetch
     /// window always starts at the local start of day a fixed lookback ago,
     /// so every rebuilt day is recomputed in full and can safely replace the
-    /// stored rows for that day. Helper errors are swallowed (the helper may
-    /// not be installed) but recorded in ``lastRollupError``.
+    /// stored rows for that day - but only when the source actually covers
+    /// that day from its start. The live powerlog purges rows after a few
+    /// days, so days older than the earliest fetched row are left untouched
+    /// rather than clobbered with truncated remnants. Helper errors are
+    /// swallowed (the helper may not be installed) but recorded in
+    /// ``lastRollupError``.
     func updateRollupsIfStale() async {
         guard !isRefreshing else { return }
 
@@ -112,13 +116,26 @@ actor SamplerService {
 
         do {
             let intervals = try await helper.fetchIntervals(since: fetchStart)
-            // Defense in depth: a day older than the fetch window would be a
-            // partial recomputation and must never replace a stored full day.
-            // (RollupBuilder keys by interval start, so this cannot happen for
-            // well-formed helper output.)
-            let rollups = RollupBuilder.dailyRollups(from: intervals, calendar: calendar)
-                .filter { $0.day >= fetchStartDay }
-            try store.replaceRollups(rollups, coveringDays: Set(rollups.map(\.day)))
+            // The live powerlog retains only a few days and purges older rows,
+            // so the fetch may not reach back to the requested window start.
+            // Trust only the coverage the fetch demonstrates: with no rows at
+            // all, nothing is demonstrably covered and no stored day may be
+            // replaced.
+            if let earliestStart = intervals.map(\.start).min() {
+                let sourceCoverageStart = Date(timeIntervalSince1970: earliestStart)
+                // Defense in depth: a day older than the fetch window would be
+                // a partial recomputation and must never replace a stored full
+                // day. (RollupBuilder keys by interval start, so this cannot
+                // happen for well-formed helper output.)
+                let rollups = RollupBuilder.dailyRollups(from: intervals, calendar: calendar)
+                    .filter { $0.day >= fetchStartDay }
+                // Replace a day only when the source covers it from its local
+                // start; days that begin before the earliest fetched row would
+                // be rebuilt from truncated remnants and must stay untouched.
+                let (coveredRollups, coveredDays) = RollupBuilder.fullyCoveredRollups(
+                    rollups, sourceCoverageStart: sourceCoverageStart, calendar: calendar)
+                try store.replaceRollups(coveredRollups, coveringDays: coveredDays)
+            }
             try store.setWatermark(now)
             lastRollupError = nil
         } catch {

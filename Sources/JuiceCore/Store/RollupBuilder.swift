@@ -57,4 +57,43 @@ public enum RollupBuilder {
             }
             .sorted { ($0.day, $0.appKey) < ($1.day, $1.appKey) }
     }
+
+    /// Keeps only the rollups of days the source demonstrably covers in full.
+    ///
+    /// The live powerlog retains only a few days and purges older rows, so a
+    /// rebuild window can extend past what the source still has. A day is
+    /// fully covered only when the earliest fetched row is at or before the
+    /// day's local start (`sourceCoverageStart <= startOfDay(day)`); replacing
+    /// a stored day with data from a source that starts mid-day would clobber
+    /// a good full-day total with the truncated remnants.
+    ///
+    /// Returns the surviving rollups plus the set of fully covered day keys
+    /// (suitable for `JuiceStore.replaceRollups(_:coveringDays:)`). Days whose
+    /// key cannot be parsed are treated as not covered and dropped.
+    public static func fullyCoveredRollups(
+        _ rollups: [DailyEnergyRollup],
+        sourceCoverageStart: Date,
+        calendar: Calendar = .current
+    ) -> (rollups: [DailyEnergyRollup], days: Set<String>) {
+        let formatter = dayFormatter(calendar: calendar)
+        var covered: Set<String> = []
+        var uncovered: Set<String> = []
+        var kept: [DailyEnergyRollup] = []
+        for rollup in rollups {
+            if covered.contains(rollup.day) {
+                kept.append(rollup)
+                continue
+            }
+            if uncovered.contains(rollup.day) { continue }
+            // The formatter parses a day key to the day's local midnight.
+            if let dayStart = formatter.date(from: rollup.day),
+                sourceCoverageStart <= dayStart {
+                covered.insert(rollup.day)
+                kept.append(rollup)
+            } else {
+                uncovered.insert(rollup.day)
+            }
+        }
+        return (kept, covered)
+    }
 }
