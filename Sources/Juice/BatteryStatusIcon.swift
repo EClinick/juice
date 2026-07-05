@@ -3,7 +3,7 @@ import AppKit
 /// Draws the menu bar battery glyph in the style of the system status item:
 /// a rounded-rect outline with a terminal nub, an interior fill whose width is
 /// proportional to the charge percent, and a lightning bolt knocked out of the
-/// fill while charging. Pure: the image depends only on the inputs.
+/// fill while plugged in. Pure: the image depends only on the inputs.
 enum BatteryStatusIcon {
     /// Glyph size in points; the drawing handler re-renders at each backing
     /// scale so retina menu bars stay crisp.
@@ -23,15 +23,18 @@ enum BatteryStatusIcon {
         // Match the system's low-battery treatment: red fill, and the image is
         // no longer a template so the red survives menu bar tinting.
         let isLow = percent <= 20 && !onAC
+        // Like the system icon, the bolt shows whenever the charger is
+        // plugged in, including when the battery is full and merely held.
+        let showBolt = isCharging || onAC
         let image = NSImage(size: size, flipped: false) { _ in
-            draw(percent: percent, isCharging: isCharging, isLow: isLow)
+            draw(percent: percent, showBolt: showBolt, isLow: isLow)
             return true
         }
         image.isTemplate = !isLow
         return image
     }
 
-    private static func draw(percent: Int, isCharging: Bool, isLow: Bool) {
+    private static func draw(percent: Int, showBolt: Bool, isLow: Bool) {
         // Template images must be pure black; the non-template low-battery
         // variant uses labelColor so the outline still adapts to the menu
         // bar's appearance (the handler re-runs at every draw).
@@ -62,11 +65,11 @@ enum BatteryStatusIcon {
             NSBezierPath(roundedRect: fillRect, xRadius: 1.5, yRadius: 1.5).fill()
         }
 
-        guard isCharging else { return }
+        guard showBolt else { return }
 
-        // Bolt while charging: first punch a bolt-shaped halo out of the fill
-        // (destinationOut) so the glyph stays legible over it, then draw the
-        // bolt itself in the template color.
+        // First punch a bolt-shaped halo out of the fill (destinationOut) so
+        // the glyph stays legible over it, then draw the bolt itself in the
+        // template color.
         let bolt = boltPath()
         if let context = NSGraphicsContext.current {
             context.saveGraphicsState()
