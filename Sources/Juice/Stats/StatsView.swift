@@ -4,7 +4,7 @@ import AppKit
 /// The standalone Stats window content: a full per-app energy table alongside a
 /// 7-day charge timeline, with a battery-health footer.
 struct StatsView: View {
-    let energySource: EnergySource
+    let selector: EnergySourceSelector
     let timelineSource: EnergySource
     let reading: BatteryReading?
 
@@ -16,6 +16,9 @@ struct StatsView: View {
     @State private var timeline: [BatterySample] = []
     @State private var timelineWindowEnd = Date()
     @State private var refreshedAt = Date()
+    @State private var origin: DataOrigin = .sample
+    @State private var coverageDayCount: Int?
+    @State private var loadTask: Task<Void, Never>?
 
     private var totalEnergy: Double {
         max(apps.reduce(0) { $0 + $1.energyWh }, 0.001)
@@ -40,7 +43,8 @@ struct StatsView: View {
         .frame(minWidth: 560, minHeight: 420)
         .task { await load() }
         .onChange(of: range) {
-            Task { await loadApps() }
+            loadTask?.cancel()
+            loadTask = Task { await loadApps() }
         }
     }
 
@@ -111,6 +115,20 @@ struct StatsView: View {
                     .padding(.trailing, 4)
                 }
             }
+
+            if origin == .sample {
+                Text("Sample data - helper not connected")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            } else if origin == .live, range != .today {
+                Text("Live data only (about 3 days) - history store unavailable")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            } else if origin == .store, let days = coverageDayCount {
+                Text("History covers \(days) day\(days == 1 ? "" : "s") so far")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(16)
@@ -120,7 +138,7 @@ struct StatsView: View {
 
     private var timelinePane: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Charge — last 7 days")
+            Text("Charge - last 7 days")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -178,9 +196,15 @@ struct StatsView: View {
     }
 
     private func loadApps() async {
-        if let apps = try? await energySource.topApps(range: range) {
-            self.apps = apps.sorted { $0.energyWh > $1.energyWh }
-        }
+        // Capture the requested range: if the picker changes while the query
+        // is in flight, the stale result must not overwrite the newer
+        // selection's data.
+        let range = self.range
+        let result = await selector.topApps(range: range)
+        guard !Task.isCancelled, range == self.range else { return }
+        apps = result.apps.sorted { $0.energyWh > $1.energyWh }
+        origin = result.origin
+        coverageDayCount = result.coverageDayCount
     }
 }
 

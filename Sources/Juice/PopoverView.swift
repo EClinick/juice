@@ -4,22 +4,22 @@ import JuiceCore
 struct PopoverView: View {
     @ObservedObject var model: BatteryViewModel
 
-    private let liveSource: EnergySource = PowerlogEnergySource()
-    private let fallbackSource: EnergySource = MockEnergySource()
+    private let selector = EnergySourceSelector()
 
     @State private var range: EnergyRange = .today
     @State private var topApps: [AppEnergy] = []
     @State private var timeline: [BatterySample] = []
     @State private var timelineWindowEnd = Date()
-    @State private var usingLiveData = false
+    @State private var origin: DataOrigin = .sample
     @State private var insights: [Insight] = []
     @State private var coverageDayCount: Int?
+    @State private var loadTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let r = model.reading, r.hasBattery {
                 HStack {
-                    Text("Battery — \(r.percent)%")
+                    Text("Battery - \(r.percent)%")
                         .font(.headline)
                     Spacer()
                     Text(model.timeRemainingText)
@@ -59,14 +59,18 @@ struct PopoverView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    if !usingLiveData {
-                        Text("Sample data — helper not connected")
+                    if origin == .sample {
+                        Text("Sample data - helper not connected")
                             .font(.caption2)
                             .foregroundStyle(.orange)
                     }
                 }
                 TopAppsView(apps: topApps, range: $range)
-                if let days = coverageDayCount {
+                if origin == .live, range != .today {
+                    Text("Live data only (about 3 days) - history store unavailable")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                } else if origin == .store, let days = coverageDayCount {
                     Text("History covers \(days) day\(days == 1 ? "" : "s") so far")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
@@ -74,7 +78,7 @@ struct PopoverView: View {
 
                 Divider()
 
-                Text("Charge — last 24 h")
+                Text("Charge - last 24 h")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if timeline.isEmpty {
@@ -119,7 +123,7 @@ struct PopoverView: View {
                 Button("Refresh") { model.refresh() }
                 Button("Stats") {
                     StatsWindowPresenter.shared.show(
-                        energySource: usingLiveData ? liveSource : fallbackSource,
+                        selector: selector,
                         timelineSource: timelineSource,
                         reading: model.reading
                     )
@@ -134,7 +138,8 @@ struct PopoverView: View {
         .onAppear { model.refresh() }
         .task { await loadEnergy() }
         .onChange(of: range) {
-            Task { await loadTopApps() }
+            loadTask?.cancel()
+            loadTask = Task { await loadTopApps() }
         }
     }
 
@@ -142,7 +147,7 @@ struct PopoverView: View {
         if let store = JuiceApp.sampler?.store {
             return StoreEnergySource(store: store)
         }
-        return fallbackSource
+        return selector.fallbackSource
     }
 
     private func loadEnergy() async {
@@ -177,41 +182,14 @@ struct PopoverView: View {
     }
 
     private func loadTopApps() async {
+        // Capture the requested range: if the selection changes while the
+        // query is in flight, the stale result must not overwrite the newer
+        // selection's data.
         let range = self.range
-        coverageDayCount = nil
-
-        // Today stays on the live helper path (fresher than the 15-minute
-        // rollup cadence). Historical ranges come from the app's own rollup
-        // store, which accumulates indefinitely - the live powerlog database
-        // only retains about three days.
-        if range != .today, let store = JuiceApp.sampler?.store {
-            if let apps = try? await StoreEnergySource(store: store).topApps(range: range),
-               !apps.isEmpty {
-                self.topApps = apps
-                usingLiveData = true
-                updateCoverage(store: store, range: range)
-                return
-            }
-        }
-
-        if let apps = try? await liveSource.topApps(range: range), !apps.isEmpty {
-            self.topApps = apps
-            usingLiveData = true
-        } else if let apps = try? await fallbackSource.topApps(range: range) {
-            self.topApps = apps
-            usingLiveData = false
-        }
-    }
-
-    /// Shows how many days of history the store actually has when it covers
-    /// less than the selected historical range.
-    private func updateCoverage(store: JuiceStore, range: EnergyRange) {
-        guard range != .today else { return }
-        let rangeStart = StoreEnergySource.sinceDay(for: range)
-        guard let earliest = try? store.earliestRollupDay(),
-              earliest > rangeStart,
-              let count = try? store.rollupDayCount(sinceDay: rangeStart)
-        else { return }
-        coverageDayCount = count
+        let result = await selector.topApps(range: range)
+        guard !Task.isCancelled, range == self.range else { return }
+        topApps = result.apps
+        origin = result.origin
+        coverageDayCount = result.coverageDayCount
     }
 }
