@@ -1,5 +1,6 @@
 import Foundation
 import JuiceCore
+import JuiceXPCShared
 
 /// Persists battery readings to the local store and keeps the daily energy
 /// rollups fresh from the helper's powerlog data.
@@ -26,6 +27,13 @@ actor SamplerService {
     private static let rebuildLookbackDays = 2
     /// First-run lookback when there is no watermark yet.
     private static let initialLookbackDays = 7
+
+    /// Backfill runs at most this often (tracked via ``backfillLastRunKey``).
+    private static let backfillMinInterval: TimeInterval = 3600
+    /// Backfill looks this far back from now for uncovered history.
+    private static let backfillWindow: TimeInterval = 7 * 24 * 3600
+    /// Meta key recording the last successful backfill run.
+    private static let backfillLastRunKey = "backfill_last_run"
 
     /// Day boundaries and day keys use the same calendar as RollupBuilder.
     private let calendar = Calendar.current
@@ -140,6 +148,64 @@ actor SamplerService {
             lastRollupError = nil
         } catch {
             lastRollupError = "\(error)"
+        }
+    }
+
+    /// Imports battery-level history that macOS itself recorded (powerlog's
+    /// battery event table) for any part of the last 7 days the live sampler
+    /// did not cover: time before Juice first ran, and gaps while Juice was
+    /// not running.
+    ///
+    /// Idempotent: only points falling inside uncovered regions (computed by
+    /// ``BackfillCoverage`` from the stored sample timestamps) are inserted,
+    /// so re-running never duplicates the live sampler or a previous backfill.
+    /// Runs at most once per hour across launches. Skips silently when the
+    /// helper is unavailable or too old to serve the battery-level query;
+    /// the skip is not recorded, so the next launch retries (e.g. after the
+    /// user upgrades the helper).
+    func backfillIfNeeded() async {
+        let now = Date()
+        do {
+            if let lastRun = try store.metaDate(forKey: Self.backfillLastRunKey),
+               now.timeIntervalSince(lastRun) < Self.backfillMinInterval {
+                return
+            }
+        } catch {
+            NSLog("Juice: failed to read backfill watermark: \(error)")
+            return
+        }
+
+        let windowStart = now.addingTimeInterval(-Self.backfillWindow)
+        let points: [BatteryLevelPoint]
+        do {
+            points = try await helper.fetchBatteryLevels(since: windowStart)
+        } catch {
+            // Helper not installed, unreachable, or predating the
+            // battery-level query: backfill is best-effort, skip silently.
+            NSLog("Juice: battery backfill skipped: \(error)")
+            return
+        }
+
+        do {
+            let existing = try store.sampleTimestamps(since: windowStart, until: now)
+            let regions = BackfillCoverage.uncoveredRegions(
+                existing: existing,
+                windowStart: windowStart.timeIntervalSince1970,
+                windowEnd: now.timeIntervalSince1970)
+            let inserts = points
+                .filter { BackfillCoverage.contains(regions, $0.ts) }
+                .map { point in
+                    (ts: Date(timeIntervalSince1970: point.ts),
+                     percent: Int(point.level.rounded()),
+                     onAC: point.externalConnected,
+                     isCharging: point.isCharging,
+                     watts: point.watts)
+                }
+            try store.insertBackfillSamples(inserts)
+            try store.setMetaDate(now, forKey: Self.backfillLastRunKey)
+            NSLog("Juice: backfilled \(inserts.count) battery samples from powerlog")
+        } catch {
+            NSLog("Juice: battery backfill failed: \(error)")
         }
     }
 }

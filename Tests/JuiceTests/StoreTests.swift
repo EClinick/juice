@@ -105,6 +105,74 @@ private func makeStore() throws -> JuiceStore {
         #expect(try store.rollupDayCount(sinceDay: "2026-07-03") == 0)
     }
 
+    @Test func backfillSamplesReadBackAlongsideLiveSamples() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+
+        try store.insertSample(
+            ts: now, percent: 60, onAC: false, isCharging: false, watts: 8)
+        try store.insertBackfillSamples([
+            (ts: now.addingTimeInterval(-600), percent: 62,
+             onAC: false, isCharging: false, watts: 7.5),
+            (ts: now.addingTimeInterval(-300), percent: 61,
+             onAC: true, isCharging: true, watts: -20),
+        ])
+
+        let samples = try store.samples(
+            since: now.addingTimeInterval(-3600), until: now)
+        #expect(samples.count == 3)
+        #expect(samples.map(\.percent) == [62, 61, 60])
+        #expect(samples[1].onAC == true)
+        #expect(samples[1].isCharging == true)
+        #expect(abs(samples[1].watts - -20) < 1e-9)
+    }
+
+    @Test func insertBackfillSamplesWithEmptyInputIsANoOp() throws {
+        let store = try makeStore()
+        try store.insertBackfillSamples([])
+        #expect(try store.samples(since: .distantPast).isEmpty)
+    }
+
+    @Test func sampleTimestampsReturnsSortedWindowedTimestamps() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+
+        try store.insertSample(
+            ts: now.addingTimeInterval(-7200), percent: 90,
+            onAC: false, isCharging: false, watts: 5)
+        try store.insertSample(
+            ts: now, percent: 80, onAC: false, isCharging: false, watts: 5)
+        try store.insertBackfillSamples([
+            (ts: now.addingTimeInterval(-1800), percent: 85,
+             onAC: false, isCharging: false, watts: 5)
+        ])
+
+        let timestamps = try store.sampleTimestamps(
+            since: now.addingTimeInterval(-3600), until: now)
+        #expect(timestamps == [
+            now.addingTimeInterval(-1800).timeIntervalSince1970,
+            now.timeIntervalSince1970,
+        ])
+    }
+
+    @Test func metaDateRoundTripsPerKey() throws {
+        let store = try makeStore()
+        #expect(try store.metaDate(forKey: "backfill_last_run") == nil)
+
+        let first = Date(timeIntervalSince1970: 1_750_000_000)
+        try store.setMetaDate(first, forKey: "backfill_last_run")
+        let readBack = try #require(try store.metaDate(forKey: "backfill_last_run"))
+        #expect(abs(readBack.timeIntervalSince1970 - first.timeIntervalSince1970) < 1e-6)
+
+        // Keys are independent: the rollup watermark is untouched.
+        #expect(try store.watermark() == nil)
+
+        let second = first.addingTimeInterval(3600)
+        try store.setMetaDate(second, forKey: "backfill_last_run")
+        let updated = try #require(try store.metaDate(forKey: "backfill_last_run"))
+        #expect(abs(updated.timeIntervalSince1970 - second.timeIntervalSince1970) < 1e-6)
+    }
+
     @Test func pruneRemovesOnlyOldSamples() throws {
         let store = try makeStore()
         let now = Date(timeIntervalSince1970: 1_700_000_000)

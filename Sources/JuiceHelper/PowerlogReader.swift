@@ -13,10 +13,16 @@ struct PowerlogReader {
     static let systemPowerlogPath =
         "/var/db/powerlog/Library/BatteryLife/CurrentPowerlog.PLSQL"
 
-    private static let table = "PLCoalitionAgent_EventInterval_CoalitionInterval"
-    private static let requiredColumns: Set<String> = [
+    private static let intervalTable = "PLCoalitionAgent_EventInterval_CoalitionInterval"
+    private static let intervalColumns: Set<String> = [
         "timestamp", "timestampEnd", "BundleId", "LaunchdName",
         "energy", "gpu_energy_nj", "ane_energy_nj", "cpu_time"
+    ]
+
+    private static let batteryTable = "PLBatteryAgent_EventBackward_Battery"
+    private static let batteryColumns: Set<String> = [
+        "timestamp", "Level", "IsCharging", "ExternalConnected",
+        "InstantAmperage", "Voltage"
     ]
 
     /// Path of the powerlog database to read. Injectable for tests.
@@ -29,6 +35,26 @@ struct PowerlogReader {
     /// Returns all intervals whose start timestamp is >= `sinceEpoch`
     /// (Unix epoch seconds), ordered by start ascending.
     func fetchIntervals(sinceEpoch: Double) throws -> [EnergyInterval] {
+        try withSnapshot { db in
+            try verifySchema(
+                db: db, table: Self.intervalTable, requiredColumns: Self.intervalColumns)
+            return try queryIntervals(db: db, sinceEpoch: sinceEpoch)
+        }
+    }
+
+    /// Returns all battery-level snapshots whose timestamp is >= `sinceEpoch`
+    /// (Unix epoch seconds), ordered by timestamp ascending.
+    func fetchBatteryLevels(sinceEpoch: Double) throws -> [BatteryLevelPoint] {
+        try withSnapshot { db in
+            try verifySchema(
+                db: db, table: Self.batteryTable, requiredColumns: Self.batteryColumns)
+            return try queryBatteryLevels(db: db, sinceEpoch: sinceEpoch)
+        }
+    }
+
+    /// Snapshot-copies the powerlog database, opens the copy read-only, runs
+    /// `body` against it, and cleans the copy up.
+    private func withSnapshot<T>(_ body: (OpaquePointer) throws -> T) throws -> T {
         let fileManager = FileManager.default
         guard fileManager.isReadableFile(atPath: databasePath) else {
             throw HelperError.error(
@@ -67,11 +93,7 @@ struct PowerlogReader {
         }
         defer { sqlite3_close(db) }
 
-        // 3. Schema guard: never run the query against an unexpected schema.
-        try verifySchema(db: db)
-
-        // 4. Query.
-        return try queryIntervals(db: db, sinceEpoch: sinceEpoch)
+        return try body(db)
     }
 
     // MARK: - Steps
@@ -91,28 +113,31 @@ struct PowerlogReader {
         return String(cString: template)
     }
 
-    private func verifySchema(db: OpaquePointer) throws {
+    /// Schema guard: never run a query against an unexpected schema.
+    private func verifySchema(
+        db: OpaquePointer, table: String, requiredColumns: Set<String>
+    ) throws {
         // Table present?
         let tableCount = try scalarInt(
             db: db,
             sql: "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
-            textParameter: Self.table
+            textParameter: table
         )
         guard tableCount == 1 else {
             throw HelperError.error(
                 .schemaMismatch,
-                message: "Powerlog table \(Self.table) not found; schema has changed"
+                message: "Powerlog table \(table) not found; schema has changed"
             )
         }
 
         // All required columns present?
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(
-            db, "PRAGMA table_info(\(Self.table))", -1, &statement, nil
+            db, "PRAGMA table_info(\(table))", -1, &statement, nil
         ) == SQLITE_OK, let stmt = statement else {
             throw HelperError.error(
                 .schemaMismatch,
-                message: "Failed to inspect columns of \(Self.table): \(String(cString: sqlite3_errmsg(db)))"
+                message: "Failed to inspect columns of \(table): \(String(cString: sqlite3_errmsg(db)))"
             )
         }
         defer { sqlite3_finalize(stmt) }
@@ -128,15 +153,15 @@ struct PowerlogReader {
         guard stepResult == SQLITE_DONE else {
             throw HelperError.error(
                 .internalError,
-                message: "Failed to inspect columns of \(Self.table): \(String(cString: sqlite3_errmsg(db)))"
+                message: "Failed to inspect columns of \(table): \(String(cString: sqlite3_errmsg(db)))"
             )
         }
 
-        let missing = Self.requiredColumns.subtracting(presentColumns)
+        let missing = requiredColumns.subtracting(presentColumns)
         guard missing.isEmpty else {
             throw HelperError.error(
                 .schemaMismatch,
-                message: "Powerlog table \(Self.table) is missing columns: \(missing.sorted().joined(separator: ", "))"
+                message: "Powerlog table \(table) is missing columns: \(missing.sorted().joined(separator: ", "))"
             )
         }
     }
@@ -145,7 +170,7 @@ struct PowerlogReader {
         let sql = """
             SELECT timestamp, timestampEnd, BundleId, LaunchdName,
                    energy, gpu_energy_nj, ane_energy_nj, cpu_time
-            FROM \(Self.table)
+            FROM \(Self.intervalTable)
             WHERE timestamp >= ?1
             ORDER BY timestamp ASC
             """
@@ -192,6 +217,80 @@ struct PowerlogReader {
             )
         }
         return intervals
+    }
+
+    private func queryBatteryLevels(
+        db: OpaquePointer, sinceEpoch: Double
+    ) throws -> [BatteryLevelPoint] {
+        let sql = """
+            SELECT timestamp, Level, IsCharging, ExternalConnected,
+                   InstantAmperage, Voltage
+            FROM \(Self.batteryTable)
+            WHERE timestamp >= ?1
+            ORDER BY timestamp ASC
+            """
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK,
+              let stmt = statement else {
+            throw HelperError.error(
+                .internalError,
+                message: "Failed to prepare battery query: \(String(cString: sqlite3_errmsg(db)))"
+            )
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        guard sqlite3_bind_double(stmt, 1, sinceEpoch) == SQLITE_OK else {
+            throw HelperError.error(
+                .internalError,
+                message: "Failed to bind battery query parameter: \(String(cString: sqlite3_errmsg(db)))"
+            )
+        }
+
+        var points: [BatteryLevelPoint] = []
+        while true {
+            let stepResult = sqlite3_step(stmt)
+            if stepResult == SQLITE_DONE { break }
+            guard stepResult == SQLITE_ROW else {
+                throw Self.mappedError(
+                    code: stepResult,
+                    context: "Battery query failed: \(String(cString: sqlite3_errmsg(db)))"
+                )
+            }
+
+            // Defensive: skip rows missing any core field rather than
+            // fabricating values for them.
+            guard sqlite3_column_type(stmt, 0) != SQLITE_NULL,
+                  sqlite3_column_type(stmt, 1) != SQLITE_NULL,
+                  sqlite3_column_type(stmt, 2) != SQLITE_NULL,
+                  sqlite3_column_type(stmt, 3) != SQLITE_NULL else {
+                continue
+            }
+
+            // InstantAmperage is signed mA (negative while discharging),
+            // Voltage is mV; watts follows the live sampler's convention:
+            // positive = discharging, negative = charging.
+            let watts: Double
+            if sqlite3_column_type(stmt, 4) != SQLITE_NULL,
+               sqlite3_column_type(stmt, 5) != SQLITE_NULL {
+                let amperage = Double(sqlite3_column_int64(stmt, 4))
+                let voltage = Double(sqlite3_column_int64(stmt, 5))
+                watts = -(amperage / 1000.0) * (voltage / 1000.0)
+            } else {
+                watts = 0
+            }
+
+            points.append(
+                BatteryLevelPoint(
+                    ts: sqlite3_column_double(stmt, 0),
+                    level: sqlite3_column_double(stmt, 1),
+                    isCharging: sqlite3_column_int64(stmt, 2) != 0,
+                    externalConnected: sqlite3_column_int64(stmt, 3) != 0,
+                    watts: watts
+                )
+            )
+        }
+        return points
     }
 
     // MARK: - SQLite helpers

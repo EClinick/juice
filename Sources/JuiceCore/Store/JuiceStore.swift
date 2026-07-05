@@ -92,6 +92,12 @@ public final class JuiceStore: @unchecked Sendable {
                 t.column("value", .text).notNull()
             }
         }
+        migrator.registerMigration("v2") { db in
+            // Sample provenance: 0 = live sampler, 1 = powerlog backfill.
+            try db.alter(table: "battery_sample") { t in
+                t.add(column: "source", .integer).notNull().defaults(to: 0)
+            }
+        }
         return migrator
     }
 
@@ -131,6 +137,43 @@ public final class JuiceStore: @unchecked Sendable {
                     isCharging: row["is_charging"],
                     watts: row["watts"])
             }
+        }
+    }
+
+    /// Inserts battery samples imported from macOS's own powerlog history
+    /// (`source` = 1), in one transaction.
+    ///
+    /// Callers are responsible for only passing points that fall inside
+    /// regions not already covered by stored samples (see BackfillCoverage),
+    /// which keeps backfill idempotent and free of duplicates.
+    public func insertBackfillSamples(
+        _ points: [(ts: Date, percent: Int, onAC: Bool, isCharging: Bool, watts: Double)]
+    ) throws {
+        guard !points.isEmpty else { return }
+        try dbQueue.write { db in
+            for point in points {
+                try db.execute(
+                    sql: """
+                        INSERT INTO battery_sample (ts, percent, on_ac, is_charging, watts, source)
+                        VALUES (?, ?, ?, ?, ?, 1)
+                        """,
+                    arguments: [
+                        point.ts.timeIntervalSince1970, point.percent,
+                        point.onAC, point.isCharging, point.watts,
+                    ])
+            }
+        }
+    }
+
+    /// Timestamps (epoch seconds, ascending) of all samples with
+    /// `since <= ts <= until`. Reads only the indexed ts column, so coverage
+    /// checks over large windows stay cheap.
+    public func sampleTimestamps(since: Date, until: Date) throws -> [Double] {
+        try dbQueue.read { db in
+            try Double.fetchAll(
+                db,
+                sql: "SELECT ts FROM battery_sample WHERE ts >= ? AND ts <= ? ORDER BY ts",
+                arguments: [since.timeIntervalSince1970, until.timeIntervalSince1970])
         }
     }
 
@@ -231,23 +274,36 @@ public final class JuiceStore: @unchecked Sendable {
         }
     }
 
-    // MARK: - Rollup watermark
+    // MARK: - Meta dates
 
-    public func watermark() throws -> Date? {
+    /// Reads a Date stored in the meta table (epoch seconds as text), or nil
+    /// when the key is absent or unparseable.
+    public func metaDate(forKey key: String) throws -> Date? {
         try dbQueue.read { db in
             let value = try String.fetchOne(
                 db,
                 sql: "SELECT value FROM meta WHERE key = ?",
-                arguments: [Self.watermarkKey])
+                arguments: [key])
             return value.flatMap(Double.init).map(Date.init(timeIntervalSince1970:))
         }
     }
 
-    public func setWatermark(_ date: Date) throws {
+    /// Upserts a Date into the meta table as epoch seconds.
+    public func setMetaDate(_ date: Date, forKey key: String) throws {
         try dbQueue.write { db in
             try db.execute(
                 sql: "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                arguments: [Self.watermarkKey, String(date.timeIntervalSince1970)])
+                arguments: [key, String(date.timeIntervalSince1970)])
         }
+    }
+
+    // MARK: - Rollup watermark
+
+    public func watermark() throws -> Date? {
+        try metaDate(forKey: Self.watermarkKey)
+    }
+
+    public func setWatermark(_ date: Date) throws {
+        try setMetaDate(date, forKey: Self.watermarkKey)
     }
 }

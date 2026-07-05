@@ -11,6 +11,14 @@ enum HelperState {
     case ready
 }
 
+/// Typed errors raised by ``HelperClient`` itself (as opposed to errors
+/// forwarded from the helper, which use the `HelperError` domain).
+enum HelperClientError: Error {
+    /// The installed helper predates the requested capability. Callers that
+    /// can live without the data (e.g. backfill) should skip silently.
+    case helperOutdated
+}
+
 /// Wraps the NSXPCConnection to the privileged helper with async APIs.
 final class HelperClient {
     private var connection: NSXPCConnection?
@@ -97,11 +105,17 @@ final class HelperClient {
     }
 
     /// Handshakes and updates ``state`` accordingly.
+    ///
+    /// Protocol versions above 1 only add methods, so any helper from 1 up
+    /// to the app's own version is compatible; methods added later gate on
+    /// the handshake version themselves (see ``fetchBatteryLevels(since:)``).
+    /// Only a helper newer than the app is a mismatch.
     @discardableResult
     func checkState() async -> HelperState {
         do {
             let (version, _) = try await handshake()
-            state = (version == JuiceXPC.protocolVersion) ? .ready : .versionMismatch
+            state = (1...JuiceXPC.protocolVersion).contains(version)
+                ? .ready : .versionMismatch
         } catch {
             state = .unavailable
         }
@@ -110,7 +124,32 @@ final class HelperClient {
 
     /// Fetches all energy intervals starting at or after `since`.
     func fetchIntervals(since: Date) async throws -> [EnergyInterval] {
-        let data: Data = try await withCheckedThrowingContinuation { continuation in
+        let data = try await fetchData { proxy, reply in
+            proxy.fetchEnergyIntervals(sinceEpoch: since.timeIntervalSince1970, reply: reply)
+        }
+        return try JSONDecoder().decode([EnergyInterval].self, from: data)
+    }
+
+    /// Fetches all battery-level history points at or after `since`.
+    ///
+    /// The battery-level query was added in protocol version 2. Against an
+    /// older installed helper this throws ``HelperClientError/helperOutdated``
+    /// without ever invoking the unknown method, so the app keeps working
+    /// until the user upgrades the helper.
+    func fetchBatteryLevels(since: Date) async throws -> [BatteryLevelPoint] {
+        let (version, _) = try await handshake()
+        guard version >= 2 else { throw HelperClientError.helperOutdated }
+        let data = try await fetchData { proxy, reply in
+            proxy.fetchBatteryLevels(sinceEpoch: since.timeIntervalSince1970, reply: reply)
+        }
+        return try JSONDecoder().decode([BatteryLevelPoint].self, from: data)
+    }
+
+    /// Shared continuation plumbing for the (Data?, NSError?) fetch methods.
+    private func fetchData(
+        _ invoke: @escaping (HelperProtocol, @escaping (Data?, NSError?) -> Void) -> Void
+    ) async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation in
             let resumed = OneShot()
             guard let proxy = remoteProxy(errorHandler: { error in
                 resumed.run { continuation.resume(throwing: error) }
@@ -121,7 +160,7 @@ final class HelperClient {
                 }
                 return
             }
-            proxy.fetchEnergyIntervals(sinceEpoch: since.timeIntervalSince1970) { data, error in
+            invoke(proxy) { data, error in
                 resumed.run {
                     // The protocol guarantees exactly one of (data, error) is
                     // set. Anything else is a protocol violation we must not
@@ -139,7 +178,6 @@ final class HelperClient {
                 }
             }
         }
-        return try JSONDecoder().decode([EnergyInterval].self, from: data)
     }
 }
 

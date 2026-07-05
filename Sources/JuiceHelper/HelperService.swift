@@ -4,7 +4,7 @@ import JuiceXPCShared
 /// The exported XPC object implementing ``HelperProtocol``.
 final class HelperService: NSObject, HelperProtocol {
     /// Human-readable helper build version, reported via handshake.
-    static let helperVersion = "1.0.0"
+    static let helperVersion = "1.1.0"
 
     private let reader: PowerlogReader
 
@@ -17,14 +17,31 @@ final class HelperService: NSObject, HelperProtocol {
     }
 
     func fetchEnergyIntervals(sinceEpoch: Double, reply: @escaping (Data?, NSError?) -> Void) {
+        fetchEncoded(sinceEpoch: sinceEpoch, reply: reply) { since in
+            try reader.fetchIntervals(sinceEpoch: since)
+        }
+    }
+
+    func fetchBatteryLevels(sinceEpoch: Double, reply: @escaping (Data?, NSError?) -> Void) {
+        fetchEncoded(sinceEpoch: sinceEpoch, reply: reply) { since in
+            try reader.fetchBatteryLevels(sinceEpoch: since)
+        }
+    }
+
+    /// Shared validation, JSON encoding, and error mapping for fetch methods.
+    private func fetchEncoded<T: Encodable>(
+        sinceEpoch: Double,
+        reply: @escaping (Data?, NSError?) -> Void,
+        fetch: (Double) throws -> [T]
+    ) {
         do {
             guard sinceEpoch.isFinite,
                   sinceEpoch <= Date().timeIntervalSince1970 + 86400 else {
                 throw HelperError.error(.internalError, message: "invalid sinceEpoch")
             }
             let clampedSinceEpoch = max(sinceEpoch, 0)
-            let intervals = try reader.fetchIntervals(sinceEpoch: clampedSinceEpoch)
-            let data = try JSONEncoder().encode(intervals)
+            let values = try fetch(clampedSinceEpoch)
+            let data = try JSONEncoder().encode(values)
             reply(data, nil)
         } catch let error as NSError where error.domain == HelperError.domain {
             reply(nil, error)

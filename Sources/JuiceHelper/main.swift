@@ -27,6 +27,15 @@ if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--selftest" {
         for (app, nanojoules) in topFive {
             print(String(format: "  %@: %.3f Wh", app, nanojoules / 3.6e12))
         }
+
+        let levels = try reader.fetchBatteryLevels(sinceEpoch: 0)
+        print("battery levels: \(levels.count)")
+        if let firstLevel = levels.first, let lastLevel = levels.last {
+            let formatter = ISO8601DateFormatter()
+            formatter.timeZone = TimeZone.current
+            print("  first: \(formatter.string(from: Date(timeIntervalSince1970: firstLevel.ts))) (\(firstLevel.ts))")
+            print("  last:  \(formatter.string(from: Date(timeIntervalSince1970: lastLevel.ts))) (\(lastLevel.ts))")
+        }
         exit(0)
     } catch {
         FileHandle.standardError.write(Data("selftest failed: \(error)\n".utf8))

@@ -19,7 +19,10 @@ struct JuiceApp: App {
     init() {
         // Menu bar only: no Dock icon, no main window.
         NSApplication.shared.setActivationPolicy(.accessory)
-        Task { await Self.sampler?.updateRollupsIfStale() }
+        Task {
+            await Self.sampler?.updateRollupsIfStale()
+            await Self.sampler?.backfillIfNeeded()
+        }
     }
 
     /// Persists each reading and opportunistically refreshes the rollups;

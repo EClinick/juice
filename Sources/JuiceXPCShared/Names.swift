@@ -8,8 +8,13 @@ public enum JuiceXPC {
     /// The bundle identifier of the main application.
     public static let appBundleID = "com.eclinick.juice"
 
-    /// The XPC protocol version. Bump whenever ``HelperProtocol`` changes
-    /// incompatibly; the app refuses to talk to a helper reporting a
-    /// different version.
-    public static let protocolVersion = 1
+    /// The XPC protocol version. Bump whenever ``HelperProtocol`` changes;
+    /// the app refuses to talk to a helper reporting a newer version than it
+    /// knows, and gates methods added after version 1 on the handshake's
+    /// reported version so older installed helpers keep serving the baseline.
+    ///
+    /// Version history:
+    /// - 1: handshake, fetchEnergyIntervals
+    /// - 2: adds fetchBatteryLevels
+    public static let protocolVersion = 2
 }
