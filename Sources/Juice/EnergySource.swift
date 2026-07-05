@@ -15,6 +15,7 @@ struct BatterySample: Identifiable {
     var date: Date
     var percent: Int
     var onAC: Bool
+    var isCharging: Bool
 }
 
 /// The time window used when ranking per-app energy usage.

@@ -78,9 +78,10 @@ struct PopoverView: View {
 
                 Divider()
 
-                Text("Charge - last 24 h")
+                Text("Battery level - last 24 h")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                TimelineLegend()
                 if timeline.isEmpty {
                     Text("Collecting charge history - check back in a few minutes.")
                         .font(.caption2)

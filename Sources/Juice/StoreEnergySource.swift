@@ -44,7 +44,8 @@ struct StoreEnergySource: EnergySource {
             BatterySample(
                 date: sample.date,
                 percent: sample.percent,
-                onAC: sample.onAC)
+                onAC: sample.onAC,
+                isCharging: sample.isCharging)
         }
     }
 

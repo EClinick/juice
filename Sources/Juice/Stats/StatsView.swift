@@ -41,7 +41,15 @@ struct StatsView: View {
             footer
         }
         .frame(minWidth: 560, minHeight: 420)
-        .task { await load() }
+        .task {
+            await load()
+            // Keep the timeline fresh while the window stays open.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                guard !Task.isCancelled else { break }
+                await loadTimeline()
+            }
+        }
         .onChange(of: range) {
             loadTask?.cancel()
             loadTask = Task { await loadApps() }
@@ -138,9 +146,10 @@ struct StatsView: View {
 
     private var timelinePane: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Charge - last 7 days")
+            Text("Battery level - last 7 days")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            TimelineLegend()
 
             if timeline.isEmpty {
                 Text("Charge history arrives with the local sample store.")
@@ -184,6 +193,11 @@ struct StatsView: View {
 
     private func load() async {
         await loadApps()
+        await loadTimeline()
+        refreshedAt = Date()
+    }
+
+    private func loadTimeline() async {
         // One captured window end anchors both the store query and the
         // chart's x-domain.
         let windowEnd = Date()
@@ -192,7 +206,6 @@ struct StatsView: View {
             self.timeline = timeline
             self.timelineWindowEnd = windowEnd
         }
-        refreshedAt = Date()
     }
 
     private func loadApps() async {

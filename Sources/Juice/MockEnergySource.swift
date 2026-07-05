@@ -43,8 +43,9 @@ struct MockEnergySource: EnergySource {
         for step in 0..<count {
             // Oldest sample first, most recent last.
             let date = now.addingTimeInterval(-Double(count - 1 - step) * interval)
-            let (percent, onAC) = Self.curveValue(atStep: step, of: count)
-            samples.append(BatterySample(date: date, percent: percent, onAC: onAC))
+            let (percent, onAC, isCharging) = Self.curveValue(atStep: step, of: count)
+            samples.append(BatterySample(
+                date: date, percent: percent, onAC: onAC, isCharging: isCharging))
         }
         return samples
     }
@@ -53,11 +54,16 @@ struct MockEnergySource: EnergySource {
     ///
     /// Discharges from full, has two charging stretches on AC, and stays
     /// within 40-100%.
-    private static func curveValue(atStep step: Int, of count: Int) -> (percent: Int, onAC: Bool) {
+    private static func curveValue(
+        atStep step: Int, of count: Int
+    ) -> (percent: Int, onAC: Bool, isCharging: Bool) {
         let progress = Double(step) / Double(max(1, count - 1))
 
-        // Two AC (charging) windows across the timeline.
+        // Two AC windows across the timeline. The battery charges through
+        // both, except for a short plugged-in-but-not-charging tail at the
+        // end of the second window.
         let onAC = (progress >= 0.30 && progress < 0.42) || (progress >= 0.78 && progress < 0.92)
+        let isCharging = onAC && progress < 0.90
 
         let percent: Double
         switch progress {
@@ -79,6 +85,6 @@ struct MockEnergySource: EnergySource {
         }
 
         let clamped = min(100, max(40, Int(percent.rounded())))
-        return (clamped, onAC)
+        return (clamped, onAC, isCharging)
     }
 }

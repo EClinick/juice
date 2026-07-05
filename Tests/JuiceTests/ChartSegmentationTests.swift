@@ -12,6 +12,16 @@ private struct Point {
     }
 }
 
+private struct StatePoint {
+    var date: Date
+    var state: String
+
+    init(_ offset: TimeInterval, _ state: String) {
+        self.date = Date(timeIntervalSince1970: 1_700_000_000 + offset)
+        self.state = state
+    }
+}
+
 @Suite struct ChartSegmentationTests {
     @Test func gapOfExactlyMaxGapDoesNotSplit() {
         let points = [Point(0), Point(120), Point(240)]
@@ -71,5 +81,65 @@ private struct Point {
         // Trailing run ends at the last sample.
         #expect(runs[1].start == points[4].date)
         #expect(runs[1].end == points[4].date)
+    }
+
+    @Test func stateChangeSplitsAStateRun() {
+        let points = [
+            StatePoint(0, "charging"),
+            StatePoint(60, "charging"),
+            StatePoint(120, "pluggedIn"),
+            StatePoint(180, "pluggedIn")
+        ]
+        let runs = ChartSegmentation.stateRuns(
+            points, date: { $0.date }, state: { $0.state })
+        #expect(runs.count == 2)
+        #expect(runs[0].state == "charging")
+        #expect(runs[0].start == points[0].date)
+        #expect(runs[0].end == points[1].date)
+        #expect(runs[1].state == "pluggedIn")
+        #expect(runs[1].start == points[2].date)
+        #expect(runs[1].end == points[3].date)
+    }
+
+    @Test func gapSplitsAStateRunEvenWithSameState() {
+        let points = [
+            StatePoint(0, "charging"),
+            StatePoint(60, "charging"),
+            // Gap of 540 s with the same state: the run must break here.
+            StatePoint(600, "charging"),
+            StatePoint(660, "charging")
+        ]
+        let runs = ChartSegmentation.stateRuns(
+            points, date: { $0.date }, state: { $0.state })
+        #expect(runs.count == 2)
+        #expect(runs[0].start == points[0].date)
+        #expect(runs[0].end == points[1].date)
+        #expect(runs[1].start == points[2].date)
+        #expect(runs[1].end == points[3].date)
+        #expect(runs.allSatisfy { $0.state == "charging" })
+    }
+
+    @Test func singletonStateRunsHaveEqualStartAndEnd() {
+        let points = [
+            StatePoint(0, "charging"),
+            StatePoint(60, "pluggedIn"),
+            StatePoint(120, "charging")
+        ]
+        let runs = ChartSegmentation.stateRuns(
+            points, date: { $0.date }, state: { $0.state })
+        // Singleton runs are kept, not filtered: callers widen them so a
+        // single sample still draws.
+        #expect(runs.count == 3)
+        for (index, run) in runs.enumerated() {
+            #expect(run.start == points[index].date)
+            #expect(run.end == points[index].date)
+            #expect(run.state == points[index].state)
+        }
+    }
+
+    @Test func emptyInputYieldsNoStateRuns() {
+        let runs = ChartSegmentation.stateRuns(
+            [StatePoint](), date: { $0.date }, state: { $0.state })
+        #expect(runs.isEmpty)
     }
 }

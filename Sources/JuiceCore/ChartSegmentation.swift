@@ -52,4 +52,39 @@ public struct ChartSegmentation {
         }
         return runs
     }
+
+    /// Contiguous runs of equal state that never bridge a recording gap: a run
+    /// breaks at any gap larger than `maxGap` and at every state change.
+    ///
+    /// A run spans from the first to the last sample sharing its state, so a
+    /// run made of a single sample has `start == end`. Callers that draw runs
+    /// must widen such singleton runs themselves; they are deliberately not
+    /// filtered out here.
+    public static func stateRuns<S, State: Equatable>(
+        _ samples: [S],
+        date: (S) -> Date,
+        state: (S) -> State,
+        maxGap: TimeInterval = 120
+    ) -> [(start: Date, end: Date, state: State)] {
+        var runs: [(start: Date, end: Date, state: State)] = []
+        for segment in segments(samples, date: date, maxGap: maxGap) {
+            guard let first = segment.first else { continue }
+            var runStart = date(first)
+            var runEnd = date(first)
+            var runState = state(first)
+            for sample in segment.dropFirst() {
+                let sampleState = state(sample)
+                if sampleState == runState {
+                    runEnd = date(sample)
+                } else {
+                    runs.append((start: runStart, end: runEnd, state: runState))
+                    runStart = date(sample)
+                    runEnd = date(sample)
+                    runState = sampleState
+                }
+            }
+            runs.append((start: runStart, end: runEnd, state: runState))
+        }
+        return runs
+    }
 }
