@@ -32,19 +32,6 @@ final class BatteryViewModel: ObservableObject {
         }
     }
 
-    var menuBarTitle: String {
-        guard let r = reading, r.hasBattery else { return "–" }
-        let wattsPart: String
-        if r.onAC && !r.isCharging {
-            wattsPart = "AC"
-        } else if r.isCharging {
-            wattsPart = String(format: "+%.1f W", abs(r.watts))
-        } else {
-            wattsPart = String(format: "%.1f W", abs(r.watts))
-        }
-        return "\(r.percent)% · \(wattsPart)"
-    }
-
     var timeRemainingText: String {
         guard let r = reading else { return "—" }
         if r.onAC && !r.isCharging { return "On AC power" }
