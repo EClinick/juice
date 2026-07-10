@@ -3,6 +3,7 @@ import JuiceCore
 
 struct PopoverView: View {
     @ObservedObject var model: BatteryViewModel
+    @ObservedObject private var updater = UpdateController.shared
 
     private let selector = EnergySourceSelector()
 
@@ -119,6 +120,26 @@ struct PopoverView: View {
             }
 
             Divider()
+
+            if updater.isAvailable {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Toggle("Automatic updates", isOn: Binding(
+                            get: { updater.automaticallyUpdates },
+                            set: { updater.automaticallyUpdates = $0 }
+                        ))
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        Spacer()
+                        Button("Check for Updates…") { updater.checkForUpdates() }
+                    }
+                    Text("Turn this off to update manually.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                Divider()
+            }
 
             HStack {
                 Button("Refresh") { model.refresh() }

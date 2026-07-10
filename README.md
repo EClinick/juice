@@ -29,8 +29,9 @@ Juice surfaces that data: which apps used how many watt-hours today, over the la
 - **Charge timeline**: battery level over the last 24 hours, sampled locally every minute, with on-AC periods highlighted.
 - **Insights**: drain-rate anomalies measured against your own 7-day baseline, apps using far more than their typical energy, the energy hog of the week, and charging-habit observations.
 - **Stats window**: the full app table (not just the top 8) plus a 7-day charge chart and battery health.
+- **In-app updates**: choose automatic download-and-install updates, or keep updates manual and use “Check for Updates…” whenever you want. Homebrew installs update directly from Juice's signed release feed.
 - **Honest charts**: axes are pinned to the real time window, recording gaps show as gaps, and partial data is labeled as such - the charts never stretch or interpolate data to look fuller than it is.
-- **Local only**: no network access, no telemetry, no accounts. The codebase contains no networking code at all.
+- **Private by default**: no telemetry, system profile, or accounts. Juice only contacts its release feed when you ask it to check for updates or enable automatic updates.
 
 <p align="center">
   <img src="docs/images/app-detail.png" width="460" alt="Per-app detail window showing VS Code energy breakdown: 100 percent CPU, hourly bar chart, and explanation bullets">
@@ -119,11 +120,23 @@ development helper. To prepare a Developer ID release, install your
 certificates in Keychain Access and provide the application certificate name:
 
 ```bash
-SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" VERSION=1.0.0 make dmg
+SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+VERSION=1.0.0 make dmg
 ```
 
 This creates `dist/Juice.dmg`, with Juice.app and an Applications shortcut.
-Before sharing it, notarize the disk image and staple Apple's ticket. The
+Before sharing it, notarize the disk image and staple Apple's ticket. Juice's
+Sparkle public key is embedded in the app; its private counterpart must remain
+in the release machine's Keychain. Sign every release in `appcast.xml` with
+`generate_appcast`:
+
+```bash
+make appcast \
+  APPCAST_DOWNLOAD_URL_PREFIX="https://github.com/EClinick/juice/releases/download/v1.0.0/"
+```
+
+Upload both the DMG and the resulting `dist/appcast.xml` to the versioned
+GitHub release so Sparkle can safely update installed copies. The
 privileged helper remains a separate admin-approved install until it is moved
 to an `SMAppService` launch-daemon package.
 
@@ -169,7 +182,6 @@ Juice reads the system's power accounting and battery state, stores derived data
 - Developer ID signed and notarized releases (DMG and Homebrew cask).
 - `SMAppService` helper installation with one-click approval in System Settings, replacing the sudo Makefile flow.
 - Backfilling older history from the powerlog archive files macOS keeps on disk.
-- Sparkle auto-updates.
 
 ## Status
 

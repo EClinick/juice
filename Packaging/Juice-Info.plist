@@ -28,5 +28,15 @@
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <!-- The EdDSA public key is safe to embed; the matching private key stays
+         in the release machine's Keychain. Automatic updates remain opt-in. -->
+    <key>SUFeedURL</key>
+    <string>https://github.com/EClinick/juice/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>bRQ1sFaRE2+jcrxFngeiDnsYi/EavONPXBnabXiNht8=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <false/>
+    <key>SUAutomaticallyUpdate</key>
+    <false/>
 </dict>
 </plist>
