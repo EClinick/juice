@@ -36,8 +36,8 @@ struct HelperStatusView: View {
             return "Move Juice to Applications and reopen it to enable per-app energy."
         case .notRegistered:
             return "Enable Juice's read-only helper to show per-app energy."
-        case .notFound:
-            return "This copy of Juice is missing its per-app energy helper."
+        case .bundleMissing(let detail):
+            return "This copy of Juice is missing its per-app energy helper: \(detail)"
         case .failed(let detail):
             return "The per-app energy helper could not be prepared: \(detail)"
         }
@@ -47,7 +47,7 @@ struct HelperStatusView: View {
         switch controller.state {
         case .requiresApproval: return "Open System Settings"
         case .enabled where queryError != nil && onRetryQuery != nil: return "Try Again"
-        case .notRegistered, .notFound, .failed: return "Retry"
+        case .notRegistered, .bundleMissing, .failed: return "Retry"
         case .needsApplicationInstall: return nil
         default: return nil
         }
@@ -57,7 +57,7 @@ struct HelperStatusView: View {
         switch controller.state {
         case .requiresApproval: controller.openApprovalSettings()
         case .enabled: onRetryQuery?()
-        case .notRegistered, .notFound, .failed: controller.retry()
+        case .notRegistered, .bundleMissing, .failed: controller.retry()
         default: break
         }
     }
