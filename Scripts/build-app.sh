@@ -41,6 +41,12 @@ mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources" "$APP_PATH/Co
 cp "$ROOT/Packaging/Juice-Info.plist" "$APP_PATH/Contents/Info.plist"
 cp "$ROOT/Packaging/Juice.icns" "$APP_PATH/Contents/Resources/Juice.icns"
 ditto "$SPARKLE_FRAMEWORK" "$APP_PATH/Contents/Frameworks/Sparkle.framework"
+# Juice is not sandboxed and does not opt in to Sparkle's optional XPC
+# services. Remove them from Developer ID release builds before re-signing the
+# framework. Local ad-hoc builds retain Sparkle's original signed framework.
+if [[ "$SIGNING_IDENTITY" != "-" ]]; then
+    rm -rf "$APP_PATH/Contents/Frameworks/Sparkle.framework/Versions/Current/XPCServices"
+fi
 if [[ ${#BINARIES[@]} -eq 1 ]]; then
     install -m 755 "${BINARIES[0]}" "$APP_PATH/Contents/MacOS/Juice"
 else
@@ -69,8 +75,15 @@ fi
 if [[ "$SIGNING_IDENTITY" == "-" ]]; then
     codesign --force --sign - --identifier com.eclinick.juice "$APP_PATH"
 else
-    codesign --force --sign "$SIGNING_IDENTITY" --options runtime --timestamp \
-        --identifier com.eclinick.juice "$APP_PATH"
+    # Sign Sparkle's nested helpers from the inside out with a hardened runtime
+    # and secure timestamp; --deep alone does not apply those options to every
+    # nested component and is rejected by Apple's notarization service.
+    SPARKLE_PATH="$APP_PATH/Contents/Frameworks/Sparkle.framework"
+    SIGN_OPTIONS=(--force --sign "$SIGNING_IDENTITY" --options runtime --timestamp)
+    codesign "${SIGN_OPTIONS[@]}" "$SPARKLE_PATH/Versions/Current/Autoupdate"
+    codesign "${SIGN_OPTIONS[@]}" "$SPARKLE_PATH/Versions/Current/Updater.app"
+    codesign "${SIGN_OPTIONS[@]}" "$SPARKLE_PATH"
+    codesign "${SIGN_OPTIONS[@]}" --identifier com.eclinick.juice "$APP_PATH"
 fi
 
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
