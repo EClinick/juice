@@ -121,14 +121,13 @@ certificates in Keychain Access and provide the application certificate name:
 
 ```bash
 SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-SPARKLE_PUBLIC_ED_KEY="your Sparkle EdDSA public key" \
 VERSION=1.0.0 make dmg
 ```
 
 This creates `dist/Juice.dmg`, with Juice.app and an Applications shortcut.
-Before sharing it, notarize the disk image and staple Apple's ticket. Generate
-an EdDSA key pair once with Sparkle's `generate_keys`, keep the private key
-outside the repository, and sign every release in `appcast.xml` with
+Before sharing it, notarize the disk image and staple Apple's ticket. Juice's
+Sparkle public key is embedded in the app; its private counterpart must remain
+in the release machine's Keychain. Sign every release in `appcast.xml` with
 `generate_appcast`:
 
 ```bash

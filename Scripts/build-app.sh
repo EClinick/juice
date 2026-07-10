@@ -10,7 +10,6 @@ VERSION="${VERSION:-0.1.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 SIGNING_IDENTITY="${SIGNING_IDENTITY:--}"
 APPCAST_URL="${APPCAST_URL:-https://github.com/EClinick/juice/releases/latest/download/appcast.xml}"
-SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-$ROOT/dist}"
 APP_PATH="$OUTPUT_DIR/Juice.app"
 ARCHS="${ARCHS:-arm64 x86_64}"
@@ -57,17 +56,14 @@ install_name_tool -add_rpath @executable_path/../Frameworks "$APP_PATH/Contents/
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP_PATH/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_PATH/Contents/Info.plist"
 
-# Sparkle verifies every downloaded release with this EdDSA public key. Do not
-# enable the updater in locally ad-hoc-signed builds: they cannot safely ship a
-# matching signed appcast. Public releases must provide the key explicitly.
-if [[ -n "$SPARKLE_PUBLIC_ED_KEY" ]]; then
-    /usr/libexec/PlistBuddy -c "Add :SUFeedURL string $APPCAST_URL" "$APP_PATH/Contents/Info.plist"
-    /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string $SPARKLE_PUBLIC_ED_KEY" "$APP_PATH/Contents/Info.plist"
-elif [[ "$SIGNING_IDENTITY" != "-" ]]; then
-    echo "SPARKLE_PUBLIC_ED_KEY is required for a signed release build." >&2
-    exit 1
+# The public key is part of the source Info.plist, while the matching private
+# key remains only in the release machine's Keychain. Never give locally
+# ad-hoc-signed builds a production feed: they cannot safely replace a user's
+# installed app. APPCAST_URL is overridable for signed staging releases.
+if [[ "$SIGNING_IDENTITY" == "-" ]]; then
+    /usr/libexec/PlistBuddy -c "Delete :SUFeedURL" "$APP_PATH/Contents/Info.plist"
 else
-    echo "Sparkle updater disabled (set SPARKLE_PUBLIC_ED_KEY to enable it in a release build)."
+    /usr/libexec/PlistBuddy -c "Set :SUFeedURL $APPCAST_URL" "$APP_PATH/Contents/Info.plist"
 fi
 
 if [[ "$SIGNING_IDENTITY" == "-" ]]; then

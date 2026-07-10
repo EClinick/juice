@@ -4,6 +4,24 @@
 `dist/Juice.dmg`. Both commands use an ad-hoc signature unless a signing
 identity is supplied.
 
+## One-time Sparkle setup
+
+Generate an EdDSA key pair on the release Mac:
+
+```bash
+swift build
+.build/artifacts/sparkle/Sparkle/bin/generate_keys
+```
+
+Keep the generated private key in Keychain (or a CI secret store) only. Copy
+the printed public key into `Packaging/Juice-Info.plist` as `SUPublicEDKey`.
+The public key is expected to be in the app bundle; it cannot sign releases.
+
+To rotate the key, first ship a transitional release containing the new public
+key, but sign that release's appcast with the old private key. Only after users
+can install that transitional release may later appcasts be signed with the new
+private key. Retain the old private key until the transition is complete.
+
 ## Developer ID build
 
 1. Create or download a **Developer ID Application** certificate in Xcode or
@@ -17,7 +35,6 @@ identity is supplied.
 
    ```bash
    SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-   SPARKLE_PUBLIC_ED_KEY="your Sparkle EdDSA public key" \
    VERSION=1.0.0 BUILD_NUMBER=1 make dmg
    ```
 
@@ -25,9 +42,10 @@ identity is supplied.
    ticket. Sparkle signs the complete archive, so this must happen before
    generating the appcast.
 
-4. Sign the release with Sparkle. Generate the EdDSA key pair once with
-   Sparkle's `generate_keys`, store the private key in the release secret
-   store, then generate the feed from the final notarized and stapled DMG:
+4. Sign the release with Sparkle. Juice's EdDSA public key is embedded in its
+   Info.plist; its private counterpart must remain in the release machine's
+   Keychain or CI secret store. Generate the feed from the final notarized and
+   stapled DMG:
 
    ```bash
    make appcast \
@@ -59,7 +77,6 @@ checksum and update `Casks/juice.rb` in that tap:
 ```bash
 VERSION=1.0.0 \
 SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-SPARKLE_PUBLIC_ED_KEY="your Sparkle EdDSA public key" \
 make release-cask
 ```
 
