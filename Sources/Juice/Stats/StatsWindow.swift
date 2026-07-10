@@ -34,8 +34,21 @@ final class StatsWindowPresenter {
         let window = NSWindow(contentViewController: controller)
         window.title = "Juice - Stats"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.setContentSize(NSSize(width: 720, height: 480))
+        let minimumContentSize = NSSize(
+            width: StatsView.minimumContentWidth,
+            height: StatsView.minimumContentHeight
+        )
+        window.contentMinSize = minimumContentSize
+        window.setContentSize(NSSize(width: 760, height: 480))
         window.setFrameAutosaveName("JuiceStatsWindow")
+
+        // Older versions allowed a 560-point-wide saved frame. Resize that
+        // saved value once so opening Stats never hides the app-name column.
+        let restoredContentSize = window.contentView?.bounds.size ?? .zero
+        if restoredContentSize.width < minimumContentSize.width ||
+            restoredContentSize.height < minimumContentSize.height {
+            window.setContentSize(minimumContentSize)
+        }
         window.isReleasedWhenClosed = false
 
         self.window = window

@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import JuiceXPCShared
 
 /// Accepts XPC connections only from the Juice app, never from root.
@@ -11,12 +12,7 @@ final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
         shouldAcceptNewConnection connection: NSXPCConnection
     ) -> Bool {
         // (a) Require the peer to be the Juice app, verified by code signature.
-        #if DEV_HELPER
-        // Dev builds are ad-hoc signed, so we can only pin the identifier.
-        let requirement = #"identifier "com.eclinick.juice""#
-        #else
-        let requirement = #"identifier "com.eclinick.juice" and anchor apple generic and certificate leaf[subject.OU] = "TEAMID_PLACEHOLDER""#
-        #endif
+        guard let requirement = appRequirement else { return false }
 
         // Non-throwing on this SDK; XPC itself fails closed by dropping any
         // message from a peer that does not satisfy the requirement.
@@ -32,5 +28,44 @@ final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
         connection.exportedObject = HelperService()
         connection.resume()
         return true
+    }
+
+    /// The release helper derives its own Team ID, then accepts only an app
+    /// with the same Developer ID team and Juice's bundle identifier. This
+    /// avoids baking a team-specific placeholder into source or a build script.
+    private var appRequirement: String? {
+        #if DEV_HELPER
+        // Ad-hoc signatures have no Team ID. The development helper is only
+        // installed locally and therefore can pin the bundle identifier alone.
+        return #"identifier "com.eclinick.juice""#
+        #else
+        guard let teamID = signingTeamID() else {
+            NSLog("JuiceHelper: could not determine its signing Team ID")
+            return nil
+        }
+        return #"identifier "com.eclinick.juice" and anchor apple generic and certificate leaf[subject.OU] = "\#(teamID)""#
+        #endif
+    }
+
+    private func signingTeamID() -> String? {
+        var dynamicCode: SecCode?
+        guard SecCodeCopySelf(SecCSFlags(), &dynamicCode) == errSecSuccess,
+            let dynamicCode else {
+            return nil
+        }
+
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(dynamicCode, SecCSFlags(), &staticCode) == errSecSuccess,
+            let staticCode else {
+            return nil
+        }
+
+        var signingInfo: CFDictionary?
+        guard SecCodeCopySigningInformation(staticCode, SecCSFlags(), &signingInfo) == errSecSuccess,
+            let info = signingInfo as? [String: Any] else {
+            return nil
+        }
+
+        return info[kSecCodeInfoTeamIdentifier as String] as? String
     }
 }

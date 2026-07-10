@@ -3,10 +3,23 @@ HELPER_DEST := /Library/PrivilegedHelperTools/$(HELPER_LABEL)
 PLIST_SRC := Scripts/dev/$(HELPER_LABEL).plist
 PLIST_DEST := /Library/LaunchDaemons/$(HELPER_LABEL).plist
 
-.PHONY: build build-helper-dev dev-helper-install dev-helper-uninstall dev-app-sign
+.PHONY: build app dmg release-cask build-helper-dev dev-helper-install dev-helper-uninstall dev-app-sign
 
 build:
 	swift build
+
+# Creates a launchable macOS application bundle at dist/Juice.app. It uses an
+# ad-hoc signature by default; provide SIGNING_IDENTITY for a Developer ID build.
+app:
+	./Scripts/build-app.sh
+
+# Creates a drag-to-Applications disk image at dist/Juice.dmg.
+dmg:
+	./Scripts/create-dmg.sh
+
+# Builds a universal Developer ID-signed DMG and prints its Homebrew checksum.
+release-cask:
+	./Scripts/release-cask.sh
 
 build-helper-dev:
 	swift build -c release -Xswiftc -DDEV_HELPER

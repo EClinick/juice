@@ -4,6 +4,13 @@ import AppKit
 /// The standalone Stats window content: a full per-app energy table alongside a
 /// 7-day charge timeline, with a battery-health footer.
 struct StatsView: View {
+    /// The app rows include fixed-width energy and CPU columns. Keep enough
+    /// room for an app name instead of letting that column collapse first.
+    static let minimumAppTableWidth: CGFloat = 392
+    static let minimumTimelineWidth: CGFloat = 280
+    static let minimumContentWidth = minimumAppTableWidth + minimumTimelineWidth + 1
+    static let minimumContentHeight: CGFloat = 420
+
     let selector: EnergySourceSelector
     let timelineSource: EnergySource
     let reading: BatteryReading?
@@ -31,16 +38,19 @@ struct StatsView: View {
 
             HStack(alignment: .top, spacing: 0) {
                 appTable
-                    .frame(minWidth: 260)
+                    .frame(minWidth: Self.minimumAppTableWidth)
                 Divider()
                 timelinePane
-                    .frame(minWidth: 260)
+                    .frame(minWidth: Self.minimumTimelineWidth)
             }
 
             Divider()
             footer
         }
-        .frame(minWidth: 560, minHeight: 420)
+        .frame(
+            minWidth: Self.minimumContentWidth,
+            minHeight: Self.minimumContentHeight
+        )
         .task {
             await load()
             // Keep the timeline fresh while the window stays open.
