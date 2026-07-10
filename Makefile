@@ -4,7 +4,7 @@ PLIST_SRC := Scripts/dev/$(HELPER_LABEL).plist
 PLIST_DEST := /Library/LaunchDaemons/$(HELPER_LABEL).plist
 XCODE_DEVELOPER_DIR := /Applications/Xcode.app/Contents/Developer
 
-.PHONY: build test app verify-app dmg appcast release-cask build-helper-dev dev-helper-install dev-helper-uninstall dev-app-sign
+.PHONY: build test app verify-app dmg appcast release-cask publish build-helper-dev dev-helper-install dev-helper-uninstall dev-app-sign
 
 build:
 	swift build
@@ -32,6 +32,11 @@ appcast:
 # Builds a universal Developer ID-signed DMG and prints its Homebrew checksum.
 release-cask:
 	./Scripts/release-cask.sh
+
+# Complete, guarded GitHub + Sparkle + Homebrew release workflow.
+# Usage: make publish VERSION=0.1.2
+publish:
+	./Scripts/publish-release.sh
 
 # Swift Testing is supplied by the full Xcode toolchain, while the active
 # developer directory may be Command Line Tools. Prefer the standard Xcode

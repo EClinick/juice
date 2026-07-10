@@ -4,6 +4,33 @@
 `dist/Juice.dmg`. Both commands use an ad-hoc signature unless a signing
 identity is supplied.
 
+## Routine release
+
+Once the one-time credentials below are installed on the release Mac, validate
+and publish a new stable semantic version with:
+
+```bash
+DRY_RUN=1 make publish VERSION=0.1.2
+make publish VERSION=0.1.2
+```
+
+`DRY_RUN=1` checks the branch, GitHub access, signing identity, notarization
+profile, current public version, and proposed build number without building or
+publishing anything. The full command then:
+
+1. runs the test suite;
+2. signs the app and bundled helper, notarizes and staples the app and DMG;
+3. creates and validates the signed Sparkle appcast;
+4. prepares the matching Homebrew cask version and SHA-256;
+5. creates the GitHub tag/release and uploads `Juice.dmg` and `appcast.xml`;
+6. pushes the cask update to `EClinick/homebrew-tap`; and
+7. downloads the public assets again to verify their contents and checksum.
+
+The public release is deliberately created only after all local artifacts pass
+validation. If a later network write fails, inspect which remote write
+succeeded before retrying; never delete or overwrite an already published tag
+without first confirming that no users received it.
+
 ## One-time Sparkle setup
 
 Generate an EdDSA key pair on the release Mac:
@@ -37,7 +64,7 @@ private key. Retain the old private key until the transition is complete.
 
    ```bash
    SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-   NOTARY_PROFILE="juice-notary" \
+   NOTARY_PROFILE="JuiceNotary" \
    VERSION=1.0.0 BUILD_NUMBER=1 make release-cask
    ```
 
@@ -61,8 +88,8 @@ private key. Retain the old private key until the transition is complete.
    and adds each DMG's `sparkle:edSignature`. Do not publish an unsigned
    appcast.
 
-4. Upload the final DMG and `appcast.xml` to the GitHub release. The stable
-   appcast URL is:
+4. `make publish` uploads the final DMG and `appcast.xml` to the GitHub release.
+   The stable appcast URL is:
 
    ```text
    https://github.com/EClinick/juice/releases/latest/download/appcast.xml
@@ -74,19 +101,15 @@ private key. Retain the old private key until the transition is complete.
 
 ## Homebrew cask
 
-Juice is distributed through the `EClinick/homebrew-tap` cask repository. After
-uploading the notarized `Juice.dmg` to a versioned GitHub release, calculate the
-checksum and update `Casks/juice.rb` in that tap:
+Juice is distributed through the `EClinick/homebrew-tap` cask repository.
+`make publish` updates `Casks/juice.rb` with the release version and the
+notarized DMG's SHA-256, validates the Ruby syntax, commits it, and pushes it
+only after the GitHub release succeeds. This keeps
+`brew install --cask EClinick/tap/juice` reproducible and tamper-evident.
 
-```bash
-VERSION=1.0.0 \
-SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-NOTARY_PROFILE="juice-notary" \
-make release-cask
-```
-
-The cask must use the GitHub release asset URL and the printed SHA-256. This
-keeps `brew install --cask EClinick/tap/juice` reproducible and tamper-evident.
+`make release-cask` and `make appcast` are lower-level diagnostic targets. They
+can recreate local artifacts but do not create the GitHub release or update the
+tap; use `make publish` for normal releases.
 
 The release helper derives its own Team ID and only accepts XPC connections
 from a `com.eclinick.juice` app signed by that same team. It is bundled under

@@ -125,28 +125,34 @@ before the daemon can run. Local ad-hoc builds use the development
 identifier-only trust check; public builds use the Team ID-pinned production
 check.
 
-To prepare a Developer ID release, install your certificate and a `notarytool`
-Keychain profile, then run:
+## Publishing a release
+
+Public releases are automated as one guarded transaction. On the configured
+release Mac, run a read-only preflight first, then publish:
 
 ```bash
-SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-NOTARY_PROFILE="juice-notary" \
-VERSION=1.0.0 make release-cask
+DRY_RUN=1 make publish VERSION=0.1.2
+make publish VERSION=0.1.2
 ```
 
-This creates a Developer ID-signed app, explicitly signs its bundled helper,
-notarizes and staples both the app and DMG, and prints the Homebrew checksum.
-Juice's Sparkle public key is embedded in the app; its private counterpart must
-remain in the release machine's Keychain. Sign every release in `appcast.xml`
-with `generate_appcast`:
+The publisher derives the next build number from the latest appcast, requires a
+clean `master` synchronized with GitHub, runs the test suite, signs the app and
+helper, notarizes and staples the app and DMG, signs the Sparkle appcast,
+creates the GitHub release, updates `EClinick/homebrew-tap`, and verifies the
+public artifacts and checksums. It will not create a tag or release if the
+local validation stages fail.
 
-```bash
-make appcast \
-  APPCAST_DOWNLOAD_URL_PREFIX="https://github.com/EClinick/juice/releases/download/v1.0.0/"
-```
+The release Mac must have GitHub CLI access to both repositories, the Developer
+ID identity `Developer ID Application: Ethan Clinick (U2MBGTFZM5)`, the
+case-sensitive `notarytool` Keychain profile `JuiceNotary`, and Juice's Sparkle
+private EdDSA key in Keychain. These credentials stay in Keychain and are never
+stored in the repository. See [docs/releasing.md](docs/releasing.md) for initial
+setup and recovery details, and [AGENT.md](AGENT.md) for the repository rule
+future coding agents should follow.
 
-Upload both the DMG and the resulting `dist/appcast.xml` to the versioned
-GitHub release so Sparkle can safely update installed copies.
+The lower-level `make release-cask` and `make appcast` targets are retained for
+diagnostics and local inspection; routine public releases should use
+`make publish`.
 
 `make dev-helper-install` builds the helper, copies it to `/Library/PrivilegedHelperTools/com.eclinick.juice.helper`, installs a launchd daemon plist at `/Library/LaunchDaemons/com.eclinick.juice.helper.plist`, and bootstraps it.
 The daemon starts on demand when the app connects and is idle otherwise.
