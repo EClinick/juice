@@ -9,21 +9,26 @@ import AppKit
 /// cleared by the System Settings > Menu Bar toggle. On the next launch the
 /// system pushes a hide action to the freshly created item roughly 150 ms in,
 /// and MenuBarExtra's built-in termination-on-removal behavior then quits the
-/// app before the icon ever appears - permanently, on every launch.
+/// app before the icon ever appears - permanently, on every launch. The same
+/// push is re-delivered whenever the status item scene reconnects, such as
+/// after a ControlCenter restart, so the protection cannot be limited to a
+/// startup window.
 ///
-/// Launching the app is an unambiguous request to show the icon again, so
-/// during startup this guard locates MenuBarExtra's underlying NSStatusItem,
-/// temporarily disables termination-on-removal, and re-asserts visibility
-/// whenever the system hides the item. A client-side `isVisible = true` wins
-/// against the stale record and sticks (verified on macOS 26.4). Once startup
-/// has settled, the standard remove-to-quit behavior is restored so users can
-/// still cmd-drag the icon away to quit the app.
+/// This guard locates MenuBarExtra's underlying NSStatusItem, permanently
+/// disables AppKit's termination-on-removal, and classifies every hide by
+/// when it arrives:
+/// - within the startup window it is the stale record replaying, so the item
+///   is re-asserted visible (a client-side `isVisible = true` wins and
+///   sticks; verified on macOS 26.4);
+/// - after the window it is a deliberate removal by the user, so the app
+///   quits itself, preserving the standard menu-bar-app UX that
+///   termination-on-removal provided.
 @MainActor
 enum StatusItemVisibilityGuard {
-    /// How long after launch the system's stale hide action is fought off.
-    /// The push arrives ~150 ms after item registration; a few seconds leaves
-    /// generous headroom without noticeably delaying remove-to-quit.
-    private static let protectionWindow: TimeInterval = 3
+    /// The stale push arrives ~150 ms after the item registers; a few seconds
+    /// of re-asserting leaves generous headroom without overriding a genuine
+    /// removal for long.
+    private static let startupWindow: TimeInterval = 5
 
     /// Polling cadence and budget for locating the status item. MenuBarExtra
     /// creates it during scene setup, typically well under a second in.
@@ -31,6 +36,7 @@ enum StatusItemVisibilityGuard {
     private static let locateAttempts = 60
 
     private static var observation: NSKeyValueObservation?
+    private static var protectionExpiry = Date.distantPast
 
     static func engage() {
         locateStatusItem(attemptsLeft: locateAttempts)
@@ -51,21 +57,32 @@ enum StatusItemVisibilityGuard {
     }
 
     private static func protect(_ item: NSStatusItem) {
-        // Suppress termination first: the hide action may already be in
-        // flight, and it must not find termination-on-removal armed.
+        // Suppress AppKit's own termination first: the stale hide action may
+        // already be in flight, and it must not find termination-on-removal
+        // armed. The guard takes over the remove-to-quit role below.
         item.behavior = []
+        protectionExpiry = Date().addingTimeInterval(startupWindow)
         if !item.isVisible {
             NSLog("Juice: menu bar item was hidden at launch; re-asserting visibility")
             item.isVisible = true
         }
         observation = item.observe(\.isVisible, options: [.new]) { item, _ in
             guard !item.isVisible else { return }
-            NSLog("Juice: system hid the menu bar item during startup; re-asserting visibility")
-            DispatchQueue.main.async { item.isVisible = true }
+            DispatchQueue.main.async { hidden(item) }
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + protectionWindow) {
-            observation = nil
-            item.behavior = .terminationOnRemoval
+    }
+
+    private static func hidden(_ item: NSStatusItem) {
+        if Date() < protectionExpiry {
+            NSLog("Juice: system hid the menu bar item during startup; re-asserting visibility")
+            item.isVisible = true
+        } else {
+            // A hide this long after startup is the user removing the icon
+            // (cmd-drag or the System Settings toggle). A menu-bar-only app
+            // without its icon is unreachable, so quit like MenuBarExtra's
+            // standard termination-on-removal would have.
+            NSLog("Juice: menu bar item was removed; quitting")
+            NSApp.terminate(nil)
         }
     }
 
