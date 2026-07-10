@@ -4,7 +4,7 @@ set -euo pipefail
 # Convert the single high-resolution source artwork into every representation
 # required by macOS, then assemble the app's .icns resource.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SOURCE="$ROOT/Assets/JuiceIcon.png"
+SOURCE="$ROOT/assets/JuiceIcon.png"
 OUTPUT="$ROOT/Packaging/Juice.icns"
 WORK_DIR="$(mktemp -d)"
 NORMALIZED_SOURCE="$WORK_DIR/JuiceIcon.png"
