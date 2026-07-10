@@ -22,6 +22,7 @@ struct JuiceApp: App {
     init() {
         // Menu bar only: no Dock icon, no main window.
         NSApplication.shared.setActivationPolicy(.accessory)
+        StatusItemVisibilityGuard.engage()
         Task {
             await HelperRegistrationController.shared.prepare()
             await Self.sampler?.updateRollupsIfStale()
