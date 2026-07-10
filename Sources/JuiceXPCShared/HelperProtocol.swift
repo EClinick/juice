@@ -5,7 +5,9 @@ import Foundation
 /// `fetchEnergyIntervals` replies with JSON-encoded `[EnergyInterval]`
 /// (or a typed NSError from the `HelperError` domain).
 @objc public protocol HelperProtocol {
-    /// Replies with (protocol version, helper version string).
+    /// Replies with (protocol version, helper version string). Current helpers
+    /// append a SHA-256 executable fingerprint so the app can verify launchd is
+    /// serving the payload bundled with this exact app build.
     func handshake(reply: @escaping (Int, String) -> Void)
 
     /// Replies with JSON-encoded `[EnergyInterval]` for rows whose start

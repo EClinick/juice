@@ -4,7 +4,7 @@ PLIST_SRC := Scripts/dev/$(HELPER_LABEL).plist
 PLIST_DEST := /Library/LaunchDaemons/$(HELPER_LABEL).plist
 XCODE_DEVELOPER_DIR := /Applications/Xcode.app/Contents/Developer
 
-.PHONY: build test app dmg appcast release-cask build-helper-dev dev-helper-install dev-helper-uninstall dev-app-sign
+.PHONY: build test app verify-app dmg appcast release-cask build-helper-dev dev-helper-install dev-helper-uninstall dev-app-sign
 
 build:
 	swift build
@@ -13,6 +13,11 @@ build:
 # ad-hoc signature by default; provide SIGNING_IDENTITY for a Developer ID build.
 app:
 	./Scripts/build-app.sh
+
+# Verifies the app contains a correctly described, architecture-matched, and
+# explicitly signed SMAppService launch daemon.
+verify-app:
+	./Scripts/verify-app.sh
 
 # Creates a drag-to-Applications disk image at dist/Juice.dmg.
 dmg:

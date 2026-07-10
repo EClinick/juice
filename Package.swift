@@ -39,7 +39,7 @@ let package = Package(
         ),
         .testTarget(
             name: "JuiceTests",
-            dependencies: ["JuiceCore"]
+            dependencies: ["JuiceCore", "JuiceXPCShared", "Juice"]
         )
     ]
 )

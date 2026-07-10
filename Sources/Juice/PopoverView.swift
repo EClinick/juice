@@ -4,14 +4,17 @@ import JuiceCore
 struct PopoverView: View {
     @ObservedObject var model: BatteryViewModel
     @ObservedObject private var updater = UpdateController.shared
+    @ObservedObject private var helper = HelperRegistrationController.shared
 
     private let selector = EnergySourceSelector()
 
     @State private var range: EnergyRange = .today
     @State private var topApps: [AppEnergy] = []
     @State private var timeline: [BatterySample] = []
+    @State private var timelineAvailability: TimelineAvailability = .loading
     @State private var timelineWindowEnd = Date()
-    @State private var origin: DataOrigin = .sample
+    @State private var origin: DataOrigin = .loading
+    @State private var energyError: String?
     @State private var insights: [Insight] = []
     @State private var coverageDayCount: Int?
     @State private var loadTask: Task<Void, Never>?
@@ -60,14 +63,21 @@ struct PopoverView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    if origin == .sample {
-                        Text("Sample data - helper not connected")
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
-                    }
                 }
                 TopAppsView(apps: topApps, range: $range)
-                if origin == .live, range != .today {
+                if origin == .loading {
+                    ProgressView()
+                        .controlSize(.small)
+                } else if origin == .unavailable {
+                    HelperStatusView(
+                        controller: helper,
+                        queryError: energyError,
+                        onRetryQuery: retryTopApps)
+                } else if topApps.isEmpty {
+                    Text("No app energy was recorded for this period.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                } else if origin == .live, range != .today {
                     Text("Live data only (about 3 days) - history store unavailable")
                         .font(.caption2)
                         .foregroundStyle(.orange)
@@ -83,7 +93,11 @@ struct PopoverView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 TimelineLegend()
-                if timeline.isEmpty {
+                if timelineAvailability == .unavailable {
+                    Text("Battery history is unavailable because the local store could not be opened.")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                } else if timeline.isEmpty {
                     Text("Collecting charge history - check back in a few minutes.")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
@@ -142,7 +156,12 @@ struct PopoverView: View {
             }
 
             HStack {
-                Button("Refresh") { model.refresh() }
+                Button("Refresh") {
+                    model.refresh()
+                    helper.refresh()
+                    loadTask?.cancel()
+                    loadTask = Task { await loadEnergy() }
+                }
                 Button("Stats") {
                     StatsWindowPresenter.shared.show(
                         selector: selector,
@@ -157,19 +176,25 @@ struct PopoverView: View {
         }
         .padding(14)
         .frame(width: 320)
-        .onAppear { model.refresh() }
+        .onAppear {
+            model.refresh()
+            helper.refresh()
+        }
         .task { await loadEnergy() }
         .onChange(of: range) {
             loadTask?.cancel()
             loadTask = Task { await loadTopApps() }
         }
+        .onChange(of: helper.readyGeneration) {
+            if origin == .unavailable { retryTopApps() }
+        }
     }
 
-    private var timelineSource: EnergySource {
+    private var timelineSource: EnergySource? {
         if let store = JuiceApp.sampler?.store {
             return StoreEnergySource(store: store)
         }
-        return selector.fallbackSource
+        return nil
     }
 
     private func loadEnergy() async {
@@ -178,12 +203,18 @@ struct PopoverView: View {
         // window end anchors both the store query and the chart's x-domain.
         if let store = JuiceApp.sampler?.store {
             let windowEnd = Date()
-            if let timeline = try? await StoreEnergySource(store: store)
-                .batteryTimeline(hours: 24, until: windowEnd) {
+            do {
+                let timeline = try await StoreEnergySource(store: store)
+                    .batteryTimeline(hours: 24, until: windowEnd)
                 self.timeline = timeline
                 self.timelineWindowEnd = windowEnd
+                timelineAvailability = .available
+            } catch {
+                timelineAvailability = .unavailable
             }
             insights = await InsightsProvider(store: store).currentInsights()
+        } else {
+            timelineAvailability = .unavailable
         }
     }
 
@@ -208,10 +239,20 @@ struct PopoverView: View {
         // query is in flight, the stale result must not overwrite the newer
         // selection's data.
         let range = self.range
+        origin = .loading
+        topApps = []
+        energyError = nil
+        coverageDayCount = nil
         let result = await selector.topApps(range: range)
         guard !Task.isCancelled, range == self.range else { return }
         topApps = result.apps
         origin = result.origin
         coverageDayCount = result.coverageDayCount
+        energyError = result.errorDescription
+    }
+
+    private func retryTopApps() {
+        loadTask?.cancel()
+        loadTask = Task { await loadTopApps() }
     }
 }

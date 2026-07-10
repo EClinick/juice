@@ -7,6 +7,12 @@ import JuiceXPCShared
 /// Fails closed: any error while establishing the code-signing requirement
 /// results in the connection being rejected.
 final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
+    #if DEV_HELPER
+    static let securityMode = "JUICE_HELPER_SECURITY_MODE=DEVELOPMENT_IDENTIFIER_ONLY"
+    #else
+    static let securityMode = "JUICE_HELPER_SECURITY_MODE=PRODUCTION_TEAM_ID_PINNED"
+    #endif
+
     func listener(
         _ listener: NSXPCListener,
         shouldAcceptNewConnection connection: NSXPCConnection

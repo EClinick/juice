@@ -5,6 +5,9 @@ public enum JuiceXPC {
     /// The launchd Mach service name the helper listens on.
     public static let machServiceName = "com.eclinick.juice.helper"
 
+    /// The bundled launch-daemon property list registered by SMAppService.
+    public static let daemonPlistName = "com.eclinick.juice.helper.plist"
+
     /// The bundle identifier of the main application.
     public static let appBundleID = "com.eclinick.juice"
 

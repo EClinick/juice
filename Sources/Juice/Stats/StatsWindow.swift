@@ -14,7 +14,7 @@ final class StatsWindowPresenter {
 
     private init() {}
 
-    func show(selector: EnergySourceSelector, timelineSource: EnergySource, reading: BatteryReading?) {
+    func show(selector: EnergySourceSelector, timelineSource: EnergySource?, reading: BatteryReading?) {
         NSApp.activate(ignoringOtherApps: true)
 
         let root = StatsView(

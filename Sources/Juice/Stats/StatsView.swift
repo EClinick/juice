@@ -12,8 +12,9 @@ struct StatsView: View {
     static let minimumContentHeight: CGFloat = 420
 
     let selector: EnergySourceSelector
-    let timelineSource: EnergySource
+    let timelineSource: EnergySource?
     let reading: BatteryReading?
+    @ObservedObject private var helper = HelperRegistrationController.shared
 
     /// The charge timeline always covers the last 7 days.
     private static let timelineHours = 24 * 7
@@ -21,9 +22,11 @@ struct StatsView: View {
     @State private var range: EnergyRange = .today
     @State private var apps: [AppEnergy] = []
     @State private var timeline: [BatterySample] = []
+    @State private var timelineAvailability: TimelineAvailability = .loading
     @State private var timelineWindowEnd = Date()
     @State private var refreshedAt = Date()
-    @State private var origin: DataOrigin = .sample
+    @State private var origin: DataOrigin = .loading
+    @State private var energyError: String?
     @State private var coverageDayCount: Int?
     @State private var loadTask: Task<Void, Never>?
 
@@ -63,6 +66,9 @@ struct StatsView: View {
         .onChange(of: range) {
             loadTask?.cancel()
             loadTask = Task { await loadApps() }
+        }
+        .onChange(of: helper.readyGeneration) {
+            if origin == .unavailable { retryApps() }
         }
     }
 
@@ -109,7 +115,11 @@ struct StatsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            if apps.isEmpty {
+            if origin == .loading {
+                ProgressView()
+                    .controlSize(.small)
+                Spacer()
+            } else if apps.isEmpty, origin != .unavailable {
                 Text("No energy data available.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
@@ -134,10 +144,8 @@ struct StatsView: View {
                 }
             }
 
-            if origin == .sample {
-                Text("Sample data - helper not connected")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
+            if origin == .unavailable {
+                HelperStatusView(queryError: energyError, onRetryQuery: retryApps)
             } else if origin == .live, range != .today {
                 Text("Live data only (about 3 days) - history store unavailable")
                     .font(.caption2)
@@ -161,8 +169,13 @@ struct StatsView: View {
                 .foregroundStyle(.secondary)
             TimelineLegend()
 
-            if timeline.isEmpty {
-                Text("Charge history arrives with the local sample store.")
+            if timelineAvailability == .unavailable {
+                Text("Battery history is unavailable because the local store could not be opened.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                Spacer()
+            } else if timeline.isEmpty {
+                Text("Collecting local battery history.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                 Spacer()
@@ -191,12 +204,22 @@ struct StatsView: View {
                 Text("\(cycles) cycles")
                 Text("·")
             }
-            Text("Data from macOS powerlog · refreshed \(refreshedAt.formatted(date: .omitted, time: .shortened))")
+            Text("\(footerSource) · refreshed \(refreshedAt.formatted(date: .omitted, time: .shortened))")
             Spacer()
         }
         .font(.caption)
         .foregroundStyle(.secondary)
         .padding(16)
+    }
+
+    private var footerSource: String {
+        switch origin {
+        case .store, .live: return "App energy from macOS powerlog"
+        case .loading, .unavailable:
+            return timelineAvailability == .available
+                ? "Battery history collected locally"
+                : "Live battery status only"
+        }
     }
 
     // MARK: - Loading
@@ -211,10 +234,18 @@ struct StatsView: View {
         // One captured window end anchors both the store query and the
         // chart's x-domain.
         let windowEnd = Date()
-        if let timeline = try? await timelineSource.batteryTimeline(
-            hours: Self.timelineHours, until: windowEnd) {
+        guard let timelineSource else {
+            timelineAvailability = .unavailable
+            return
+        }
+        do {
+            let timeline = try await timelineSource.batteryTimeline(
+                hours: Self.timelineHours, until: windowEnd)
             self.timeline = timeline
             self.timelineWindowEnd = windowEnd
+            timelineAvailability = .available
+        } catch {
+            timelineAvailability = .unavailable
         }
     }
 
@@ -223,11 +254,21 @@ struct StatsView: View {
         // is in flight, the stale result must not overwrite the newer
         // selection's data.
         let range = self.range
+        origin = .loading
+        apps = []
+        energyError = nil
+        coverageDayCount = nil
         let result = await selector.topApps(range: range)
         guard !Task.isCancelled, range == self.range else { return }
         apps = result.apps.sorted { $0.energyWh > $1.energyWh }
         origin = result.origin
         coverageDayCount = result.coverageDayCount
+        energyError = result.errorDescription
+    }
+
+    private func retryApps() {
+        loadTask?.cancel()
+        loadTask = Task { await loadApps() }
     }
 }
 

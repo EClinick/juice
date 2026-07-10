@@ -5,6 +5,15 @@ import JuiceXPCShared
 final class HelperService: NSObject, HelperProtocol {
     /// Human-readable helper build version, reported via handshake.
     static let helperVersion = "1.1.0"
+    /// Captured before the XPC listener starts. An old process therefore keeps
+    /// reporting the bytes it actually launched from even if Sparkle replaces
+    /// the app bundle at the same filesystem path later.
+    private static let processStartFingerprint =
+        HelperExecutableFingerprint.currentExecutable() ?? "unavailable"
+
+    static func prepareRuntimeIdentity() {
+        _ = processStartFingerprint
+    }
 
     private let reader: PowerlogReader
 
@@ -13,7 +22,9 @@ final class HelperService: NSObject, HelperProtocol {
     }
 
     func handshake(reply: @escaping (Int, String) -> Void) {
-        reply(JuiceXPC.protocolVersion, Self.helperVersion)
+        reply(
+            JuiceXPC.protocolVersion,
+            "\(Self.helperVersion)|\(HelperExecutableFingerprint.replyPrefix)\(Self.processStartFingerprint)")
     }
 
     func fetchEnergyIntervals(sinceEpoch: Double, reply: @escaping (Data?, NSError?) -> Void) {

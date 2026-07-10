@@ -31,18 +31,22 @@ private key. Retain the old private key until the transition is complete.
    security find-identity -v -p codesigning
    ```
 
-2. Build the disk image with the certificate's exact name:
+2. Store App Store Connect credentials in a `notarytool` Keychain profile, then
+   build, verify, notarize, and staple the release with the certificate's exact
+   name:
 
    ```bash
    SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-   VERSION=1.0.0 BUILD_NUMBER=1 make dmg
+   NOTARY_PROFILE="juice-notary" \
+   VERSION=1.0.0 BUILD_NUMBER=1 make release-cask
    ```
 
-3. Submit `dist/Juice.dmg` to Apple's notary service, then staple the approved
-   ticket. Sparkle signs the complete archive, so this must happen before
-   generating the appcast.
+   The release command verifies the bundled SMAppService daemon, notarizes and
+   staples Juice.app, packages that exact app without rebuilding it, then
+   notarizes and staples the DMG. Apps containing launch daemons must be
+   notarized; do not publish a `make dmg` development artifact.
 
-4. Sign the release with Sparkle. Juice's EdDSA public key is embedded in its
+3. Sign the release with Sparkle. Juice's EdDSA public key is embedded in its
    Info.plist; its private counterpart must remain in the release machine's
    Keychain or CI secret store. Generate the feed from the final notarized and
    stapled DMG:
@@ -57,7 +61,7 @@ private key. Retain the old private key until the transition is complete.
    and adds each DMG's `sparkle:edSignature`. Do not publish an unsigned
    appcast.
 
-5. Upload the final DMG and `appcast.xml` to the GitHub release. The stable
+4. Upload the final DMG and `appcast.xml` to the GitHub release. The stable
    appcast URL is:
 
    ```text
@@ -77,6 +81,7 @@ checksum and update `Casks/juice.rb` in that tap:
 ```bash
 VERSION=1.0.0 \
 SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+NOTARY_PROFILE="juice-notary" \
 make release-cask
 ```
 
@@ -84,7 +89,10 @@ The cask must use the GitHub release asset URL and the printed SHA-256. This
 keeps `brew install --cask EClinick/tap/juice` reproducible and tamper-evident.
 
 The release helper derives its own Team ID and only accepts XPC connections
-from a `com.eclinick.juice` app signed by that same team. The current
-`make dev-helper-install` workflow remains for local development; it is not a
-shipping installer. A production installer should register the daemon through
-`SMAppService` and surface macOS's approval flow to the user.
+from a `com.eclinick.juice` app signed by that same team. It is bundled under
+`Contents/Library/HelperTools`, described by the plist under
+`Contents/Library/LaunchDaemons`, and registered through `SMAppService`.
+`make dev-helper-install` remains only for running the raw SwiftPM executable.
+Before testing a packaged app, run `make dev-helper-uninstall`; the legacy job
+uses the same Mach service and otherwise invalidates the test. Perform the final
+registration, admin-approval, reboot, and update checks from a clean macOS VM.

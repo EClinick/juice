@@ -13,14 +13,23 @@ enum HelperState {
 
 /// Typed errors raised by ``HelperClient`` itself (as opposed to errors
 /// forwarded from the helper, which use the `HelperError` domain).
-enum HelperClientError: Error {
+enum HelperClientError: LocalizedError {
     /// The installed helper predates the requested capability. Callers that
     /// can live without the data (e.g. backfill) should skip silently.
     case helperOutdated
+    /// The daemon accepted a connection but did not answer in time.
+    case timedOut
+
+    var errorDescription: String? {
+        switch self {
+        case .helperOutdated: return "The installed helper is too old."
+        case .timedOut: return "The helper did not respond in time."
+        }
+    }
 }
 
 /// Wraps the NSXPCConnection to the privileged helper with async APIs.
-final class HelperClient {
+final class HelperClient: @unchecked Sendable {
     private var connection: NSXPCConnection?
     private let lock = NSLock()
 
@@ -54,32 +63,40 @@ final class HelperClient {
             options: .privileged
         )
         newConnection.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
+        let weakConnection = WeakXPCConnection(newConnection)
         newConnection.invalidationHandler = { [weak self] in
             // The helper is gone (uninstalled or denied); drop the connection
             // so the next call builds a fresh one instead of failing forever.
-            self?.dropConnection()
+            guard let invalidatedConnection = weakConnection.value else { return }
+            self?.dropConnection(expected: invalidatedConnection)
+            self?.reportConnectionFailure()
         }
-        newConnection.interruptionHandler = {
+        newConnection.interruptionHandler = { [weak self] in
             // The helper crashed or was killed; launchd relaunches it on the
             // next message, so keeping the connection is fine.
             NSLog("Juice: helper connection interrupted")
+            self?.reportConnectionFailure()
         }
         newConnection.resume()
         connection = newConnection
         return newConnection
     }
 
-    private func dropConnection() {
+    private func dropConnection(expected: NSXPCConnection) {
         lock.lock()
         defer { lock.unlock() }
-        connection = nil
+        if connection === expected {
+            connection = nil
+        }
     }
 
     private func remoteProxy(
         errorHandler: @escaping (Error) -> Void
-    ) -> HelperProtocol? {
-        currentConnection()
-            .remoteObjectProxyWithErrorHandler(errorHandler) as? HelperProtocol
+    ) -> (proxy: HelperProtocol, connection: NSXPCConnection)? {
+        let connection = currentConnection()
+        guard let proxy = connection.remoteObjectProxyWithErrorHandler(errorHandler)
+            as? HelperProtocol else { return nil }
+        return (proxy, connection)
     }
 
     // MARK: - Async API
@@ -89,7 +106,8 @@ final class HelperClient {
     func handshake() async throws -> (Int, String) {
         try await withCheckedThrowingContinuation { continuation in
             let resumed = OneShot()
-            guard let proxy = remoteProxy(errorHandler: { error in
+            guard let remote = remoteProxy(errorHandler: { error in
+                self.reportConnectionFailure()
                 resumed.run { continuation.resume(throwing: error) }
             }) else {
                 resumed.run {
@@ -98,7 +116,15 @@ final class HelperClient {
                 }
                 return
             }
-            proxy.handshake { version, helperVersion in
+            let requestConnection = SendableXPCConnection(remote.connection)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 12) { [weak self] in
+                resumed.run {
+                    self?.invalidateConnection(expected: requestConnection.value)
+                    self?.reportConnectionFailure()
+                    continuation.resume(throwing: HelperClientError.timedOut)
+                }
+            }
+            remote.proxy.handshake { version, helperVersion in
                 resumed.run { continuation.resume(returning: (version, helperVersion)) }
             }
         }
@@ -151,7 +177,8 @@ final class HelperClient {
     ) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
             let resumed = OneShot()
-            guard let proxy = remoteProxy(errorHandler: { error in
+            guard let remote = remoteProxy(errorHandler: { error in
+                self.reportConnectionFailure()
                 resumed.run { continuation.resume(throwing: error) }
             }) else {
                 resumed.run {
@@ -160,7 +187,15 @@ final class HelperClient {
                 }
                 return
             }
-            invoke(proxy) { data, error in
+            let requestConnection = SendableXPCConnection(remote.connection)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 12) { [weak self] in
+                resumed.run {
+                    self?.invalidateConnection(expected: requestConnection.value)
+                    self?.reportConnectionFailure()
+                    continuation.resume(throwing: HelperClientError.timedOut)
+                }
+            }
+            invoke(remote.proxy) { data, error in
                 resumed.run {
                     // The protocol guarantees exactly one of (data, error) is
                     // set. Anything else is a protocol violation we must not
@@ -179,6 +214,38 @@ final class HelperClient {
             }
         }
     }
+
+    private func invalidateConnection(expected: NSXPCConnection) {
+        lock.lock()
+        let oldConnection: NSXPCConnection?
+        if connection === expected {
+            oldConnection = connection
+            connection = nil
+        } else {
+            oldConnection = nil
+        }
+        lock.unlock()
+        oldConnection?.invalidate()
+    }
+
+    private func reportConnectionFailure() {
+        Task { @MainActor in
+            HelperRegistrationController.shared.refresh()
+        }
+    }
+}
+
+/// Foundation does not annotate NSXPCConnection as Sendable even though its
+/// public contract is queue-safe. These tiny wrappers make the intended strong
+/// or weak capture semantics explicit at concurrency boundaries.
+private final class SendableXPCConnection: @unchecked Sendable {
+    let value: NSXPCConnection
+    init(_ value: NSXPCConnection) { self.value = value }
+}
+
+private final class WeakXPCConnection: @unchecked Sendable {
+    weak var value: NSXPCConnection?
+    init(_ value: NSXPCConnection) { self.value = value }
 }
 
 /// Guards a continuation against double-resume: XPC can invoke both the

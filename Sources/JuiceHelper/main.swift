@@ -44,6 +44,8 @@ if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--selftest" {
 }
 
 // Normal mode: serve the privileged XPC Mach service.
+NSLog("JuiceHelper: \(ListenerDelegate.securityMode)")
+HelperService.prepareRuntimeIdentity()
 let delegate = ListenerDelegate()
 let listener = NSXPCListener(machServiceName: JuiceXPC.machServiceName)
 listener.delegate = delegate

@@ -25,10 +25,17 @@ enum EnergyRange: String, CaseIterable {
     case week = "Week"
 }
 
+/// Whether a persisted battery timeline can be queried independently of
+/// whether that timeline has accumulated any points yet.
+enum TimelineAvailability {
+    case loading
+    case available
+    case unavailable
+}
+
 /// Supplies energy and battery data to the UI.
 ///
-/// Implemented today by ``MockEnergySource``; a privileged helper will provide
-/// the real implementation later, letting the UI stay unchanged.
+/// Implemented by the privileged powerlog source and the app's local store.
 protocol EnergySource {
     func topApps(range: EnergyRange) async throws -> [AppEnergy]
     /// Battery samples covering the window `[until - hours, until]`. The

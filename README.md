@@ -75,10 +75,10 @@ flowchart TB
 
 Security model for the privileged helper:
 
-- The helper is about 350 lines, exposes exactly two XPC methods (a version handshake and a time-bounded energy query), and is easy to audit.
+- The helper exposes a version handshake plus time-bounded energy and battery-history queries, and is small enough to audit directly.
 - It validates the connecting client's code signature on every message and rejects root clients.
 - It never opens the live system database in place; it snapshot-copies the database and reads the copy read-only, so it cannot contend with or corrupt the system's writer.
-- If you decline to install it, the app still works with live battery data; only per-app history is unavailable.
+- If you decline to approve it, the app still works with live battery data; per-app energy and powerlog backfill remain unavailable.
 
 ## Requirements
 
@@ -112,23 +112,33 @@ Create a launchable menu-bar app at `dist/Juice.app`:
 
 ```bash
 make app
-open dist/Juice.app
+ditto dist/Juice.app /Applications/Juice.app
+open /Applications/Juice.app
 ```
 
-The local build uses an ad-hoc signature and works with the existing
-development helper. To prepare a Developer ID release, install your
-certificates in Keychain Access and provide the application certificate name:
+The app bundle includes its launch daemon and registers it through
+`SMAppService`. Juice intentionally registers only while installed under
+`/Applications`; launching from `dist` or directly from the DMG shows an
+install-location instruction instead of creating an ejectable daemon path.
+macOS then requires approval under System Settings → General → Login Items
+before the daemon can run. Local ad-hoc builds use the development
+identifier-only trust check; public builds use the Team ID-pinned production
+check.
+
+To prepare a Developer ID release, install your certificate and a `notarytool`
+Keychain profile, then run:
 
 ```bash
 SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=1.0.0 make dmg
+NOTARY_PROFILE="juice-notary" \
+VERSION=1.0.0 make release-cask
 ```
 
-This creates `dist/Juice.dmg`, with Juice.app and an Applications shortcut.
-Before sharing it, notarize the disk image and staple Apple's ticket. Juice's
-Sparkle public key is embedded in the app; its private counterpart must remain
-in the release machine's Keychain. Sign every release in `appcast.xml` with
-`generate_appcast`:
+This creates a Developer ID-signed app, explicitly signs its bundled helper,
+notarizes and staples both the app and DMG, and prints the Homebrew checksum.
+Juice's Sparkle public key is embedded in the app; its private counterpart must
+remain in the release machine's Keychain. Sign every release in `appcast.xml`
+with `generate_appcast`:
 
 ```bash
 make appcast \
@@ -136,16 +146,19 @@ make appcast \
 ```
 
 Upload both the DMG and the resulting `dist/appcast.xml` to the versioned
-GitHub release so Sparkle can safely update installed copies. The
-privileged helper remains a separate admin-approved install until it is moved
-to an `SMAppService` launch-daemon package.
+GitHub release so Sparkle can safely update installed copies.
 
 `make dev-helper-install` builds the helper, copies it to `/Library/PrivilegedHelperTools/com.eclinick.juice.helper`, installs a launchd daemon plist at `/Library/LaunchDaemons/com.eclinick.juice.helper.plist`, and bootstraps it.
 The daemon starts on demand when the app connects and is idle otherwise.
 Remove everything cleanly with `make dev-helper-uninstall`.
+Always remove that legacy daemon before testing a packaged build: it uses the
+same Mach service and can hide a broken SMAppService registration. Validate the
+production approval flow from a clean macOS VM or snapshot.
 
-Note that the development install uses an ad-hoc signature with an identifier-only client check, which is fine for a machine you control but is not the production trust model.
-Signed releases will use `SMAppService` with a Team ID pinned requirement and a one-click approval in System Settings.
+The legacy development install uses an ad-hoc signature with an identifier-only
+client check, which is fine for a machine you control but is not the production
+trust model. Packaged Developer ID releases use `SMAppService` and require the
+helper and app to share the same Team ID.
 
 ## How the numbers work
 
@@ -179,8 +192,6 @@ Juice reads the system's power accounting and battery state, stores derived data
 
 ## Roadmap
 
-- Developer ID signed and notarized releases (DMG and Homebrew cask).
-- `SMAppService` helper installation with one-click approval in System Settings, replacing the sudo Makefile flow.
 - Backfilling older history from the powerlog archive files macOS keeps on disk.
 
 ## Status
