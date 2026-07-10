@@ -86,7 +86,9 @@ Security model for the privileged helper:
 
 ## Install (from source)
 
-Juice is currently source-only; signed and notarized releases are on the roadmap.
+Juice can be packaged as a normal macOS application bundle for local use. A
+Developer ID certificate is required to distribute a notarized release to other
+people.
 
 ```bash
 git clone https://github.com/EClinick/juice.git
@@ -102,6 +104,28 @@ make dev-app-sign
 # Run
 ./.build/debug/Juice
 ```
+
+## Build a macOS app bundle
+
+Create a launchable menu-bar app at `dist/Juice.app`:
+
+```bash
+make app
+open dist/Juice.app
+```
+
+The local build uses an ad-hoc signature and works with the existing
+development helper. To prepare a Developer ID release, install your
+certificates in Keychain Access and provide the application certificate name:
+
+```bash
+SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" VERSION=1.0.0 make dmg
+```
+
+This creates `dist/Juice.dmg`, with Juice.app and an Applications shortcut.
+Before sharing it, notarize the disk image and staple Apple's ticket. The
+privileged helper remains a separate admin-approved install until it is moved
+to an `SMAppService` launch-daemon package.
 
 `make dev-helper-install` builds the helper, copies it to `/Library/PrivilegedHelperTools/com.eclinick.juice.helper`, installs a launchd daemon plist at `/Library/LaunchDaemons/com.eclinick.juice.helper.plist`, and bootstraps it.
 The daemon starts on demand when the app connects and is idle otherwise.
