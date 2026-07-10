@@ -42,6 +42,26 @@ for required_arch in arm64 x86_64; do
         fail "main executable is missing required architecture $required_arch"
     lipo "$HELPER_BINARY" -verify_arch "$required_arch" || \
         fail "helper is missing required architecture $required_arch"
+
+    # The app-bundle rpath must be part of the signed Mach-O layout. A stale
+    # linker signature before this rpath passes static codesign verification on
+    # newer macOS versions but is rejected when the process is loaded on 26.3.
+    if ! otool -arch "$required_arch" -l "$APP_BINARY" | awk '
+        $1 == "cmd" {
+            current_command = $2
+            if ($2 == "LC_CODE_SIGNATURE") signature_line = NR
+        }
+        current_command == "LC_RPATH" &&
+            $1 == "path" && $2 == "@executable_path/../Frameworks" {
+            framework_rpath_line = NR
+        }
+        END {
+            exit !(framework_rpath_line > 0 &&
+                signature_line > framework_rpath_line)
+        }
+    '; then
+        fail "$required_arch app-bundle rpath must precede LC_CODE_SIGNATURE"
+    fi
 done
 
 codesign --verify --strict --verbose=2 "$HELPER_BINARY"

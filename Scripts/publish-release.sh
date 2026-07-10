@@ -65,7 +65,7 @@ wait_for_public_appcast_version() {
     die "VERSION must be a stable semantic version such as 0.1.2"
 [[ "$DRY_RUN" == "0" || "$DRY_RUN" == "1" ]] || die "DRY_RUN must be 0 or 1"
 
-for command in awk cmp codesign curl ditto gh git grep hdiutil lipo make perl plutil rg ruby security sed shasum spctl strings swift xcrun xmllint; do
+for command in awk cmp codesign curl ditto gh git grep hdiutil lipo make otool perl plutil rg ruby security sed shasum spctl strings swift xcrun xmllint; do
     require_command "$command"
 done
 
