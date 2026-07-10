@@ -4,7 +4,7 @@ PLIST_SRC := Scripts/dev/$(HELPER_LABEL).plist
 PLIST_DEST := /Library/LaunchDaemons/$(HELPER_LABEL).plist
 XCODE_DEVELOPER_DIR := /Applications/Xcode.app/Contents/Developer
 
-.PHONY: build test app dmg release-cask build-helper-dev dev-helper-install dev-helper-uninstall dev-app-sign
+.PHONY: build test app dmg appcast release-cask build-helper-dev dev-helper-install dev-helper-uninstall dev-app-sign
 
 build:
 	swift build
@@ -17,6 +17,12 @@ app:
 # Creates a drag-to-Applications disk image at dist/Juice.dmg.
 dmg:
 	./Scripts/create-dmg.sh
+
+# Generates a signed appcast.xml next to the release archives. Pass the
+# versioned GitHub release asset URL prefix, for example:
+# make appcast APPCAST_DOWNLOAD_URL_PREFIX=https://github.com/EClinick/juice/releases/download/v1.0.0/
+appcast:
+	./Scripts/generate-appcast.sh
 
 # Builds a universal Developer ID-signed DMG and prints its Homebrew checksum.
 release-cask:

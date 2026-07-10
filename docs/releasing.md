@@ -17,11 +17,38 @@ identity is supplied.
 
    ```bash
    SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+   SPARKLE_PUBLIC_ED_KEY="your Sparkle EdDSA public key" \
    VERSION=1.0.0 BUILD_NUMBER=1 make dmg
    ```
 
 3. Submit `dist/Juice.dmg` to Apple's notary service, then staple the approved
-   ticket before distribution.
+   ticket. Sparkle signs the complete archive, so this must happen before
+   generating the appcast.
+
+4. Sign the release with Sparkle. Generate the EdDSA key pair once with
+   Sparkle's `generate_keys`, store the private key in the release secret
+   store, then generate the feed from the final notarized and stapled DMG:
+
+   ```bash
+   make appcast \
+     APPCAST_DOWNLOAD_URL_PREFIX="https://github.com/EClinick/juice/releases/download/v1.0.0/"
+   ```
+
+   `generate_appcast` reads the private key from the release machine's
+   Keychain (or `SPARKLE_PRIVATE_ED_KEY` in CI), creates `dist/appcast.xml`,
+   and adds each DMG's `sparkle:edSignature`. Do not publish an unsigned
+   appcast.
+
+5. Upload the final DMG and `appcast.xml` to the GitHub release. The stable
+   appcast URL is:
+
+   ```text
+   https://github.com/EClinick/juice/releases/latest/download/appcast.xml
+   ```
+
+   Sparkle uses that signed feed for both automatic updates and the app's
+   manual “Check for Updates…” action, so Homebrew users do not need to run
+   `brew update` to receive a newer Juice version.
 
 ## Homebrew cask
 
@@ -32,6 +59,7 @@ checksum and update `Casks/juice.rb` in that tap:
 ```bash
 VERSION=1.0.0 \
 SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+SPARKLE_PUBLIC_ED_KEY="your Sparkle EdDSA public key" \
 make release-cask
 ```
 

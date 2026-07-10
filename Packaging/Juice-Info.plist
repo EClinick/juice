@@ -28,5 +28,13 @@
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <!--
+      The feed URL and EdDSA public key are injected by build-app.sh. Keeping
+      automatic updates disabled here makes manual checks the safe default.
+    -->
+    <key>SUEnableAutomaticChecks</key>
+    <false/>
+    <key>SUAutomaticallyUpdate</key>
+    <false/>
 </dict>
 </plist>

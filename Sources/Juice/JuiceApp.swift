@@ -15,6 +15,9 @@ struct JuiceApp: App {
     }()
 
     @StateObject private var model = BatteryViewModel(onReading: JuiceApp.handleReading)
+    // Create the updater with the app so Sparkle can schedule opted-in checks
+    // even while the menu bar popover is closed.
+    private let updater = UpdateController.shared
 
     init() {
         // Menu bar only: no Dock icon, no main window.
