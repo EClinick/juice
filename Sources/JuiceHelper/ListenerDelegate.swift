@@ -66,8 +66,14 @@ final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
             return nil
         }
 
+        // kSecCodeInfoTeamIdentifier is only present when certificate-derived
+        // signing information is explicitly requested; with default flags the
+        // dictionary omits it, so this lookup returned nil and the helper
+        // rejected every client.
         var signingInfo: CFDictionary?
-        guard SecCodeCopySigningInformation(staticCode, SecCSFlags(), &signingInfo) == errSecSuccess,
+        guard SecCodeCopySigningInformation(
+                staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &signingInfo
+            ) == errSecSuccess,
             let info = signingInfo as? [String: Any] else {
             return nil
         }
