@@ -51,7 +51,7 @@ final class AppDetailPresenter {
         let window = NSWindow(contentViewController: controller)
         window.title = title
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.setContentSize(NSSize(width: 460, height: 380))
+        window.setContentSize(NSSize(width: 540, height: 560))
         window.setFrameAutosaveName("JuiceAppDetailWindow")
         window.isReleasedWhenClosed = false
 

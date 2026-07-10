@@ -2,8 +2,9 @@ HELPER_LABEL := com.eclinick.juice.helper
 HELPER_DEST := /Library/PrivilegedHelperTools/$(HELPER_LABEL)
 PLIST_SRC := Scripts/dev/$(HELPER_LABEL).plist
 PLIST_DEST := /Library/LaunchDaemons/$(HELPER_LABEL).plist
+XCODE_DEVELOPER_DIR := /Applications/Xcode.app/Contents/Developer
 
-.PHONY: build app dmg release-cask build-helper-dev dev-helper-install dev-helper-uninstall dev-app-sign
+.PHONY: build test app dmg release-cask build-helper-dev dev-helper-install dev-helper-uninstall dev-app-sign
 
 build:
 	swift build
@@ -20,6 +21,17 @@ dmg:
 # Builds a universal Developer ID-signed DMG and prints its Homebrew checksum.
 release-cask:
 	./Scripts/release-cask.sh
+
+# Swift Testing is supplied by the full Xcode toolchain, while the active
+# developer directory may be Command Line Tools. Prefer the standard Xcode
+# install so this reliably runs the actual suite.
+test:
+	@if [ -d "$(XCODE_DEVELOPER_DIR)" ]; then \
+		DEVELOPER_DIR="$(XCODE_DEVELOPER_DIR)" swift test; \
+	else \
+		echo "Full Xcode is required to run Juice's Swift Testing suite."; \
+		exit 1; \
+	fi
 
 build-helper-dev:
 	swift build -c release -Xswiftc -DDEV_HELPER

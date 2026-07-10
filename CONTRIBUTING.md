@@ -8,9 +8,8 @@ Thanks for your interest in contributing.
 swift build
 
 # Tests need the full Xcode toolchain (the Testing framework is not in
-# Command Line Tools). If plain `swift test` fails with "no such module
-# 'Testing'", use:
-DEVELOPER_DIR=/Applications/Xcode.app swift test
+# Command Line Tools).
+make test
 ```
 
 For end-to-end testing against the installed privileged helper, use `make dev-probe`, or `./.build/debug/JuiceXPCProbe --app <bundle-id>` for the per-app breakdown path.

@@ -147,9 +147,8 @@ Signed releases will use `SMAppService` with a Team ID pinned requirement and a 
 ```bash
 swift build
 
-# Tests (the Testing framework needs the full Xcode toolchain,
-# not just Command Line Tools)
-DEVELOPER_DIR=/Applications/Xcode.app swift test
+# Tests (uses the full Xcode toolchain rather than Command Line Tools)
+make test
 
 # End-to-end XPC test against the installed helper
 make dev-probe

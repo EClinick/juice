@@ -21,10 +21,56 @@ struct AppDetailView: View {
     private enum LoadState {
         case loading
         case loaded(AppEnergyBreakdown)
-        case failed
+        case failed(String)
+    }
+
+    private enum ProcessLoadState: Equatable {
+        case idle
+        case loading
+        case loaded
+        case timedOut
+    }
+
+    private enum DetailLoadError: LocalizedError {
+        case timedOut
+
+        var errorDescription: String? {
+            "Energy details took too long to load. Try opening this app again."
+        }
+    }
+
+    /// A non-blocking race between the helper request and its timeout. The
+    /// XPC request is deliberately unstructured: cancellation cannot force a
+    /// missing XPC reply to return, so the UI must not wait for it on timeout.
+    private final class DetailLoadGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<AppEnergyBreakdown, Error>?
+        private var resolved = false
+
+        func install(_ continuation: CheckedContinuation<AppEnergyBreakdown, Error>) {
+            lock.lock()
+            self.continuation = continuation
+            lock.unlock()
+        }
+
+        func resolve(_ result: Result<AppEnergyBreakdown, Error>) {
+            lock.lock()
+            guard !resolved, let continuation else {
+                lock.unlock()
+                return
+            }
+            resolved = true
+            self.continuation = nil
+            lock.unlock()
+            continuation.resume(with: result)
+        }
     }
 
     @State private var state: LoadState = .loading
+    @State private var processes: [AppProcess] = []
+    @State private var showsAllProcesses = false
+    @State private var processLoadState: ProcessLoadState = .idle
+    @State private var processLoadID: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -32,26 +78,86 @@ struct AppDetailView: View {
             case .loading:
                 ProgressView("Loading energy details…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            case .failed:
+            case .failed(let message):
                 VStack(spacing: 6) {
                     Image(systemName: "bolt.slash")
                         .font(.title2)
                         .foregroundStyle(.secondary)
-                    Text("Detailed data needs the helper connection")
+                    Text(message)
                         .font(.callout)
                         .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                 }
+                .padding(24)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .loaded(let breakdown):
                 content(breakdown)
             }
         }
-        .frame(minWidth: 460, minHeight: 380)
+        .frame(minWidth: 540, minHeight: 520)
         .task {
             do {
-                state = .loaded(try await provider())
+                let breakdown = try await loadBreakdown()
+                state = .loaded(breakdown)
+                loadProcesses()
             } catch {
-                state = .failed
+                state = .failed(
+                    (error as? LocalizedError)?.errorDescription
+                        ?? "Detailed data needs the helper connection."
+                )
+            }
+        }
+    }
+
+    /// Process discovery is helpful context, but it must never delay the
+    /// authoritative energy summary. A slow system process table degrades to
+    /// an explanatory process-state message after a short timeout.
+    private func loadProcesses() {
+        let loadID = UUID()
+        processLoadID = loadID
+        processLoadState = .loading
+        let rootPIDs = AppProcessInspector.rootPIDs(for: bundleId)
+
+        Task {
+            let result = await Task.detached {
+                AppProcessInspector.processes(appKey: bundleId, rootPIDs: rootPIDs)
+            }.value
+            guard processLoadID == loadID, processLoadState == .loading else { return }
+            switch result {
+            case .loaded(let liveProcesses):
+                processes = liveProcesses
+                processLoadState = .loaded
+            case .timedOut:
+                processLoadState = .timedOut
+            }
+        }
+
+        Task {
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard processLoadID == loadID, processLoadState == .loading else { return }
+            processLoadState = .timedOut
+        }
+    }
+
+    /// XPC should normally return in well under a second. A timeout prevents
+    /// an unavailable or wedged helper from leaving the detail window in a
+    /// permanent loading state.
+    private func loadBreakdown() async throws -> AppEnergyBreakdown {
+        let gate = DetailLoadGate()
+        return try await withCheckedThrowingContinuation { continuation in
+            gate.install(continuation)
+
+            Task {
+                do {
+                    gate.resolve(.success(try await provider()))
+                } catch {
+                    gate.resolve(.failure(error))
+                }
+            }
+
+            Task {
+                try? await Task.sleep(nanoseconds: 12_000_000_000)
+                gate.resolve(.failure(DetailLoadError.timedOut))
             }
         }
     }
@@ -59,15 +165,18 @@ struct AppDetailView: View {
     // MARK: - Loaded content
 
     private func content(_ breakdown: AppEnergyBreakdown) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header(breakdown)
-            componentBreakdown(breakdown)
-            hourlyChart(breakdown)
-            explanation(breakdown)
-            statLine(breakdown)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                header(breakdown)
+                componentBreakdown(breakdown)
+                hourlyChart(breakdown)
+                explanation(breakdown)
+                statLine(breakdown)
+                processBreakdown(breakdown)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private func header(_ breakdown: AppEnergyBreakdown) -> some View {
@@ -188,6 +297,159 @@ struct AppDetailView: View {
             }
             .frame(height: 90)
         }
+    }
+
+    // MARK: - Live process map
+
+    private struct ProcessEnergy: Identifiable {
+        let process: AppProcess
+        let energyWh: Double?
+
+        var id: Int32 { process.id }
+    }
+
+    private func attributedProcesses(_ breakdown: AppEnergyBreakdown) -> [ProcessEnergy] {
+        let activeCPU = processes.reduce(0) { $0 + $1.cpuPercent }
+        return processes.map { process in
+            ProcessEnergy(
+                process: process,
+                energyWh: activeCPU > 0
+                    ? breakdown.totalWh * process.cpuPercent / activeCPU
+                    : nil
+            )
+        }
+    }
+
+    private func processBreakdown(_ breakdown: AppEnergyBreakdown) -> some View {
+        let attributedProcesses = attributedProcesses(breakdown)
+        let previewCount = min(3, attributedProcesses.count)
+        let visibleProcesses = showsAllProcesses
+            ? attributedProcesses
+            : Array(attributedProcesses.prefix(previewCount))
+
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Text("Processes using this app's power")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if !attributedProcesses.isEmpty {
+                    Text("\(attributedProcesses.count)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
+                }
+
+                Spacer()
+
+                if attributedProcesses.count > previewCount {
+                    Button {
+                        showsAllProcesses.toggle()
+                    } label: {
+                        Label(
+                            showsAllProcesses
+                                ? "Show fewer"
+                                : "View all \(attributedProcesses.count)",
+                            systemImage: showsAllProcesses ? "chevron.up" : "chevron.down"
+                        )
+                        .font(.caption)
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+
+            if attributedProcesses.isEmpty {
+                switch processLoadState {
+                case .loading, .idle:
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Finding live processes…")
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                case .timedOut:
+                    Text("Process discovery took too long. The app energy summary is still complete.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                case .loaded:
+                    Text("No matching process is running now. The energy above may be from an earlier session.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            } else {
+                Group {
+                    if showsAllProcesses {
+                        ScrollView {
+                            VStack(spacing: 5) {
+                                ForEach(visibleProcesses) { item in
+                                    processRow(item)
+                                }
+                            }
+                        }
+                        .frame(maxHeight: 190)
+                    } else {
+                        VStack(spacing: 5) {
+                            ForEach(visibleProcesses) { item in
+                                processRow(item)
+                            }
+                        }
+                    }
+                }
+
+                Text("Powerlog measures the app coalition. Process energy is estimated from this live CPU snapshot.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private func processRow(_ item: ProcessEnergy) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: item.process.isRootProcess ? "app.dashed" : "point.3.connected.trianglepath.dotted")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(item.process.isRootProcess ? Color.accentColor : .secondary)
+                .frame(width: 16)
+
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 5) {
+                    Text(item.process.name)
+                        .font(.caption.weight(.medium))
+                        .lineLimit(1)
+                    Text("PID \(item.process.pid)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Text(item.process.role)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(String(format: "%.1f%% CPU", item.process.cpuPercent))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                if let energyWh = item.energyWh {
+                    Text(String(format: "%.2f Wh est.", energyWh))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                } else {
+                    Text("CPU idle")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 6)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+        .help(item.process.executablePath)
     }
 
     // MARK: - Explanation and stats
