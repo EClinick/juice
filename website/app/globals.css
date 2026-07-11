@@ -1,0 +1,450 @@
+@import url("https://fonts.googleapis.com/css2?family=Archivo+Narrow:wdth,wght@62.5..125,400..900&family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap");
+
+@property --charge-level {
+  syntax: "<percentage>";
+  inherits: false;
+  initial-value: 0%;
+}
+
+:root {
+  --ink: #111110;
+  --paper: #f5f5f0;
+  --muted: #6d6d68;
+  --acid: #b7f23c;
+  --cable: #242421;
+}
+
+* { box-sizing: border-box; }
+
+html {
+  background: var(--ink);
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  font-family: Manrope, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+a { color: inherit; text-decoration: none; }
+button { font: inherit; }
+
+main {
+  min-height: 100svh;
+  overflow: hidden;
+  border: 12px solid var(--ink);
+  border-radius: 0 0 28px 28px;
+  background: var(--paper);
+}
+
+.hero {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  min-height: calc(100svh - 12px);
+  flex-direction: column;
+  align-items: center;
+  padding: 30px 42px 25px;
+  background: radial-gradient(circle at 50% 29%, #fff 0, var(--paper) 44%, #eeeee7 100%);
+}
+
+.nav {
+  position: relative;
+  z-index: 5;
+  display: flex;
+  width: min(100%, 1250px);
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.brand {
+  font-family: "Archivo Narrow", Impact, sans-serif;
+  font-size: 25px;
+  letter-spacing: -.06em;
+  line-height: .8;
+}
+
+.brand span {
+  vertical-align: top;
+  margin-left: 2px;
+  font-family: "DM Mono", monospace;
+  font-size: 8px;
+  letter-spacing: 0;
+}
+
+.github-link {
+  color: #4d4d49;
+  transition: color .2s ease;
+}
+
+.github-link:hover,
+.github-link:focus-visible { color: var(--ink); }
+
+.product-stage {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: 0;
+  left: 0;
+  width: 100%;
+  height: 33px;
+}
+
+.notch {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  left: 50%;
+  width: 224px;
+  height: 33px;
+  transform: translateX(-50%);
+  border-radius: 0 0 18px 18px;
+  background: #050505;
+}
+
+.hero-copy {
+  position: relative;
+  z-index: 3;
+  width: 100%;
+  margin: auto 0;
+  padding-top: 143px;
+  text-align: center;
+}
+
+.eyebrow {
+  margin: 0 0 22px;
+  color: var(--muted);
+  font-family: "DM Mono", monospace;
+  font-size: 10px;
+  letter-spacing: .075em;
+  text-transform: uppercase;
+}
+
+.charging-wordmark {
+  position: relative;
+  display: inline-block;
+}
+
+.charging-title {
+  --charge-level: 0%;
+  position: relative;
+  z-index: 4;
+  display: inline-block;
+  margin: 0;
+  color: transparent;
+  background: linear-gradient(
+    to top,
+    var(--acid) 0 var(--charge-level),
+    var(--ink) var(--charge-level) 100%
+  );
+  background-clip: text;
+  -webkit-background-clip: text;
+  font-family: "Archivo Narrow", Impact, sans-serif;
+  font-size: clamp(124px, 18.1vw, 298px);
+  font-stretch: condensed;
+  font-weight: 900;
+  letter-spacing: -.04em;
+  line-height: .8;
+}
+
+.is-connected .charging-title {
+  animation: charge-word 2.35s cubic-bezier(.2, .75, .18, 1) forwards;
+}
+
+.charge-port {
+  position: absolute;
+  z-index: 7;
+  bottom: 6%;
+  left: -2px;
+  width: 5px;
+  height: 11px;
+  border: 1px solid rgba(245,245,240,.26);
+  border-radius: 999px;
+  background: linear-gradient(90deg, #171715, #232320);
+  box-shadow: inset 1px 0 2px rgba(0,0,0,.7);
+  transition: background .18s ease, border-color .18s ease, box-shadow .18s ease;
+}
+
+.is-dragging .charge-port {
+  border-color: rgba(183,242,60,.5);
+}
+
+.is-connected .charge-port {
+  border-color: rgba(245,245,240,.26);
+  background: linear-gradient(90deg, #171715, #232320);
+  box-shadow: inset 1px 0 2px rgba(0,0,0,.7);
+}
+
+.charging-cable {
+  position: fixed;
+  z-index: 2;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.charging-cable path {
+  fill: none;
+  stroke-linecap: round;
+}
+
+.cable-shadow {
+  stroke: var(--cable);
+  stroke-width: 7px;
+  filter: drop-shadow(0 2px 2px rgba(17,17,16,.14));
+}
+
+.cable-highlight {
+  stroke: rgba(255,255,255,.12);
+  stroke-width: 1.5px;
+}
+
+.usb-plug {
+  position: fixed;
+  z-index: 8;
+  top: 0;
+  left: 0;
+  width: 58px;
+  height: 28px;
+  padding: 0;
+  opacity: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  transition: opacity .16s ease;
+}
+
+.is-ready .usb-plug { opacity: 1; }
+.usb-plug:active { cursor: grabbing; }
+
+/* Seat the tip behind the letterform so it reads as inserted */
+.is-connected .usb-plug { z-index: 3; }
+
+.usb-plug:focus-visible {
+  outline: none;
+}
+
+.usb-plug:focus-visible .usb-collar {
+  border-color: var(--acid);
+  box-shadow: inset 0 1px rgba(255,255,255,.08), 0 0 0 2px rgba(183,242,60,.28);
+}
+
+.usb-collar {
+  position: absolute;
+  top: 5px;
+  left: 0;
+  width: 32px;
+  height: 18px;
+  border: 1px solid #2c2c29;
+  border-radius: 5px 3px 3px 5px;
+  background: linear-gradient(180deg, #44443f 0%, #2b2b28 55%, #212120 100%);
+  box-shadow: inset 0 1px rgba(255,255,255,.08), 0 1px 3px rgba(17,17,16,.14);
+}
+
+.usb-collar::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: 4px;
+  left: -11px;
+  width: 13px;
+  height: 10px;
+  border-radius: 6px 0 0 6px;
+  background: var(--cable);
+  box-shadow: inset 0 1px rgba(255,255,255,.06);
+}
+
+.usb-tip {
+  position: absolute;
+  top: 10px;
+  left: 31px;
+  width: 25px;
+  height: 8px;
+  border: 1px solid #93938e;
+  border-radius: 3.5px;
+  background: linear-gradient(180deg, #dfdfdb 0%, #bcbcb7 55%, #a6a6a1 100%);
+  box-shadow: inset 0 1px rgba(255,255,255,.5);
+}
+
+.plug-instruction {
+  position: absolute;
+  top: 7px;
+  left: 69px;
+  width: max-content;
+  color: #777771;
+  font-family: "DM Mono", monospace;
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: .03em;
+  pointer-events: none;
+  transition: opacity .16s ease, transform .16s ease;
+}
+
+.is-dragging .plug-instruction,
+.is-connected .plug-instruction {
+  opacity: 0;
+  transform: translateX(-4px);
+}
+
+.subtitle {
+  margin: 24px 0;
+  color: #696964;
+  font-size: 16px;
+  letter-spacing: -.035em;
+}
+
+.download-button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  padding: 15px 20px 15px 17px;
+  color: white;
+  border-radius: 9px;
+  background: var(--ink);
+  box-shadow: 0 2px 0 #000, 0 8px 17px rgba(17,17,16,.14);
+  font-size: 13px;
+  font-weight: 700;
+  transition: transform .18s ease, box-shadow .18s ease;
+}
+
+.download-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 2px 0 #000, 0 12px 20px rgba(17,17,16,.18);
+}
+
+.download-button:focus-visible,
+a:focus-visible {
+  outline: 3px solid var(--acid);
+  outline-offset: 4px;
+}
+
+.apple-mark {
+  display: inline-block;
+  width: 13px;
+  flex: 0 0 13px;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-serif;
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1;
+  text-align: center;
+  transform: translateY(-.5px);
+}
+
+.release-note {
+  margin: 14px 0 0;
+  color: #92928c;
+  font-size: 10px;
+}
+
+.release-link {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 2px;
+  transition: color .2s ease, text-decoration-color .2s ease;
+}
+
+.release-link:hover {
+  color: var(--ink);
+  text-decoration-color: currentColor;
+}
+
+.maker-link {
+  position: relative;
+  z-index: 3;
+  margin-top: 13px;
+  color: #8a8a84;
+  font-size: 10px;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+  transition: color .2s ease, text-decoration-color .2s ease;
+}
+
+.maker-link:hover {
+  color: var(--ink);
+  text-decoration-color: currentColor;
+}
+.maker-link span { padding-left: 2px; font-size: 9px; }
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@keyframes charge-word {
+  from { --charge-level: 0%; }
+  to { --charge-level: 100%; }
+}
+
+@media (max-width: 700px) {
+  main {
+    border-width: 7px;
+    border-radius: 0 0 18px 18px;
+  }
+
+  .hero {
+    min-height: 760px;
+    padding: 20px 20px 18px;
+  }
+
+  .github-link { font-size: 8px; }
+  .product-stage { height: 26px; }
+
+  .notch {
+    width: 145px;
+    height: 24px;
+    border-radius: 0 0 12px 12px;
+  }
+
+  .hero-copy { padding-top: 135px; }
+  .charging-title { font-size: clamp(104px, 30vw, 165px); }
+
+  .charge-port {
+    bottom: 6%;
+    left: -2px;
+    width: 4px;
+    height: 9px;
+  }
+
+  .subtitle {
+    margin-top: 22px;
+    font-size: 14px;
+  }
+
+  .maker-link {
+    margin-top: 11px;
+    font-size: 9px;
+  }
+
+  .plug-instruction { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    transition-duration: .01ms !important;
+    animation-duration: .01ms !important;
+  }
+
+  .is-connected .charging-title {
+    --charge-level: 100%;
+    animation: none;
+  }
+}
