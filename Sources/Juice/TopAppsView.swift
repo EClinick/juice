@@ -1,42 +1,280 @@
 import SwiftUI
 import AppKit
+import JuiceCore
 
-/// Ranked list of per-app energy usage with a range picker.
+/// Ranked list of per-app energy usage with a range picker. On ``.today`` the
+/// view is a hybrid: a live "drawing power now" section on top of today's
+/// energy history. Week and All Time are pure history.
 struct TopAppsView: View {
     let apps: [AppEnergy]
     @Binding var range: EnergyRange
     let origin: DataOrigin
+    /// The merged live/history split for the Today view. Present only when
+    /// ``range`` is ``.today`` and live sampling has produced a reading; nil
+    /// otherwise (Today then renders as plain history).
+    var hybrid: HybridTodayList?
+    /// Battery draw in watts for the live attribution footer; nil off ``.today``.
+    var batteryWatts: Double?
+    /// The footer is omitted on AC, where battery watts mean charging rate.
+    var onAC: Bool = false
+    /// Total smoothed app watts for the live attribution footer.
+    var totalAppWatts: Double?
+
+    /// Rows shown across both hybrid sections combined, matching the popover's
+    /// former 8-row history cap.
+    private static let hybridRowCap = 8
 
     private var maxEnergy: Double {
         max(apps.map(\.energyWh).max() ?? 0, 0.001)
+    }
+
+    private var historicalAppsIdentity: String {
+        let originID: String
+        switch origin {
+        case .loading: originID = "loading"
+        case .store: originID = "store"
+        case .live: originID = "live"
+        case .unavailable: originID = "unavailable"
+        }
+        return "\(range.rawValue)|\(originID)|\(apps.map(\.id).joined(separator: "|"))"
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Picker("Range", selection: $range) {
                 ForEach(EnergyRange.allCases, id: \.self) { range in
-                    Text(range.rawValue).tag(range)
+                    Text(range.pickerLabel).tag(range)
                 }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
 
-            VStack(spacing: 6) {
-                ForEach(apps) { app in
-                    AppEnergyRow(
-                        app: app,
-                        fraction: app.energyWh / maxEnergy,
-                        onTap: {
-                            AppDetailPresenter.shared.show(
-                                appKey: app.bundleId,
-                                displayName: app.displayName,
-                                range: range,
-                                origin: origin
-                            )
-                        })
-                }
+            if range == .today, let hybrid, !hybrid.active.isEmpty {
+                hybridToday(hybrid)
+            } else {
+                historyList
             }
         }
+    }
+
+    /// The plain-history list used for Week / All Time and for Today when there
+    /// is no live section to show yet. Today fetches the full app list for the
+    /// hybrid's fold row, so cap the plain rendering to the popover budget.
+    private var historyList: some View {
+        VStack(spacing: 6) {
+            ForEach(apps.prefix(Self.hybridRowCap)) { app in
+                AppEnergyRow(
+                    app: app,
+                    fraction: app.energyWh / maxEnergy,
+                    onTap: { showDetail(appKey: app.bundleId, displayName: app.displayName) })
+            }
+        }
+        .id(historicalAppsIdentity)
+        .transition(.opacity)
+    }
+
+    // MARK: - Hybrid Today
+
+    @ViewBuilder
+    private func hybridToday(_ hybrid: HybridTodayList) -> some View {
+        // Reserve the live rows first, then fill the remainder with earlier
+        // rows. The fold row spends one slot of the same budget so the hybrid
+        // never renders taller than the plain 8-row list it replaced.
+        let remaining = max(0, Self.hybridRowCap - hybrid.active.count)
+        let needsFold = hybrid.earlier.count > remaining
+        let earlierCap = needsFold ? max(0, remaining - 1) : remaining
+        let visibleEarlier = Array(hybrid.earlier.prefix(earlierCap))
+        let folded = hybrid.earlier.dropFirst(earlierCap)
+        let maxWatts = max(hybrid.active.map(\.watts).max() ?? 0, 0.001)
+        let earlierMax = max(visibleEarlier.map(\.energyWh).max() ?? 0, 0.001)
+
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 4) {
+                    LiveDot()
+                    Text("DRAWING POWER NOW")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(hybrid.active) { app in
+                    LiveActiveRow(
+                        app: app,
+                        fraction: app.watts / maxWatts,
+                        onTap: { showDetail(appKey: app.appKey, displayName: app.displayName) })
+                }
+            }
+
+            if !visibleEarlier.isEmpty || !folded.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("EARLIER TODAY")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    ForEach(visibleEarlier) { app in
+                        AppEnergyRow(
+                            app: app,
+                            fraction: app.energyWh / earlierMax,
+                            onTap: { showDetail(appKey: app.bundleId, displayName: app.displayName) })
+                    }
+                    if !folded.isEmpty {
+                        FoldedAppsRow(
+                            count: folded.count,
+                            energyWh: folded.reduce(0) { $0 + $1.energyWh })
+                    }
+                }
+            }
+
+            if let footer = attribution() {
+                LiveAttributionFooter(appWatts: footer.appWatts, systemWatts: footer.systemWatts)
+            }
+        }
+        .transition(.opacity)
+    }
+
+    private func showDetail(appKey: String, displayName: String) {
+        AppDetailPresenter.shared.show(
+            appKey: appKey,
+            displayName: displayName,
+            range: range,
+            origin: origin)
+    }
+
+    /// Apps versus system-and-display split for the footer, or nil when the
+    /// battery watts are unavailable or we are on AC (where watts mean charge).
+    private func attribution() -> (appWatts: Double, systemWatts: Double)? {
+        guard !onAC, let batteryWatts, batteryWatts > 0, let totalAppWatts else { return nil }
+        let systemWatts = max(0, batteryWatts - totalAppWatts)
+        return (totalAppWatts, systemWatts)
+    }
+}
+
+/// Watts formatting: one decimal from 0.1 W up, two decimals below.
+func liveWattsText(_ watts: Double) -> String {
+    if watts >= 0.1 {
+        return String(format: "%.1f W", watts)
+    }
+    return String(format: "%.2f W", watts)
+}
+
+/// One active-power row in the hybrid Today view: 18 px icon, name with an
+/// optional "· X.X Wh today" subtext, a bar scaled to the section max, and a
+/// green watts value. Tapping opens the per-app detail window.
+private struct LiveActiveRow: View {
+    let app: HybridTodayList.ActiveApp
+    let fraction: Double
+    let onTap: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 8) {
+                AppIconView(bundleId: app.appKey, displayName: app.displayName)
+                    .frame(width: 18, height: 18)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    (Text(app.displayName)
+                        .font(.caption)
+                     + todaySubtext)
+                        .lineLimit(1)
+
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule()
+                                .fill(Color.secondary.opacity(0.15))
+                            Capsule()
+                                .fill(Color.accentColor)
+                                .frame(width: geo.size.width * CGFloat(max(0, min(1, fraction))))
+                        }
+                    }
+                    .frame(height: 5)
+                }
+
+                Text(liveWattsText(app.watts))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.green)
+                    .monospacedDigit()
+                    .frame(width: 56, alignment: .trailing)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .opacity(hovering ? 1 : 0)
+            }
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(app.displayName)
+        .accessibilityValue(liveWattsText(app.watts))
+        .accessibilityHint("Opens energy details")
+    }
+
+    private var todaySubtext: Text {
+        // Below 0.05 Wh the value renders as "0.0" - noise, not information.
+        guard let wh = app.todayWh, wh >= 0.05 else { return Text("") }
+        return Text(String(format: " · %.1f Wh today", wh))
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+    }
+}
+
+/// A dimmed summary row folding today's apps that did not fit the visible cap.
+private struct FoldedAppsRow: View {
+    let count: Int
+    let energyWh: Double
+
+    var body: some View {
+        HStack(spacing: 8) {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Color.secondary.opacity(0.15))
+                .overlay(
+                    Image(systemName: "plus")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                )
+                .frame(width: 18, height: 18)
+
+            Text("\(count) more app\(count == 1 ? "" : "s")")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text(String(format: "%.1f Wh", energyWh))
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .monospacedDigit()
+                .frame(width: 56, alignment: .trailing)
+        }
+    }
+}
+
+/// A two-segment stacked capsule with a caption legend splitting the battery
+/// draw into app power and everything else (system and display).
+private struct LiveAttributionFooter: View {
+    let appWatts: Double
+    let systemWatts: Double
+
+    private var total: Double { max(appWatts + systemWatts, 0.001) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            GeometryReader { geo in
+                HStack(spacing: 0) {
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(width: geo.size.width * CGFloat(appWatts / total))
+                    Capsule()
+                        .fill(Color.secondary.opacity(0.4))
+                }
+            }
+            .frame(height: 5)
+
+            Text(String(format: "Apps %.1f W · System & display %.1f W", appWatts, systemWatts))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.top, 2)
     }
 }
 

@@ -28,5 +28,6 @@ public enum JuiceXPC {
     /// Version history:
     /// - 1: handshake, fetchEnergyIntervals
     /// - 2: adds fetchBatteryLevels
-    public static let protocolVersion = 2
+    /// - 3: adds fetchLiveEnergySample
+    public static let protocolVersion = 3
 }

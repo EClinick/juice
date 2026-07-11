@@ -10,6 +10,9 @@ let package = Package(
     ],
     targets: [
         .target(name: "JuiceXPCShared"),
+        // Minimal C shim for the private coalition_info syscall and its struct,
+        // which the public SDK does not expose. Only JuiceHelper depends on it.
+        .target(name: "JuiceHelperCoalition"),
         // Pure app logic (insights engine, store schema/queries) - kept out of
         // the executable so tests can import it.
         .target(
@@ -21,7 +24,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "JuiceHelper",
-            dependencies: ["JuiceXPCShared"]
+            dependencies: ["JuiceXPCShared", "JuiceHelperCoalition"]
         ),
         .executableTarget(
             name: "Juice",

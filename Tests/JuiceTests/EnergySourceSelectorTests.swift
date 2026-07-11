@@ -150,6 +150,8 @@ struct EnergySourceSelectorTests {
             earliestStoredStart: nil, now: now, calendar: calendar)
         let storedWeekDay = AppDetailPresenter.storedQueryStartDay(
             range: .week, now: now, calendar: calendar)
+        let storedTodayDay = AppDetailPresenter.storedQueryStartDay(
+            range: .today, now: now, calendar: calendar)
         let storedThreeDay = AppDetailPresenter.storedQueryStartDay(
             range: .threeDays, now: now, calendar: calendar)
 
@@ -162,6 +164,8 @@ struct EnergySourceSelectorTests {
             for: .allTime, now: now, calendar: calendar) == liveAllTime)
         #expect(storedWeekDay == StoreEnergySource.sinceDay(
             for: .week, now: now, calendar: calendar))
+        #expect(storedTodayDay == StoreEnergySource.sinceDay(
+            for: .today, now: now, calendar: calendar))
         #expect(storedThreeDay == StoreEnergySource.sinceDay(
             for: .threeDays, now: now, calendar: calendar))
     }

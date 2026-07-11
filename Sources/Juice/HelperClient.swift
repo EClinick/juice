@@ -171,6 +171,22 @@ final class HelperClient: @unchecked Sendable {
         return try JSONDecoder().decode([BatteryLevelPoint].self, from: data)
     }
 
+    /// Fetches one raw live-energy snapshot: cumulative per-process counters at
+    /// the instant of the call. The app differentiates consecutive snapshots to
+    /// compute watts.
+    ///
+    /// Added in protocol version 3. Against an older installed helper this
+    /// throws ``HelperClientError/helperOutdated`` without ever invoking the
+    /// unknown method, exactly like ``fetchBatteryLevels(since:)``.
+    func fetchLiveEnergySample() async throws -> LiveEnergySnapshot {
+        let (version, _) = try await handshake()
+        guard version >= 3 else { throw HelperClientError.helperOutdated }
+        let data = try await fetchData { proxy, reply in
+            proxy.fetchLiveEnergySample(reply: reply)
+        }
+        return try JSONDecoder().decode(LiveEnergySnapshot.self, from: data)
+    }
+
     /// Shared continuation plumbing for the (Data?, NSError?) fetch methods.
     private func fetchData(
         _ invoke: @escaping (HelperProtocol, @escaping (Data?, NSError?) -> Void) -> Void

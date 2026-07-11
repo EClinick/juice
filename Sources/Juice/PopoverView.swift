@@ -5,6 +5,7 @@ struct PopoverView: View {
     @ObservedObject var model: BatteryViewModel
     @ObservedObject private var updater = UpdateController.shared
     @ObservedObject private var helper = HelperRegistrationController.shared
+    @StateObject private var live = LivePowerController()
 
     private let selector = EnergySourceSelector()
 
@@ -18,6 +19,12 @@ struct PopoverView: View {
     @State private var insights: [Insight] = []
     @State private var coverageDayCount: Int?
     @State private var loadTask: Task<Void, Never>?
+    @State private var merger = LiveTodayMerger()
+    @State private var hybrid: HybridTodayList?
+
+    private var replacementAnimation: Animation {
+        .timingCurve(0.23, 1, 0.32, 1, duration: 0.18)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -58,33 +65,56 @@ struct PopoverView: View {
 
                 Divider()
 
-                HStack {
-                    Text("Top energy users")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
+                // The hybrid's own section captions replace this header line;
+                // rendering both would waste a row of the popover's height.
+                if !showsHybridToday {
+                    HStack {
+                        Text("Top energy users")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if range == .today,
+                           live.status == .sampling || live.status == .warmingUp {
+                            LiveHint()
+                        }
+                        Spacer()
+                    }
                 }
-                TopAppsView(apps: topApps, range: $range, origin: origin)
-                if origin == .loading {
+                TopAppsView(
+                    apps: topApps,
+                    range: $range,
+                    origin: origin,
+                    hybrid: range == .today ? hybrid : nil,
+                    batteryWatts: model.reading.map { abs($0.watts) },
+                    onAC: model.reading?.onAC ?? false,
+                    totalAppWatts: range == .today ? live.reading?.totalAppWatts : nil)
+                if range == .today, live.status == .helperOutdated {
+                    liveStatus
+                        .transition(.opacity)
+                } else if origin == .loading {
                     ProgressView()
                         .controlSize(.small)
+                        .transition(.opacity)
                 } else if origin == .unavailable {
                     HelperStatusView(
                         controller: helper,
                         queryError: energyError,
                         onRetryQuery: retryTopApps)
+                        .transition(.opacity)
                 } else if topApps.isEmpty {
                     Text("No app energy was recorded for this period.")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
+                        .transition(.opacity)
                 } else if origin == .live, range != .today {
                     Text("Live data only (about 3 days) - history store unavailable")
                         .font(.caption2)
                         .foregroundStyle(.orange)
+                        .transition(.opacity)
                 } else if origin == .store, let days = coverageDayCount {
                     Text("History covers \(days) day\(days == 1 ? "" : "s") so far")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
+                        .transition(.opacity)
                 }
                 if range != .today, origin == .store, !topApps.isEmpty {
                     Text("Stored details are summarized by day.")
@@ -188,11 +218,57 @@ struct PopoverView: View {
         .task { await loadEnergy() }
         .onChange(of: range) {
             loadTask?.cancel()
+            syncLiveSampling()
             loadTask = Task { await loadTopApps() }
+        }
+        .onChange(of: live.reading) {
+            recomputeHybrid()
         }
         .onChange(of: helper.readyGeneration) {
             if origin == .unavailable { retryTopApps() }
         }
+        // The popover recreates its content on open and tears it down on close,
+        // so onDisappear reliably stops sampling when the popover closes.
+        .onAppear { syncLiveSampling() }
+        .onDisappear {
+            live.stop()
+            merger.reset()
+            hybrid = nil
+        }
+    }
+
+    /// Runs the live power loop only while the popover is visible and the Now
+    /// segment is selected; stops it otherwise.
+    private func syncLiveSampling() {
+        if range == .today {
+            live.start()
+        } else {
+            live.stop()
+            merger.reset()
+            hybrid = nil
+        }
+    }
+
+    /// Folds the latest live reading into today's history for the hybrid view.
+    /// The merger needs the wall clock for its grace period, so `Date()` is
+    /// captured here at the view layer rather than inside the merger.
+    private func recomputeHybrid() {
+        guard range == .today else { return }
+        hybrid = merger.merge(live: live.reading, today: topApps, now: Date())
+    }
+
+    @ViewBuilder
+    private var liveStatus: some View {
+        if case .helperOutdated = live.status {
+            Text("Live power needs the updated helper - restart Juice to update it.")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+        }
+    }
+
+    /// Mirrors TopAppsView's condition for rendering the two-section hybrid.
+    private var showsHybridToday: Bool {
+        range == .today && !(hybrid?.active.isEmpty ?? true)
     }
 
     private var timelineSource: EnergySource? {
@@ -244,16 +320,24 @@ struct PopoverView: View {
         // query is in flight, the stale result must not overwrite the newer
         // selection's data.
         let range = self.range
-        origin = .loading
-        topApps = []
-        energyError = nil
-        coverageDayCount = nil
-        let result = await selector.topApps(range: range, limit: 8)
+        withAnimation(replacementAnimation) {
+            origin = .loading
+            topApps = []
+            energyError = nil
+            coverageDayCount = nil
+        }
+        // Today feeds the hybrid, whose earlier section caps its own visible
+        // rows, so fetch all of today's apps rather than the historical 8.
+        let limit: Int? = range == .today ? nil : 8
+        let result = await selector.topApps(range: range, limit: limit)
         guard !Task.isCancelled, range == self.range else { return }
-        topApps = result.apps
-        origin = result.origin
-        coverageDayCount = result.coverageDayCount
-        energyError = result.errorDescription
+        withAnimation(replacementAnimation) {
+            topApps = result.apps
+            origin = result.origin
+            coverageDayCount = result.coverageDayCount
+            energyError = result.errorDescription
+        }
+        recomputeHybrid()
     }
 
     private func retryTopApps() {

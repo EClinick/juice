@@ -78,12 +78,18 @@ struct AppDetailView: View {
     @State private var processLoadState: ProcessLoadState = .idle
     @State private var processLoadID: UUID?
 
+    private var loadAnimation: Animation {
+        .timingCurve(0.23, 1, 0.32, 1, duration: 0.2)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        ZStack(alignment: .topLeading) {
             switch state {
             case .loading:
                 ProgressView("Loading energy details…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .id("loading")
+                    .transition(.opacity)
             case .failed(let message):
                 VStack(spacing: 6) {
                     Image(systemName: "bolt.slash")
@@ -96,23 +102,31 @@ struct AppDetailView: View {
                 }
                 .padding(24)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .id("failed")
+                .transition(.opacity)
             case .loaded(let breakdown):
                 content(breakdown)
+                    .id("loaded")
+                    .transition(.opacity)
             }
         }
         .frame(minWidth: 540, minHeight: 520)
         .task {
             do {
                 let breakdown = try await loadBreakdown()
-                state = .loaded(breakdown)
+                withAnimation(loadAnimation) {
+                    state = .loaded(breakdown)
+                }
                 if resolution == .hourlyComponents {
                     loadProcesses()
                 }
             } catch {
-                state = .failed(
+                let message =
                     (error as? LocalizedError)?.errorDescription
                         ?? "Detailed data needs the helper connection."
-                )
+                withAnimation(loadAnimation) {
+                    state = .failed(message)
+                }
             }
         }
     }
