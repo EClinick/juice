@@ -22,14 +22,12 @@ struct LiveEnergyReader {
     func snapshot() -> LiveEnergySnapshot {
         let pids = Self.allPIDs()
 
-        // Group PIDs by resource coalition, tracking a leader per coalition.
-        // Leader preference: the pid whose role is coalition leader; failing
-        // that (leader not visible), the lowest pid seen in the coalition.
-        struct Group {
-            var leaderPID: Int32
-            var leaderIsAuthoritative: Bool
-        }
-        var groups: [UInt64: Group] = [:]
+        // Group PIDs by resource coalition. Resource coalitions have no
+        // leader role in the kernel, so the lowest PID represents the
+        // coalition: in an app coalition the main app process spawned first,
+        // and even when it has exited, any surviving helper's path still
+        // resolves to the same .app bundle.
+        var groups: [UInt64: Int32] = [:]
         groups.reserveCapacity(pids.count)
 
         for pid in pids {
@@ -41,39 +39,26 @@ struct LiveEnergyReader {
             guard juice_proc_coalition(pid, &membership) == 0 else { continue }
 
             let cid = membership.coalitionID
-            let isLeader = membership.isLeader != 0
-
-            if var existing = groups[cid] {
-                if isLeader, !existing.leaderIsAuthoritative {
-                    // A real leader always wins over a lowest-pid placeholder.
-                    existing.leaderPID = pid
-                    existing.leaderIsAuthoritative = true
-                } else if isLeader == existing.leaderIsAuthoritative, pid < existing.leaderPID {
-                    // Same authority tier: keep the lowest pid for determinism.
-                    existing.leaderPID = pid
-                }
-                groups[cid] = existing
-            } else {
-                groups[cid] = Group(leaderPID: pid, leaderIsAuthoritative: isLeader)
-            }
+            if let existing = groups[cid], existing <= pid { continue }
+            groups[cid] = pid
         }
 
         // Read energy once per unique coalition and resolve the leader path.
         var samples: [LiveEnergySample] = []
         samples.reserveCapacity(groups.count)
 
-        for (cid, group) in groups {
+        for (cid, leaderPID) in groups {
             var usage = JuiceCoalitionUsage()
             // A coalition that emptied out between grouping and this read returns
             // an error (e.g. EINVAL); drop it.
             guard juice_coalition_resource_usage(cid, &usage) == 0 else { continue }
 
-            let path = Self.executablePath(group.leaderPID) ?? ""
+            let path = Self.executablePath(leaderPID) ?? ""
 
             samples.append(
                 LiveEnergySample(
                     coalitionID: cid,
-                    leaderPID: group.leaderPID,
+                    leaderPID: leaderPID,
                     leaderPath: path,
                     cpuEnergyNJ: usage.cpuEnergyNJ,
                     gpuEnergyNJ: usage.gpuEnergyNJ,
@@ -91,6 +76,10 @@ struct LiveEnergyReader {
     // MARK: - proc_* wrappers
 
     private static func allPIDs() -> [Int32] {
+        // proc_listallpids returns a PID COUNT from both the sizing call and
+        // the fill call (unlike proc_listpids, which returns bytes) - verified
+        // empirically; dividing by the element size here would drop 3/4 of
+        // the process table.
         let needed = proc_listallpids(nil, 0)
         guard needed > 0 else { return [] }
         // Over-allocate: the process count can grow between the sizing call
@@ -99,7 +88,7 @@ struct LiveEnergyReader {
         let byteCount = Int32(pids.count) * Int32(MemoryLayout<Int32>.size)
         let written = proc_listallpids(&pids, byteCount)
         guard written > 0 else { return [] }
-        let count = Int(written) / MemoryLayout<Int32>.size
+        let count = min(Int(written), pids.count)
         return Array(pids.prefix(count))
     }
 
