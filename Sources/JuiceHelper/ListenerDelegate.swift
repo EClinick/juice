@@ -43,13 +43,13 @@ final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
         #if DEV_HELPER
         // Ad-hoc signatures have no Team ID. The development helper is only
         // installed locally and therefore can pin the bundle identifier alone.
-        return #"identifier "com.eclinick.juice""#
+        return #"identifier "\#(JuiceXPC.appBundleID)""#
         #else
         guard let teamID = signingTeamID() else {
             NSLog("JuiceHelper: could not determine its signing Team ID")
             return nil
         }
-        return #"identifier "com.eclinick.juice" and anchor apple generic and certificate leaf[subject.OU] = "\#(teamID)""#
+        return #"identifier "\#(JuiceXPC.appBundleID)" and anchor apple generic and certificate leaf[subject.OU] = "\#(teamID)""#
         #endif
     }
 

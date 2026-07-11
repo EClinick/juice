@@ -15,8 +15,10 @@ if [[ "$SIGNING_IDENTITY" == "-" ]]; then
 fi
 
 cd "$ROOT"
+rm -rf "$ROOT/dist/Juice.app"
 VERSION="$VERSION" SIGNING_IDENTITY="$SIGNING_IDENTITY" ARCHS="arm64 x86_64" \
-    CONFIGURATION=release OUTPUT_DIR="$ROOT/dist" ./Scripts/build-app.sh
+    CONFIGURATION=release OUTPUT_DIR="$ROOT/dist" DEVELOPMENT_BUILD=0 \
+    ./Scripts/build-app.sh
 ./Scripts/verify-app.sh
 
 # Notarize and staple the app before placing it in the DMG so Gatekeeper can
@@ -40,7 +42,7 @@ spctl --assess --type execute -vv dist/Juice.app
 
 # Package the already-notarized app, then notarize and staple the distributable
 # itself. Rebuilding here would discard the app's stapled ticket.
-SKIP_APP_BUILD=1 OUTPUT_DIR="$ROOT/dist" ./Scripts/create-dmg.sh
+SKIP_APP_BUILD=1 DEVELOPMENT_BUILD=0 OUTPUT_DIR="$ROOT/dist" ./Scripts/create-dmg.sh
 codesign --force --sign "$SIGNING_IDENTITY" --timestamp dist/Juice.dmg
 codesign --verify --verbose=2 dist/Juice.dmg
 xcrun notarytool submit dist/Juice.dmg --keychain-profile "$NOTARY_PROFILE" --wait

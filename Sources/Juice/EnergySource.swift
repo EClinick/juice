@@ -19,10 +19,11 @@ struct BatterySample: Identifiable {
 }
 
 /// The time window used when ranking per-app energy usage.
-enum EnergyRange: String, CaseIterable {
+enum EnergyRange: String, CaseIterable, Sendable {
     case today = "Today"
     case threeDays = "3 Days"
     case week = "Week"
+    case allTime = "All Time"
 }
 
 /// Whether a persisted battery timeline can be queried independently of

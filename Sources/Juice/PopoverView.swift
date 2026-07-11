@@ -64,7 +64,7 @@ struct PopoverView: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                 }
-                TopAppsView(apps: topApps, range: $range)
+                TopAppsView(apps: topApps, range: $range, origin: origin)
                 if origin == .loading {
                     ProgressView()
                         .controlSize(.small)
@@ -83,6 +83,11 @@ struct PopoverView: View {
                         .foregroundStyle(.orange)
                 } else if origin == .store, let days = coverageDayCount {
                     Text("History covers \(days) day\(days == 1 ? "" : "s") so far")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                if range != .today, origin == .store, !topApps.isEmpty {
+                    Text("Stored details are summarized by day.")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -243,7 +248,7 @@ struct PopoverView: View {
         topApps = []
         energyError = nil
         coverageDayCount = nil
-        let result = await selector.topApps(range: range)
+        let result = await selector.topApps(range: range, limit: 8)
         guard !Task.isCancelled, range == self.range else { return }
         topApps = result.apps
         origin = result.origin

@@ -45,8 +45,6 @@ struct PowerlogEnergySource: EnergySource {
                 )
             }
             .sorted { $0.energyWh > $1.energyWh }
-            .prefix(8)
-            .map { $0 }
     }
 
     /// Fetches the raw energy intervals for a single app over `range`.
@@ -54,7 +52,11 @@ struct PowerlogEnergySource: EnergySource {
     /// `appKey` follows the same keying as ``topApps(range:)``: the bundle id
     /// when present and non-empty, otherwise the launchd coalition name.
     func appIntervals(appKey: String, range: EnergyRange) async throws -> [EnergyInterval] {
-        try await client.fetchIntervals(since: Self.rangeStart(for: range))
+        try await appIntervals(appKey: appKey, since: Self.rangeStart(for: range))
+    }
+
+    func appIntervals(appKey: String, since: Date) async throws -> [EnergyInterval] {
+        try await client.fetchIntervals(since: since)
             .filter { BreakdownBuilder.appKey(for: $0) == appKey }
     }
 
@@ -66,15 +68,26 @@ struct PowerlogEnergySource: EnergySource {
 
     // MARK: - Helpers
 
-    static func rangeStart(for range: EnergyRange, now: Date = Date()) -> Date {
+    static func rangeStart(
+        for range: EnergyRange,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> Date {
         switch range {
         case .today:
-            return Calendar.current.startOfDay(for: now)
+            return calendar.startOfDay(for: now)
         case .threeDays:
             return now.addingTimeInterval(-3 * 24 * 3600)
-        case .week:
-            return now.addingTimeInterval(-7 * 24 * 3600)
+        case .week, .allTime:
+            return retainedHistoryStart(now: now, calendar: calendar)
         }
+    }
+
+    static func retainedHistoryStart(
+        now: Date,
+        calendar: Calendar = .current
+    ) -> Date {
+        calendar.date(byAdding: .day, value: -3, to: now) ?? now
     }
 
     /// Curated names for identifiers that resolve poorly (or not at all)

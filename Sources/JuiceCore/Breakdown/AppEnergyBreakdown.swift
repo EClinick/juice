@@ -6,7 +6,7 @@ import JuiceXPCShared
 ///
 /// All energy values are watt-hours. Built from raw powerlog intervals by
 /// ``BreakdownBuilder``; pure data, safe to construct in tests and previews.
-public struct AppEnergyBreakdown {
+public struct AppEnergyBreakdown: Sendable {
     /// Total energy across CPU, GPU, and Neural Engine.
     public var totalWh: Double
     /// CPU-side energy (powerlog's "energy" column).

@@ -63,6 +63,37 @@ private func makeStore() throws -> JuiceStore {
         #expect(rollups[0].day == "2026-07-01")
     }
 
+    @Test func appEnergyTotalsAggregateAndSortAllApps() throws {
+        let store = try makeStore()
+        try store.upsertRollups([
+            DailyEnergyRollup(day: "2026-07-01", appKey: "b", wh: 2, cpuHours: 1),
+            DailyEnergyRollup(day: "2026-07-02", appKey: "b", wh: 3, cpuHours: 2),
+            DailyEnergyRollup(day: "2026-07-02", appKey: "a", wh: 6, cpuHours: 4),
+            DailyEnergyRollup(day: "2026-06-01", appKey: "old", wh: 100, cpuHours: 50),
+        ])
+
+        let totals = try store.appEnergyTotals(sinceDay: "2026-07-01")
+
+        #expect(totals.map(\.appKey) == ["a", "b"])
+        #expect(totals.map(\.wh) == [6, 5])
+        #expect(totals.map(\.cpuHours) == [4, 3])
+    }
+
+    @Test func rollupsForAppFilterAndSortInSQL() throws {
+        let store = try makeStore()
+        try store.upsertRollups([
+            DailyEnergyRollup(day: "2026-07-02", appKey: "target", wh: 2, cpuHours: 1),
+            DailyEnergyRollup(day: "2026-07-01", appKey: "other", wh: 20, cpuHours: 10),
+            DailyEnergyRollup(day: "2026-07-01", appKey: "target", wh: 1, cpuHours: 0.5),
+        ])
+
+        let rollups = try store.rollups(appKey: "target", sinceDay: "2026-07-01")
+
+        #expect(rollups.map(\.day) == ["2026-07-01", "2026-07-02"])
+        #expect(rollups.map(\.wh) == [1, 2])
+        #expect(rollups.allSatisfy { $0.appKey == "target" })
+    }
+
     @Test func watermarkRoundTrip() throws {
         let store = try makeStore()
         #expect(try store.watermark() == nil)

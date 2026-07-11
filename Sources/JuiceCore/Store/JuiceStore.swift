@@ -37,6 +37,19 @@ public struct DailyEnergyRollup: Sendable, Equatable {
     }
 }
 
+/// Per-app totals aggregated across stored daily rollups.
+public struct StoredAppEnergyTotal: Sendable, Equatable {
+    public var appKey: String
+    public var wh: Double
+    public var cpuHours: Double
+
+    public init(appKey: String, wh: Double, cpuHours: Double) {
+        self.appKey = appKey
+        self.wh = wh
+        self.cpuHours = cpuHours
+    }
+}
+
 /// The app's local SQLite store: raw battery samples, daily per-app energy
 /// rollups, and a small key/value meta table.
 ///
@@ -97,6 +110,13 @@ public final class JuiceStore: @unchecked Sendable {
             try db.alter(table: "battery_sample") { t in
                 t.add(column: "source", .integer).notNull().defaults(to: 0)
             }
+        }
+        migrator.registerMigration("v3") { db in
+            // All Time app details filter by app first and then walk its days.
+            try db.create(
+                index: "energy_rollup_on_app_key_day",
+                on: "energy_rollup",
+                columns: ["app_key", "day"])
         }
         return migrator
     }
@@ -246,6 +266,47 @@ public final class JuiceStore: @unchecked Sendable {
                     WHERE day >= ? ORDER BY day, app_key
                     """,
                 arguments: [sinceDay])
+            return rows.map { row in
+                DailyEnergyRollup(
+                    day: row["day"],
+                    appKey: row["app_key"],
+                    wh: row["wh"],
+                    cpuHours: row["cpu_hours"])
+            }
+        }
+    }
+
+    /// Aggregates all apps in SQL so long All Time histories do not need to
+    /// materialize every app/day row in the UI process.
+    public func appEnergyTotals(sinceDay: String) throws -> [StoredAppEnergyTotal] {
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT app_key, SUM(wh) AS wh, SUM(cpu_hours) AS cpu_hours
+                    FROM energy_rollup WHERE day >= ?
+                    GROUP BY app_key ORDER BY wh DESC, app_key
+                    """,
+                arguments: [sinceDay])
+            return rows.map { row in
+                StoredAppEnergyTotal(
+                    appKey: row["app_key"],
+                    wh: row["wh"],
+                    cpuHours: row["cpu_hours"])
+            }
+        }
+    }
+
+    /// Daily history for one app, backed by the app_key/day index.
+    public func rollups(appKey: String, sinceDay: String) throws -> [DailyEnergyRollup] {
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT day, app_key, wh, cpu_hours FROM energy_rollup
+                    WHERE app_key = ? AND day >= ? ORDER BY day
+                    """,
+                arguments: [appKey, sinceDay])
             return rows.map { row in
                 DailyEnergyRollup(
                     day: row["day"],

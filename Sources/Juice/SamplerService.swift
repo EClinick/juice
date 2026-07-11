@@ -17,8 +17,6 @@ actor SamplerService {
 
     /// Keep raw samples for 90 days.
     private static let sampleRetention: TimeInterval = 90 * 24 * 3600
-    /// Keep daily rollups for 365 days.
-    private static let rollupRetentionDays = 365
     /// Refresh rollups when the last successful refresh is older than this.
     private static let rollupStaleness: TimeInterval = 15 * 60
     /// Each refresh rebuilds full days starting this many days back, so a
@@ -48,8 +46,9 @@ actor SamplerService {
         self.helper = helper
     }
 
-    /// Records one battery reading; once per hour, also prunes samples and
-    /// rollups older than their retention windows.
+    /// Records one battery reading; once per hour, also prunes raw battery
+    /// samples. Compact daily energy rollups are retained indefinitely so the
+    /// All Time range means everything Juice has recorded.
     func recordSample(_ reading: BatteryReading) {
         let now = Date()
         do {
@@ -69,15 +68,6 @@ actor SamplerService {
                 try store.pruneSamples(olderThan: now.addingTimeInterval(-Self.sampleRetention))
             } catch {
                 NSLog("Juice: failed to prune battery samples: \(error)")
-            }
-            do {
-                if let cutoff = calendar.date(
-                    byAdding: .day, value: -Self.rollupRetentionDays, to: now
-                ) {
-                    try store.pruneRollups(olderThanDay: dayFormatter.string(from: cutoff))
-                }
-            } catch {
-                NSLog("Juice: failed to prune energy rollups: \(error)")
             }
         }
     }
