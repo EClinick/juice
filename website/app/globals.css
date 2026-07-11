@@ -400,7 +400,9 @@ a:focus-visible {
   }
 
   .hero {
-    min-height: 760px;
+    /* Fill the visible phone viewport instead of stopping at a fixed height. */
+    min-height: calc(100svh - 14px);
+    min-height: calc(100dvh - 14px);
     padding: 20px 20px 18px;
   }
 
