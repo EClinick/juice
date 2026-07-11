@@ -1,6 +1,6 @@
 "use client";
 
-import { animate, motion, useMotionValue, useReducedMotion } from "motion/react";
+import { animate, motion, useMotionTemplate, useMotionValue, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const PLUG_WIDTH = 58;
@@ -9,6 +9,8 @@ const PLUG_BACK_X = -7;
 const PLUG_TIP_X = PLUG_WIDTH - 2;
 const INSERT_DEPTH = 14;
 const SNAP_DISTANCE = 76;
+const HOME_SPRING = { type: "spring", stiffness: 350, damping: 32 } as const;
+const CONNECT_SPRING = { type: "spring", stiffness: 430, damping: 30 } as const;
 
 type Point = { x: number; y: number };
 
@@ -21,8 +23,11 @@ export function ChargingWordmark() {
   const draggingRef = useRef(false);
   const movedRef = useRef(false);
   const connectedRef = useRef(false);
+  const pointerRef = useRef<{ id: number; offset: Point; start: Point } | null>(null);
   const x = useMotionValue(0);
   const y = useMotionValue(0);
+  const dragScale = useMotionValue(1);
+  const plugTransform = useMotionTemplate`translate3d(${x}px, ${y}px, 0) scale(${dragScale})`;
   const reduceMotion = useReducedMotion();
   const [ready, setReady] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -50,8 +55,8 @@ export function ChargingWordmark() {
         x.set(homeLeft);
         y.set(homeY);
       } else {
-        animate(x, homeLeft, { type: "spring", stiffness: 350, damping: 32 });
-        animate(y, homeY, { type: "spring", stiffness: 350, damping: 32 });
+        animate(x, homeLeft, HOME_SPRING);
+        animate(y, homeY, HOME_SPRING);
       }
     },
     [reduceMotion, x, y],
@@ -68,16 +73,8 @@ export function ChargingWordmark() {
       y.set(connectedY);
       return;
     }
-    animate(x, connectedX, {
-      type: "spring",
-      stiffness: 430,
-      damping: 30,
-    });
-    animate(y, connectedY, {
-      type: "spring",
-      stiffness: 430,
-      damping: 30,
-    });
+    animate(x, connectedX, CONNECT_SPRING);
+    animate(y, connectedY, CONNECT_SPRING);
   }, [reduceMotion, x, y]);
 
   const measure = useCallback(
@@ -147,6 +144,27 @@ export function ChargingWordmark() {
     moveHome(false);
   }, [moveHome]);
 
+  const setPressedScale = useCallback(
+    (pressed: boolean) => {
+      const target = pressed ? 1.045 : 1;
+      if (reduceMotion) dragScale.set(1);
+      else animate(dragScale, target, { duration: 0.12, ease: [0.23, 1, 0.32, 1] });
+    },
+    [dragScale, reduceMotion],
+  );
+
+  const finishDrag = useCallback(() => {
+    draggingRef.current = false;
+    setDragging(false);
+    setPressedScale(false);
+    const target = targetRef.current;
+    const connectorX = x.get() + PLUG_TIP_X;
+    const connectorY = y.get() + PLUG_HEIGHT / 2;
+    const distance = Math.hypot(connectorX - target.x, connectorY - target.y);
+    if (distance <= SNAP_DISTANCE) snapToPort();
+    else moveHome(false);
+  }, [moveHome, setPressedScale, snapToPort, x, y]);
+
   const handleActivate = () => {
     if (movedRef.current) {
       movedRef.current = false;
@@ -160,7 +178,7 @@ export function ChargingWordmark() {
     <div
       className={`charging-wordmark${ready ? " is-ready" : ""}${dragging ? " is-dragging" : ""}${connected ? " is-connected" : ""}`}
     >
-      <h1 id="hero-title" className="charging-title">
+      <h1 id="hero-title" className="charging-title" data-text="JUICE">
         JUICE
         <span ref={portRef} className="charge-port" aria-hidden="true" />
       </h1>
@@ -173,32 +191,60 @@ export function ChargingWordmark() {
       <motion.button
         type="button"
         className="usb-plug"
-        style={{ x, y }}
-        drag
-        dragMomentum={false}
-        dragElastic={0}
-        whileDrag={reduceMotion ? undefined : { scale: 1.045 }}
-        onDragStart={() => {
-          draggingRef.current = true;
+        style={{ transform: plugTransform }}
+        onPointerDown={(event) => {
+          if (!event.isPrimary || event.button !== 0 || pointerRef.current) return;
+          x.stop();
+          y.stop();
+          dragScale.stop();
+          pointerRef.current = {
+            id: event.pointerId,
+            offset: { x: event.clientX - x.get(), y: event.clientY - y.get() },
+            start: { x: event.clientX, y: event.clientY },
+          };
           movedRef.current = false;
-          setDragging(true);
-          if (connected) {
-            connectedRef.current = false;
-            setConnected(false);
+          event.currentTarget.setPointerCapture(event.pointerId);
+          setPressedScale(true);
+        }}
+        onPointerMove={(event) => {
+          const pointer = pointerRef.current;
+          if (!pointer || pointer.id !== event.pointerId) return;
+          const movement = Math.hypot(
+            event.clientX - pointer.start.x,
+            event.clientY - pointer.start.y,
+          );
+          if (!draggingRef.current && movement < 3) return;
+          if (!draggingRef.current) {
+            draggingRef.current = true;
+            setDragging(true);
+            if (connectedRef.current) {
+              connectedRef.current = false;
+              setConnected(false);
+            }
           }
-        }}
-        onDrag={() => {
           movedRef.current = true;
+          x.set(event.clientX - pointer.offset.x);
+          y.set(event.clientY - pointer.offset.y);
         }}
-        onDragEnd={() => {
-          draggingRef.current = false;
-          setDragging(false);
-          const target = targetRef.current;
-          const connectorX = x.get() + PLUG_TIP_X;
-          const connectorY = y.get() + PLUG_HEIGHT / 2;
-          const distance = Math.hypot(connectorX - target.x, connectorY - target.y);
-          if (distance <= SNAP_DISTANCE) snapToPort();
-          else moveHome(false);
+        onPointerUp={(event) => {
+          const pointer = pointerRef.current;
+          if (!pointer || pointer.id !== event.pointerId) return;
+          pointerRef.current = null;
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+          if (draggingRef.current) finishDrag();
+          else setPressedScale(false);
+        }}
+        onPointerCancel={(event) => {
+          const pointer = pointerRef.current;
+          if (!pointer || pointer.id !== event.pointerId) return;
+          pointerRef.current = null;
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+          if (draggingRef.current) finishDrag();
+          else setPressedScale(false);
         }}
         onClick={handleActivate}
         aria-label={connected ? "Disconnect USB-C charger" : "Connect USB-C charger to the J"}
