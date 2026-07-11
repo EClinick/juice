@@ -20,4 +20,13 @@ import Foundation
     /// Added in protocol version 2; callers must gate on the handshake's
     /// reported version before invoking this against an installed helper.
     func fetchBatteryLevels(sinceEpoch: Double, reply: @escaping (Data?, NSError?) -> Void)
+
+    /// Replies with a JSON-encoded `LiveEnergySnapshot`: one raw cumulative
+    /// energy counter per resource coalition at the instant of the call. The
+    /// snapshot is stateless; the app differentiates consecutive snapshots to
+    /// derive watts and rolls coalitions up to their owning .app.
+    ///
+    /// Added in protocol version 3; callers must gate on the handshake's
+    /// reported version before invoking this against an installed helper.
+    func fetchLiveEnergySample(reply: @escaping (Data?, NSError?) -> Void)
 }

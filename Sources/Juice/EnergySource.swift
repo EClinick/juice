@@ -1,7 +1,7 @@
 import Foundation
 
 /// Per-app energy usage over a range, aggregated by application.
-struct AppEnergy: Identifiable {
+struct AppEnergy: Identifiable, Equatable {
     var id: String { bundleId }
     var bundleId: String
     var displayName: String
@@ -24,6 +24,12 @@ enum EnergyRange: String, CaseIterable, Sendable {
     case threeDays = "3 Days"
     case week = "Week"
     case allTime = "All Time"
+
+    /// Short label for the segmented picker; "All" keeps the segments inside
+    /// the 320 px popover, the rest use the raw value.
+    var pickerLabel: String {
+        self == .allTime ? "All" : rawValue
+    }
 }
 
 /// Whether a persisted battery timeline can be queried independently of
