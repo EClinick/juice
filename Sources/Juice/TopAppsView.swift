@@ -75,18 +75,44 @@ struct TopAppsView: View {
 
     // MARK: - Hybrid Today
 
+    /// The hybrid's row plan: which rows render in each section and what the
+    /// fold row absorbs. Active rows spend the budget first, then earlier
+    /// rows, then one fold slot when anything is left over - never more than
+    /// ``hybridRowCap`` rows total, so the hybrid cannot outgrow the plain
+    /// 8-row list it replaced even when many apps are drawing power at once.
+    private struct HybridRowPlan {
+        let visibleActive: [HybridTodayList.ActiveApp]
+        let visibleEarlier: [AppEnergy]
+        let foldedCount: Int
+        let foldedWh: Double
+    }
+
+    private static func rowPlan(for hybrid: HybridTodayList) -> HybridRowPlan {
+        var activeCap = min(hybrid.active.count, hybridRowCap)
+        var earlierCap = hybridRowCap - activeCap
+        if hybrid.active.count > activeCap || hybrid.earlier.count > earlierCap {
+            if earlierCap > 0 {
+                earlierCap -= 1
+            } else {
+                activeCap -= 1
+            }
+        }
+        let overflowActive = hybrid.active.dropFirst(activeCap)
+        let foldedEarlier = hybrid.earlier.dropFirst(earlierCap)
+        return HybridRowPlan(
+            visibleActive: Array(hybrid.active.prefix(activeCap)),
+            visibleEarlier: Array(hybrid.earlier.prefix(earlierCap)),
+            foldedCount: overflowActive.count + foldedEarlier.count,
+            foldedWh: foldedEarlier.reduce(0) { $0 + $1.energyWh }
+                + overflowActive.compactMap(\.todayWh).reduce(0, +)
+        )
+    }
+
     @ViewBuilder
     private func hybridToday(_ hybrid: HybridTodayList) -> some View {
-        // Reserve the live rows first, then fill the remainder with earlier
-        // rows. The fold row spends one slot of the same budget so the hybrid
-        // never renders taller than the plain 8-row list it replaced.
-        let remaining = max(0, Self.hybridRowCap - hybrid.active.count)
-        let needsFold = hybrid.earlier.count > remaining
-        let earlierCap = needsFold ? max(0, remaining - 1) : remaining
-        let visibleEarlier = Array(hybrid.earlier.prefix(earlierCap))
-        let folded = hybrid.earlier.dropFirst(earlierCap)
-        let maxWatts = max(hybrid.active.map(\.watts).max() ?? 0, 0.001)
-        let earlierMax = max(visibleEarlier.map(\.energyWh).max() ?? 0, 0.001)
+        let plan = Self.rowPlan(for: hybrid)
+        let maxWatts = max(plan.visibleActive.map(\.watts).max() ?? 0, 0.001)
+        let earlierMax = max(plan.visibleEarlier.map(\.energyWh).max() ?? 0, 0.001)
 
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 6) {
@@ -96,7 +122,7 @@ struct TopAppsView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
-                ForEach(hybrid.active) { app in
+                ForEach(plan.visibleActive) { app in
                     LiveActiveRow(
                         app: app,
                         fraction: app.watts / maxWatts,
@@ -104,21 +130,19 @@ struct TopAppsView: View {
                 }
             }
 
-            if !visibleEarlier.isEmpty || !folded.isEmpty {
+            if !plan.visibleEarlier.isEmpty || plan.foldedCount > 0 {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("EARLIER TODAY")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                    ForEach(visibleEarlier) { app in
+                    ForEach(plan.visibleEarlier) { app in
                         AppEnergyRow(
                             app: app,
                             fraction: app.energyWh / earlierMax,
                             onTap: { showDetail(appKey: app.bundleId, displayName: app.displayName) })
                     }
-                    if !folded.isEmpty {
-                        FoldedAppsRow(
-                            count: folded.count,
-                            energyWh: folded.reduce(0) { $0 + $1.energyWh })
+                    if plan.foldedCount > 0 {
+                        FoldedAppsRow(count: plan.foldedCount, energyWh: plan.foldedWh)
                     }
                 }
             }
