@@ -5,6 +5,7 @@ import AppKit
 struct TopAppsView: View {
     let apps: [AppEnergy]
     @Binding var range: EnergyRange
+    let origin: DataOrigin
 
     private var maxEnergy: Double {
         max(apps.map(\.energyWh).max() ?? 0, 0.001)
@@ -22,13 +23,17 @@ struct TopAppsView: View {
 
             VStack(spacing: 6) {
                 ForEach(apps) { app in
-                    AppEnergyRow(app: app, fraction: app.energyWh / maxEnergy) {
-                        AppDetailPresenter.shared.show(
-                            appKey: app.bundleId,
-                            displayName: app.displayName,
-                            range: range
-                        )
-                    }
+                    AppEnergyRow(
+                        app: app,
+                        fraction: app.energyWh / maxEnergy,
+                        onTap: {
+                            AppDetailPresenter.shared.show(
+                                appKey: app.bundleId,
+                                displayName: app.displayName,
+                                range: range,
+                                origin: origin
+                            )
+                        })
                 }
             }
         }
@@ -45,41 +50,46 @@ private struct AppEnergyRow: View {
     @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 8) {
-            AppIconView(bundleId: app.bundleId, displayName: app.displayName)
-                .frame(width: 18, height: 18)
+        Button(action: onTap) {
+            HStack(spacing: 8) {
+                AppIconView(bundleId: app.bundleId, displayName: app.displayName)
+                    .frame(width: 18, height: 18)
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(app.displayName)
-                    .font(.caption)
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(app.displayName)
+                        .font(.caption)
+                        .lineLimit(1)
 
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(Color.secondary.opacity(0.15))
-                        Capsule()
-                            .fill(Color.accentColor)
-                            .frame(width: geo.size.width * CGFloat(max(0, min(1, fraction))))
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule()
+                                .fill(Color.secondary.opacity(0.15))
+                            Capsule()
+                                .fill(Color.accentColor)
+                                .frame(width: geo.size.width * CGFloat(max(0, min(1, fraction))))
+                        }
                     }
+                    .frame(height: 5)
                 }
-                .frame(height: 5)
+
+                Text(String(format: "%.1f Wh", app.energyWh))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .frame(width: 56, alignment: .trailing)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .opacity(hovering ? 1 : 0)
             }
-
-            Text(String(format: "%.1f Wh", app.energyWh))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
-                .frame(width: 56, alignment: .trailing)
-
-            Image(systemName: "chevron.right")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.tertiary)
-                .opacity(hovering ? 1 : 0)
         }
-        .contentShape(Rectangle())
+        .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .onTapGesture(perform: onTap)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(app.displayName)
+        .accessibilityValue(String(format: "%.1f watt-hours", app.energyWh))
+        .accessibilityHint("Opens energy details")
     }
 }
 

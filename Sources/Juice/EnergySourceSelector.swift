@@ -16,7 +16,7 @@ enum DataOrigin {
 
 /// Encapsulates the single policy for choosing an energy source per range:
 /// Today stays on the live helper path (fresher than the 15-minute rollup
-/// cadence); historical ranges (3 Days / Week) come from the app's own rollup
+/// cadence); historical ranges (3 Days / Week / All Time) come from the app's own rollup
 /// store when available, because the live powerlog database only retains
 /// about three days. If stored history is unavailable, the selector tries the
 /// live helper. A successful empty response is still live data; only a thrown
@@ -53,12 +53,12 @@ struct EnergySourceSelector {
         var errorDescription: String?
     }
 
-    func topApps(range: EnergyRange) async -> TopAppsResult {
+    func topApps(range: EnergyRange, limit: Int? = nil) async -> TopAppsResult {
         if range != .today, let store = store() {
             if let apps = try? await storedApps(store, range),
                !apps.isEmpty {
                 return TopAppsResult(
-                    apps: apps,
+                    apps: limited(apps, to: limit),
                     origin: .store,
                     coverageDayCount: coverageDayCount(store: store, range: range),
                     errorDescription: nil
@@ -69,7 +69,7 @@ struct EnergySourceSelector {
         do {
             let apps = try await liveSource.topApps(range: range)
             return TopAppsResult(
-                apps: apps,
+                apps: limited(apps, to: limit),
                 origin: .live,
                 coverageDayCount: nil,
                 errorDescription: nil)
@@ -83,6 +83,11 @@ struct EnergySourceSelector {
                 coverageDayCount: nil,
                 errorDescription: error.localizedDescription)
         }
+    }
+
+    private func limited(_ apps: [AppEnergy], to limit: Int?) -> [AppEnergy] {
+        guard let limit else { return apps }
+        return Array(apps.prefix(max(0, limit)))
     }
 
     /// Days of history the store holds within the range, when the earliest

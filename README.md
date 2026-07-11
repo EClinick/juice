@@ -24,7 +24,7 @@ Juice surfaces that data: which apps used how many watt-hours today, over the la
 ## Features
 
 - **Menu bar live readout**: battery percent and live watts drawn (or charging wattage), updated continuously.
-- **Top energy users**: per-app watt-hours for Today, 3 Days, or Week, with real app icons.
+- **Top energy users**: per-app watt-hours for Today, 3 Days, Week, or All Time, with real app icons.
 - **Per-app detail**: click any app to see where its energy went (CPU vs GPU vs Neural Engine), an hour-by-hour usage chart, and a plain-English explanation of the usage pattern.
 - **Charge timeline**: battery level over the last 24 hours, sampled locally every minute, with on-AC periods highlighted.
 - **Insights**: drain-rate anomalies measured against your own 7-day baseline, apps using far more than their typical energy, the energy hog of the week, and charging-habit observations.
@@ -94,12 +94,11 @@ people.
 ```bash
 git clone https://github.com/EClinick/juice.git
 cd juice
-swift build
 
 # Install the privileged helper (asks for sudo, see below for what it does)
 make dev-helper-install
 
-# Sign the app binary so the helper accepts its XPC connections
+# Build and sign the isolated dev app so the helper accepts its XPC connections
 make dev-app-sign
 
 # Run
@@ -108,22 +107,28 @@ make dev-app-sign
 
 ## Build a macOS app bundle
 
-Create a launchable menu-bar app at `dist/Juice.app`:
+Create an isolated development menu-bar app at `dist/Juice Dev.app`:
 
 ```bash
-make app
-ditto dist/Juice.app /Applications/Juice.app
-open /Applications/Juice.app
+DEV_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" make app
+ditto "dist/Juice Dev.app" "/Applications/Juice Dev.app"
+open "/Applications/Juice Dev.app"
 ```
 
-The app bundle includes its launch daemon and registers it through
+Development builds use `com.eclinick.juice.dev`, the helper/Mach service
+`com.eclinick.juice.dev.helper`, and a separate defaults suite, so they can
+coexist with the released Juice app without replacing its Login Item.
+
+The app bundle includes its development launch daemon and registers it through
 `SMAppService`. Juice intentionally registers only while installed under
 `/Applications`; launching from `dist` or directly from the DMG shows an
 install-location instruction instead of creating an ejectable daemon path.
 macOS then requires approval under System Settings → General → Login Items
-before the daemon can run. Local ad-hoc builds use the development
-identifier-only trust check; public builds use the Team ID-pinned production
-check.
+before the daemon can run. The packaged development target uses your Developer
+ID identity and the same Team ID-pinned trust model as production. For packaging
+inspection on a machine without that certificate, `make app-adhoc` creates an
+artifact whose privileged helper is not expected to launch on systems enforcing
+signed launch constraints.
 
 ## Publishing a release
 
@@ -154,12 +159,12 @@ The lower-level `make release-cask` and `make appcast` targets are retained for
 diagnostics and local inspection; routine public releases should use
 `make publish`.
 
-`make dev-helper-install` builds the helper, copies it to `/Library/PrivilegedHelperTools/com.eclinick.juice.helper`, installs a launchd daemon plist at `/Library/LaunchDaemons/com.eclinick.juice.helper.plist`, and bootstraps it.
+`make dev-helper-install` builds the isolated development helper, copies it to `/Library/PrivilegedHelperTools/com.eclinick.juice.dev.helper`, installs a launchd daemon plist at `/Library/LaunchDaemons/com.eclinick.juice.dev.helper.plist`, and bootstraps it.
 The daemon starts on demand when the app connects and is idle otherwise.
 Remove everything cleanly with `make dev-helper-uninstall`.
-Always remove that legacy daemon before testing a packaged build: it uses the
-same Mach service and can hide a broken SMAppService registration. Validate the
-production approval flow from a clean macOS VM or snapshot.
+Always remove that legacy daemon before testing the packaged development build:
+it uses the same development Mach service and can hide a broken development
+SMAppService registration. It does not overlap the production helper.
 
 The legacy development install uses an ad-hoc signature with an identifier-only
 client check, which is fine for a machine you control but is not the production
@@ -170,7 +175,7 @@ helper and app to share the same Team ID.
 
 - Energy figures come from macOS's own per-coalition accounting in the powerlog database: CPU, GPU, and Neural Engine energy in nanojoules, converted to watt-hours (`Wh = nJ / 3.6e12`).
 - A "coalition" is an app plus all its helper processes, which is why the numbers map to apps the way you would expect.
-- macOS retains only about 3 days of this data; Juice's local store accumulates daily rollups (kept for a year) and battery samples (kept for 90 days), so your history grows beyond what the OS keeps.
+- macOS retains only about 3 days of this data; Juice's local store accumulates daily rollups indefinitely and keeps battery samples for 90 days, so your history grows beyond what the OS keeps.
 - Rollup rebuilds only replace days the source data fully covers, so macOS purging its own retention window can never erase Juice's stored history.
 - The displayed values have been audited against the raw database with independent SQL: stored per-app watt-hours matched the source to floating-point precision.
 

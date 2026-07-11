@@ -3,7 +3,7 @@ import Foundation
 /// Typed errors crossing the XPC boundary from the helper to the app.
 public enum HelperError {
     /// The NSError domain used for all helper errors.
-    public static let domain = "com.eclinick.juice.helper.error"
+    public static let domain = "\(JuiceXPC.helperLabel).error"
 
     /// Error codes within ``domain``.
     public enum Code: Int, Sendable {

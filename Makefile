@@ -1,27 +1,41 @@
-HELPER_LABEL := com.eclinick.juice.helper
+HELPER_LABEL := com.eclinick.juice.dev.helper
 HELPER_DEST := /Library/PrivilegedHelperTools/$(HELPER_LABEL)
 PLIST_SRC := Scripts/dev/$(HELPER_LABEL).plist
 PLIST_DEST := /Library/LaunchDaemons/$(HELPER_LABEL).plist
 XCODE_DEVELOPER_DIR := /Applications/Xcode.app/Contents/Developer
+DEV_SIGNING_IDENTITY ?= Developer ID Application: Ethan Clinick (U2MBGTFZM5)
 
-.PHONY: build test app verify-app dmg appcast release-cask publish build-helper-dev dev-helper-install dev-helper-uninstall dev-app-sign
+.PHONY: build test app app-adhoc verify-app verify-dev-app verify-release-app dmg appcast release-cask publish build-helper-dev dev-helper-install dev-helper-uninstall dev-app-sign dev-probe
 
 build:
 	swift build
 
-# Creates a launchable macOS application bundle at dist/Juice.app. It uses an
-# ad-hoc signature by default; provide SIGNING_IDENTITY for a Developer ID build.
+# Creates and verifies an isolated, Developer-ID-signed development bundle.
+# The system helper launch constraints require a real signing identity.
 app:
-	./Scripts/build-app.sh
+	DEVELOPMENT_BUILD=1 SIGNING_IDENTITY="$(DEV_SIGNING_IDENTITY)" ./Scripts/build-app.sh
+	$(MAKE) verify-dev-app
+
+# Useful for inspecting packaging only; its privileged SMAppService helper is
+# not expected to launch on systems that enforce signed launch constraints.
+app-adhoc:
+	DEVELOPMENT_BUILD=1 SIGNING_IDENTITY=- ./Scripts/build-app.sh
+	$(MAKE) verify-dev-app
 
 # Verifies the app contains a correctly described, architecture-matched, and
 # explicitly signed SMAppService launch daemon.
 verify-app:
-	./Scripts/verify-app.sh
+	$(MAKE) verify-dev-app
 
-# Creates a drag-to-Applications disk image at dist/Juice.dmg.
+verify-dev-app:
+	./Scripts/verify-app.sh "dist/Juice Dev.app" development
+
+verify-release-app:
+	./Scripts/verify-app.sh "dist/Juice.app" production
+
+# Creates a signed development disk image at dist/Juice Dev.dmg.
 dmg:
-	./Scripts/create-dmg.sh
+	DEVELOPMENT_BUILD=1 SIGNING_IDENTITY="$(DEV_SIGNING_IDENTITY)" ./Scripts/create-dmg.sh
 
 # Generates a signed appcast.xml next to the release archives. Pass the
 # versioned GitHub release asset URL prefix, for example:
@@ -50,7 +64,7 @@ test:
 	fi
 
 build-helper-dev:
-	swift build -c release -Xswiftc -DDEV_HELPER
+	swift build -c release -Xswiftc -DDEV_BUILD -Xswiftc -DDEV_HELPER
 
 # Installs a dev (ad-hoc signed) build of the helper as a launchd daemon.
 # Requires sudo. Pairs with an ad-hoc signed app (see dev-app-sign).
@@ -76,10 +90,11 @@ dev-helper-uninstall:
 # Ad-hoc signs the debug app build with the bundle identifier the helper's
 # dev code-signing requirement expects.
 dev-app-sign:
-	codesign --force -s - -i com.eclinick.juice .build/debug/Juice
+	swift build -Xswiftc -DDEV_BUILD -Xswiftc -DDEV_HELPER
+	codesign --force -s - -i com.eclinick.juice.dev .build/debug/Juice
 
 # Build, sign, and run the XPC end-to-end probe against the installed helper.
 dev-probe:
-	swift build
-	codesign --force -s - -i com.eclinick.juice .build/debug/JuiceXPCProbe
+	swift build -Xswiftc -DDEV_BUILD -Xswiftc -DDEV_HELPER
+	codesign --force -s - -i com.eclinick.juice.dev .build/debug/JuiceXPCProbe
 	./.build/debug/JuiceXPCProbe

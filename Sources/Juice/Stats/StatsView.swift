@@ -94,7 +94,7 @@ struct StatsView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(maxWidth: 240)
+            .frame(maxWidth: 320)
         }
         .padding(16)
     }
@@ -104,6 +104,7 @@ struct StatsView: View {
         case .today: return "Energy usage over the last day"
         case .threeDays: return "Energy usage over the last 3 days"
         case .week: return "Energy usage over the last week"
+        case .allTime: return "Energy usage since Juice started recording"
         }
     }
 
@@ -130,14 +131,15 @@ struct StatsView: View {
                         ForEach(apps) { app in
                             StatsAppRow(
                                 app: app,
-                                share: app.energyWh / totalEnergy
-                            ) {
-                                AppDetailPresenter.shared.show(
-                                    appKey: app.bundleId,
-                                    displayName: app.displayName,
-                                    range: range
-                                )
-                            }
+                                share: app.energyWh / totalEnergy,
+                                onTap: {
+                                    AppDetailPresenter.shared.show(
+                                        appKey: app.bundleId,
+                                        displayName: app.displayName,
+                                        range: range,
+                                        origin: origin
+                                    )
+                                })
                         }
                     }
                     .padding(.trailing, 4)
@@ -152,6 +154,11 @@ struct StatsView: View {
                     .foregroundStyle(.orange)
             } else if origin == .store, let days = coverageDayCount {
                 Text("History covers \(days) day\(days == 1 ? "" : "s") so far")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            if range != .today, origin == .store, !apps.isEmpty {
+                Text("Stored details are summarized by day.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
@@ -283,45 +290,51 @@ private struct StatsAppRow: View {
     @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            StatsAppIconView(bundleId: app.bundleId, displayName: app.displayName)
-                .frame(width: 20, height: 20)
+        Button(action: onTap) {
+            HStack(spacing: 10) {
+                StatsAppIconView(bundleId: app.bundleId, displayName: app.displayName)
+                    .frame(width: 20, height: 20)
 
-            Text(app.displayName)
-                .font(.callout)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                Text(app.displayName)
+                    .font(.callout)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(Color.secondary.opacity(0.15))
-                    Capsule()
-                        .fill(Color.accentColor)
-                        .frame(width: geo.size.width * CGFloat(max(0, min(1, share))))
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(Color.secondary.opacity(0.15))
+                        Capsule()
+                            .fill(Color.accentColor)
+                            .frame(width: geo.size.width * CGFloat(max(0, min(1, share))))
+                    }
                 }
+                .frame(width: 60, height: 5)
+
+                Text(String(format: "%.1f Wh", app.energyWh))
+                    .font(.callout)
+                    .monospacedDigit()
+                    .frame(width: 72, alignment: .trailing)
+
+                Text(String(format: "%.1f h CPU", app.cpuHours))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .frame(width: 72, alignment: .trailing)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .opacity(hovering ? 1 : 0)
             }
-            .frame(width: 60, height: 5)
-
-            Text(String(format: "%.1f Wh", app.energyWh))
-                .font(.callout)
-                .monospacedDigit()
-                .frame(width: 72, alignment: .trailing)
-
-            Text(String(format: "%.1f h CPU", app.cpuHours))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
-                .frame(width: 72, alignment: .trailing)
-
-            Image(systemName: "chevron.right")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.tertiary)
-                .opacity(hovering ? 1 : 0)
         }
-        .contentShape(Rectangle())
+        .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .onTapGesture(perform: onTap)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(app.displayName)
+        .accessibilityValue(String(
+            format: "%.1f watt-hours, %.1f CPU-hours", app.energyWh, app.cpuHours))
+        .accessibilityHint("Opens energy details")
     }
 }
 

@@ -52,7 +52,7 @@ final class HelperRegistrationController: NSObject, ObservableObject {
     init(
         service: HelperServiceManaging = SMAppService.daemon(
             plistName: JuiceXPC.daemonPlistName),
-        defaults: UserDefaults = .standard,
+        defaults: UserDefaults? = nil,
         installedInApplications: (() -> Bool)? = nil,
         payloadValidationError: (() -> String?)? = nil,
         helperMatchesBundledPayload: (() async -> Bool)? = nil,
@@ -61,6 +61,8 @@ final class HelperRegistrationController: NSObject, ObservableObject {
     ) {
         self.service = service
         self.defaults = defaults
+            ?? UserDefaults(suiteName: JuiceXPC.defaultsSuiteName)
+            ?? .standard
         self.installedInApplications = installedInApplications
             ?? { Self.isInstalledInApplications }
         self.payloadValidationError = payloadValidationError

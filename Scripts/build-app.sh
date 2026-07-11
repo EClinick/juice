@@ -11,9 +11,39 @@ BUILD_NUMBER="${BUILD_NUMBER:-1}"
 SIGNING_IDENTITY="${SIGNING_IDENTITY:--}"
 APPCAST_URL="${APPCAST_URL:-https://github.com/EClinick/juice/releases/latest/download/appcast.xml}"
 OUTPUT_DIR="${OUTPUT_DIR:-$ROOT/dist}"
-APP_PATH="$OUTPUT_DIR/Juice.app"
 ARCHS="${ARCHS:-arm64 x86_64}"
-BUILD_ROOT="${BUILD_ROOT:-$ROOT/.build/app-bundle}"
+
+DEVELOPMENT_BUILD="${DEVELOPMENT_BUILD:-1}"
+[[ "$DEVELOPMENT_BUILD" == "0" || "$DEVELOPMENT_BUILD" == "1" ]] || {
+    echo "DEVELOPMENT_BUILD must be 0 or 1" >&2
+    exit 1
+}
+
+if [[ "$DEVELOPMENT_BUILD" == "1" ]]; then
+    APP_BUNDLE_NAME="Juice Dev.app"
+    APP_DISPLAY_NAME="Juice Dev"
+    APP_BUNDLE_ID="com.eclinick.juice.dev"
+    HELPER_LABEL="com.eclinick.juice.dev.helper"
+    DAEMON_PLIST="$ROOT/Packaging/com.eclinick.juice.dev.helper.plist"
+    BUILD_VARIANT="dev"
+else
+    APP_BUNDLE_NAME="Juice.app"
+    APP_DISPLAY_NAME="Juice"
+    APP_BUNDLE_ID="com.eclinick.juice"
+    HELPER_LABEL="com.eclinick.juice.helper"
+    DAEMON_PLIST="$ROOT/Packaging/com.eclinick.juice.helper.plist"
+    BUILD_VARIANT="production"
+fi
+
+APP_PATH="$OUTPUT_DIR/$APP_BUNDLE_NAME"
+BUILD_ROOT="${BUILD_ROOT:-$ROOT/.build/app-bundle-$BUILD_VARIANT}"
+SWIFT_FLAGS=()
+if [[ "$DEVELOPMENT_BUILD" == "1" ]]; then
+    SWIFT_FLAGS+=(-Xswiftc -DDEV_BUILD)
+fi
+if [[ "$SIGNING_IDENTITY" == "-" ]]; then
+    SWIFT_FLAGS+=(-Xswiftc -DDEV_HELPER)
+fi
 
 cd "$ROOT"
 APP_BINARIES=()
@@ -21,16 +51,19 @@ HELPER_BINARIES=()
 SPARKLE_FRAMEWORK=""
 for arch in $ARCHS; do
     arch_build_path="$BUILD_ROOT/$CONFIGURATION-$arch"
-    if [[ "$SIGNING_IDENTITY" == "-" ]]; then
-        # Ad-hoc helpers have no Team ID. Restrict this weaker identifier-only
-        # client requirement to local builds; Developer ID releases fail closed.
+    # Ad-hoc helpers have no Team ID and use the identifier-only client check.
+    # DEV_BUILD independently selects the isolated app/helper/Mach identities.
+    if (( ${#SWIFT_FLAGS[@]} > 0 )); then
         swift build -c "$CONFIGURATION" --arch "$arch" \
-            --build-path "$arch_build_path" -Xswiftc -DDEV_HELPER
+            --build-path "$arch_build_path" "${SWIFT_FLAGS[@]}"
+        bin_path="$(swift build -c "$CONFIGURATION" --arch "$arch" \
+            --build-path "$arch_build_path" "${SWIFT_FLAGS[@]}" --show-bin-path)"
     else
-        swift build -c "$CONFIGURATION" --arch "$arch" --build-path "$arch_build_path"
+        swift build -c "$CONFIGURATION" --arch "$arch" \
+            --build-path "$arch_build_path"
+        bin_path="$(swift build -c "$CONFIGURATION" --arch "$arch" \
+            --build-path "$arch_build_path" --show-bin-path)"
     fi
-    bin_path="$(swift build -c "$CONFIGURATION" --arch "$arch" \
-        --build-path "$arch_build_path" --show-bin-path)"
     APP_BINARIES+=("$bin_path/Juice")
     HELPER_BINARIES+=("$bin_path/JuiceHelper")
     if [[ -z "$SPARKLE_FRAMEWORK" ]]; then
@@ -54,9 +87,9 @@ mkdir -p \
     "$APP_PATH/Contents/Library/LaunchDaemons"
 cp "$ROOT/Packaging/Juice-Info.plist" "$APP_PATH/Contents/Info.plist"
 cp "$ROOT/Packaging/Juice.icns" "$APP_PATH/Contents/Resources/Juice.icns"
-cp "$ROOT/Packaging/com.eclinick.juice.helper.plist" \
-    "$APP_PATH/Contents/Library/LaunchDaemons/com.eclinick.juice.helper.plist"
-plutil -lint "$APP_PATH/Contents/Library/LaunchDaemons/com.eclinick.juice.helper.plist"
+cp "$DAEMON_PLIST" \
+    "$APP_PATH/Contents/Library/LaunchDaemons/$HELPER_LABEL.plist"
+plutil -lint "$APP_PATH/Contents/Library/LaunchDaemons/$HELPER_LABEL.plist"
 ditto "$SPARKLE_FRAMEWORK" "$APP_PATH/Contents/Frameworks/Sparkle.framework"
 # Juice is not sandboxed and does not opt in to Sparkle's optional XPC
 # services. Remove them from Developer ID release builds before re-signing the
@@ -90,33 +123,36 @@ install_name_tool -add_rpath @executable_path/../Frameworks "$APP_PATH/Contents/
 
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP_PATH/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_PATH/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $APP_BUNDLE_ID" "$APP_PATH/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $APP_DISPLAY_NAME" "$APP_PATH/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_DISPLAY_NAME" "$APP_PATH/Contents/Info.plist"
 
 # The public key is part of the source Info.plist, while the matching private
 # key remains only in the release machine's Keychain. Never give locally
 # ad-hoc-signed builds a production feed: they cannot safely replace a user's
 # installed app. APPCAST_URL is overridable for signed staging releases.
-if [[ "$SIGNING_IDENTITY" == "-" ]]; then
+if [[ "$SIGNING_IDENTITY" == "-" || "$DEVELOPMENT_BUILD" == "1" ]]; then
     /usr/libexec/PlistBuddy -c "Delete :SUFeedURL" "$APP_PATH/Contents/Info.plist"
 else
     /usr/libexec/PlistBuddy -c "Set :SUFeedURL $APPCAST_URL" "$APP_PATH/Contents/Info.plist"
 fi
 
 if [[ "$SIGNING_IDENTITY" == "-" ]]; then
-    codesign --force --sign - --identifier com.eclinick.juice.helper \
+    codesign --force --sign - --identifier "$HELPER_LABEL" \
         "$APP_PATH/Contents/Library/HelperTools/JuiceHelper"
-    codesign --force --sign - --identifier com.eclinick.juice "$APP_PATH"
+    codesign --force --sign - --identifier "$APP_BUNDLE_ID" "$APP_PATH"
 else
     # Sign Sparkle's nested helpers from the inside out with a hardened runtime
     # and secure timestamp; --deep alone does not apply those options to every
     # nested component and is rejected by Apple's notarization service.
     SPARKLE_PATH="$APP_PATH/Contents/Frameworks/Sparkle.framework"
     SIGN_OPTIONS=(--force --sign "$SIGNING_IDENTITY" --options runtime --timestamp)
-    codesign "${SIGN_OPTIONS[@]}" --identifier com.eclinick.juice.helper \
+    codesign "${SIGN_OPTIONS[@]}" --identifier "$HELPER_LABEL" \
         "$APP_PATH/Contents/Library/HelperTools/JuiceHelper"
     codesign "${SIGN_OPTIONS[@]}" "$SPARKLE_PATH/Versions/Current/Autoupdate"
     codesign "${SIGN_OPTIONS[@]}" "$SPARKLE_PATH/Versions/Current/Updater.app"
     codesign "${SIGN_OPTIONS[@]}" "$SPARKLE_PATH"
-    codesign "${SIGN_OPTIONS[@]}" --identifier com.eclinick.juice "$APP_PATH"
+    codesign "${SIGN_OPTIONS[@]}" --identifier "$APP_BUNDLE_ID" "$APP_PATH"
 fi
 
 for arch in $ARCHS; do

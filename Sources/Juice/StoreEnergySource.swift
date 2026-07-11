@@ -12,30 +12,15 @@ struct StoreEnergySource: EnergySource {
     // cooperative pool rather than the caller's (main) actor.
     func topApps(range: EnergyRange) async throws -> [AppEnergy] {
         let sinceDay = Self.sinceDay(for: range)
-        let rollups = try store.rollups(sinceDay: sinceDay)
-
-        struct Totals {
-            var wh: Double = 0
-            var cpuHours: Double = 0
-        }
-        var totals: [String: Totals] = [:]
-        for rollup in rollups {
-            totals[rollup.appKey, default: Totals()].wh += rollup.wh
-            totals[rollup.appKey, default: Totals()].cpuHours += rollup.cpuHours
-        }
-
-        return totals
-            .map { key, value in
+        return try store.appEnergyTotals(sinceDay: sinceDay)
+            .map { total in
                 AppEnergy(
-                    bundleId: key,
-                    displayName: PowerlogEnergySource.displayName(for: key),
-                    energyWh: value.wh,
-                    cpuHours: value.cpuHours
+                    bundleId: total.appKey,
+                    displayName: PowerlogEnergySource.displayName(for: total.appKey),
+                    energyWh: total.wh,
+                    cpuHours: total.cpuHours
                 )
             }
-            .sorted { $0.energyWh > $1.energyWh }
-            .prefix(8)
-            .map { $0 }
     }
 
     func batteryTimeline(hours: Int, until: Date) async throws -> [BatterySample] {
@@ -60,6 +45,10 @@ struct StoreEnergySource: EnergySource {
             start = calendar.date(byAdding: .day, value: -2, to: now) ?? now
         case .week:
             start = calendar.date(byAdding: .day, value: -6, to: now) ?? now
+        case .allTime:
+            // Day keys are ISO-formatted, so this sorts before every stored
+            // yyyy-MM-dd value and returns all history without a second query.
+            return "0000-00-00"
         }
         return formatter.string(from: start)
     }

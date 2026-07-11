@@ -10,12 +10,18 @@ import JuiceCore
 /// Data arrives through an injected async `provider` closure so the view can
 /// be previewed and tested without a live XPC connection.
 struct AppDetailView: View {
+    enum Resolution {
+        case hourlyComponents
+        case dailyTotals
+    }
+
     let displayName: String
     let bundleId: String
     let rangeLabel: String
     let windowStart: Date
     let windowEnd: Date
     let windowHours: Int
+    let resolution: Resolution
     let provider: () async throws -> AppEnergyBreakdown
 
     private enum LoadState {
@@ -99,7 +105,9 @@ struct AppDetailView: View {
             do {
                 let breakdown = try await loadBreakdown()
                 state = .loaded(breakdown)
-                loadProcesses()
+                if resolution == .hourlyComponents {
+                    loadProcesses()
+                }
             } catch {
                 state = .failed(
                     (error as? LocalizedError)?.errorDescription
@@ -168,11 +176,19 @@ struct AppDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header(breakdown)
-                componentBreakdown(breakdown)
-                hourlyChart(breakdown)
-                explanation(breakdown)
+                if resolution == .hourlyComponents {
+                    componentBreakdown(breakdown)
+                }
+                energyChart(breakdown)
+                if resolution == .dailyTotals {
+                    historicalSummary(breakdown)
+                } else {
+                    explanation(breakdown)
+                }
                 statLine(breakdown)
-                processBreakdown(breakdown)
+                if resolution == .hourlyComponents {
+                    processBreakdown(breakdown)
+                }
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -261,15 +277,17 @@ struct AppDetailView: View {
     /// Hourly energy over the range window. The x-axis is pinned to the full
     /// window (matching ``ChargeTimelineView``) so hours with no energy show
     /// as gaps rather than the data stretching to fill the chart.
-    private func hourlyChart(_ breakdown: AppEnergyBreakdown) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Energy by hour")
+    private func energyChart(_ breakdown: AppEnergyBreakdown) -> some View {
+        let isDaily = resolution == .dailyTotals
+        let component: Calendar.Component = isDaily ? .day : .hour
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(isDaily ? "Energy by day" : "Energy by hour")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             Chart(breakdown.hourlyWh, id: \.bucketStart) { bucket in
                 BarMark(
-                    x: .value("Hour", bucket.bucketStart, unit: .hour),
+                    x: .value(isDaily ? "Day" : "Hour", bucket.bucketStart, unit: component),
                     y: .value("Energy", bucket.wh)
                 )
                 .foregroundStyle(Color.accentColor)
@@ -453,6 +471,21 @@ struct AppDetailView: View {
     }
 
     // MARK: - Explanation and stats
+
+    private func historicalSummary(_ breakdown: AppEnergyBreakdown) -> some View {
+        let recordedDays = breakdown.hourlyWh.filter { $0.wh > 0 }.count
+        let average = recordedDays > 0 ? breakdown.totalWh / Double(recordedDays) : 0
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("Stored history")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("Juice recorded energy on \(recordedDays) day\(recordedDays == 1 ? "" : "s"), averaging \(String(format: "%.1f Wh", average)) per recorded day.")
+                .font(.callout)
+            Text("Component and hourly measurements are only available while macOS retains the raw PowerLog data.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+    }
 
     private func explanation(_ breakdown: AppEnergyBreakdown) -> some View {
         VStack(alignment: .leading, spacing: 4) {

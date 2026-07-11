@@ -1,8 +1,11 @@
 # Releasing Juice
 
-`make app` produces `dist/Juice.app`, and `make dmg` produces a Finder-ready
-`dist/Juice.dmg`. Both commands use an ad-hoc signature unless a signing
-identity is supplied.
+`make app` produces the isolated `dist/Juice Dev.app`; the release pipeline
+produces `dist/Juice.app`, and `make dmg` produces a Finder-ready development
+`dist/Juice Dev.dmg`. The development app target requires a Developer ID identity
+for its privileged helper; `make app-adhoc` is available for packaging-only
+inspection. Production `Juice.dmg` artifacts are produced only by the signed
+release pipeline.
 
 ## Routine release
 
