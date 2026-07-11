@@ -27,6 +27,8 @@ export function ChargingWordmark() {
   const x = useMotionValue(0);
   const y = useMotionValue(0);
   const dragScale = useMotionValue(1);
+  const cableFlexX = useMotionValue(0);
+  const cableFlexY = useMotionValue(0);
   const plugTransform = useMotionTemplate`translate3d(${x}px, ${y}px, 0) scale(${dragScale})`;
   const reduceMotion = useReducedMotion();
   const [ready, setReady] = useState(false);
@@ -34,14 +36,14 @@ export function ChargingWordmark() {
   const [connected, setConnected] = useState(false);
 
   const drawCable = useCallback(() => {
-    const plugX = x.get() + PLUG_BACK_X;
-    const plugY = y.get() + PLUG_HEIGHT / 2;
+    const plugX = x.get() + PLUG_BACK_X + cableFlexX.get();
+    const plugY = y.get() + PLUG_HEIGHT / 2 + cableFlexY.get();
     const anchor = anchorRef.current;
     const bendY = plugY + Math.max(54, (anchor.y - plugY) * 0.46);
     const path = `M ${anchor.x} ${anchor.y} C ${anchor.x} ${bendY}, ${plugX} ${bendY}, ${plugX} ${plugY}`;
     cableRef.current?.setAttribute("d", path);
     cableHighlightRef.current?.setAttribute("d", path);
-  }, [x, y]);
+  }, [cableFlexX, cableFlexY, x, y]);
 
   const moveHome = useCallback(
     (instant = false) => {
@@ -132,11 +134,38 @@ export function ChargingWordmark() {
   useEffect(() => {
     const stopX = x.on("change", drawCable);
     const stopY = y.on("change", drawCable);
+    const stopFlexX = cableFlexX.on("change", drawCable);
+    const stopFlexY = cableFlexY.on("change", drawCable);
     return () => {
       stopX();
       stopY();
+      stopFlexX();
+      stopFlexY();
     };
-  }, [drawCable, x, y]);
+  }, [cableFlexX, cableFlexY, drawCable, x, y]);
+
+  useEffect(() => {
+    cableFlexX.stop();
+    cableFlexY.stop();
+    cableFlexX.set(0);
+    cableFlexY.set(0);
+
+    if (!ready || dragging || connected || reduceMotion) return;
+
+    const transition = {
+      duration: 0.56,
+      delay: 0.65,
+      times: [0, 0.16, 0.36, 0.54, 0.7, 0.84, 0.92, 1],
+      ease: [0.23, 1, 0.32, 1] as [number, number, number, number],
+    };
+    const flexXAnimation = animate(cableFlexX, [0, -1.5, 2, -1, 1, -0.5, 0, 0], transition);
+    const flexYAnimation = animate(cableFlexY, [0, 0.5, -3.5, -2, 0, -1, 0.5, 0], transition);
+
+    return () => {
+      flexXAnimation.stop();
+      flexYAnimation.stop();
+    };
+  }, [cableFlexX, cableFlexY, connected, dragging, ready, reduceMotion]);
 
   const disconnect = useCallback(() => {
     connectedRef.current = false;
@@ -250,8 +279,10 @@ export function ChargingWordmark() {
         aria-label={connected ? "Disconnect USB-C charger" : "Connect USB-C charger to the J"}
         aria-pressed={connected}
       >
-        <span className="usb-collar" aria-hidden="true" />
-        <span className="usb-tip" aria-hidden="true" />
+        <span className="usb-hardware" aria-hidden="true">
+          <span className="usb-collar" />
+          <span className="usb-tip" />
+        </span>
         <span className="plug-instruction" aria-hidden="true">Drag to charge</span>
       </motion.button>
 
