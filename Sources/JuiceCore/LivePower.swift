@@ -168,7 +168,16 @@ public final class LivePowerModel {
         for key in allKeys {
             let target = key == systemKey ? systemInstantaneous : (instantaneousByApp[key] ?? 0)
             let prior = smoothedWatts[key] ?? 0
-            smoothedWatts[key] = prior + alpha * (target - prior)
+            let smoothed = prior + alpha * (target - prior)
+            // Prune apps that have decayed to nothing and are drawing nothing,
+            // so a long session with app churn does not grow state without
+            // bound. A pruned app re-enters cleanly the tick it draws again.
+            if key != systemKey, smoothed < Self.pruneFloorWatts, target < Self.pruneFloorWatts {
+                smoothedWatts[key] = nil
+                appMeta[key] = nil
+            } else {
+                smoothedWatts[key] = smoothed
+            }
         }
 
         // Refresh metadata for apps seen this tick.
@@ -273,6 +282,10 @@ public final class LivePowerModel {
     // MARK: - Ranking / assembly
 
     private static let systemKey = "\u{0}system"
+
+    /// Below a tenth of a milliwatt an app is indistinguishable from silence;
+    /// entries this small are dropped rather than smoothed forever.
+    private static let pruneFloorWatts = 0.0001
 
     private func buildReading() -> LivePowerReading {
         let systemWatts = max(0, smoothedWatts[Self.systemKey] ?? 0)

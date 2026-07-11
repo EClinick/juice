@@ -27,7 +27,10 @@ final class LivePowerController: ObservableObject {
     /// Each energy source makes its own client (see ``PowerlogEnergySource``),
     /// so the live view does the same.
     private let client: HelperClient
-    private let model = LivePowerModel()
+    /// Threshold 0: the hybrid merger applies the display threshold itself,
+    /// and needs sub-threshold apps in the reading so grace-period holdovers
+    /// keep decaying honestly instead of freezing at their last visible value.
+    private let model = LivePowerModel(idleThresholdWatts: 0)
     private let interval: Duration
     private var loop: Task<Void, Never>?
 
@@ -70,6 +73,8 @@ final class LivePowerController: ObservableObject {
                 status = .warmingUp
             }
         } catch HelperClientError.helperOutdated {
+            // A cancelled loop must not overwrite the state stop() just reset.
+            guard !Task.isCancelled else { return }
             status = .helperOutdated
         } catch {
             guard !Task.isCancelled else { return }
