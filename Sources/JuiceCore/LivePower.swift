@@ -159,6 +159,15 @@ public final class LivePowerModel {
 
         // 3. EMA smoothing. Every known app (present or not) decays toward its
         // instantaneous value; absent apps see 0 and decay downward.
+        //
+        // Metadata refreshes BEFORE the smoothing loop so the prune below is
+        // final: refreshing afterwards would resurrect metadata for an app
+        // whose smoothed entry was just removed, and once the app disappears
+        // from snapshots nothing would ever reclaim it.
+        for (key, meta) in attribution.metaByAppKey {
+            appMeta[key] = meta
+        }
+
         let alpha = emaAlpha(dt: dt)
         let systemKey = Self.systemKey
         var allKeys = Set(smoothedWatts.keys)
@@ -178,11 +187,6 @@ public final class LivePowerModel {
             } else {
                 smoothedWatts[key] = smoothed
             }
-        }
-
-        // Refresh metadata for apps seen this tick.
-        for (key, meta) in attribution.metaByAppKey {
-            appMeta[key] = meta
         }
 
         // 4. Build ranked apps with hysteresis, idle fold, and system bucket.
