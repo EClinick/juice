@@ -13,18 +13,18 @@
 // proc_pidinfo flavor for the per-pid coalition membership.
 #define JUICE_PROC_PIDCOALITIONINFO 20
 
-// COALITION_TYPE_RESOURCE is index 0 of the per-type arrays; COALITION_NUM_TYPES
-// is 2 (RESOURCE, JETSAM). We over-size the arrays to 4 slots: proc_pidinfo
-// returns 40 bytes for this flavor, and a struct sized to only 2 types is too
-// small and yields a zeroed coalition id. Reading id[0] gives the resource
-// coalition regardless.
+// Exact xnu layout (bsd/sys/proc_info.h): one coalition id per type
+// (COALITION_NUM_TYPES is 2: RESOURCE at index 0, JETSAM at index 1) plus
+// three reserved words - 40 bytes, matching what proc_pidinfo returns for
+// this flavor. There are no per-task role fields; resource coalitions have
+// no leader concept.
 #define JUICE_COALITION_TYPE_RESOURCE 0
-#define JUICE_COALITION_TASKROLE_LEADER 1
 
 struct juice_proc_pidcoalitioninfo {
-    uint64_t coalition_id[4];
-    uint32_t coalition_type[4];
-    uint32_t coalition_role[4];
+    uint64_t coalition_id[2];
+    uint64_t reserved1;
+    uint64_t reserved2;
+    uint64_t reserved3;
 };
 
 // struct coalition_resource_usage, exact field order from xnu
@@ -91,7 +91,6 @@ int juice_proc_coalition(int32_t pid, JuiceProcCoalition *out) {
         return errno != 0 ? errno : -1;
     }
     out->coalitionID = info.coalition_id[JUICE_COALITION_TYPE_RESOURCE];
-    out->isLeader = (info.coalition_role[JUICE_COALITION_TYPE_RESOURCE] == JUICE_COALITION_TASKROLE_LEADER) ? 1 : 0;
     return 0;
 }
 

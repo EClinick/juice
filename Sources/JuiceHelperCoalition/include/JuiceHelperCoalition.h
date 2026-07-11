@@ -15,14 +15,15 @@ typedef struct {
     uint64_t aneEnergyNJ;
 } JuiceCoalitionUsage;
 
-/// The resource coalition a process belongs to, plus its role in it.
+/// The resource coalition a process belongs to.
+///
+/// Resource coalitions carry no per-task role (leadership is a jetsam-coalition
+/// concept), so callers pick a representative process themselves.
 typedef struct {
     uint64_t coalitionID;
-    /// Non-zero when this process is the coalition leader (COALITION_TASKROLE_LEADER).
-    int32_t isLeader;
 } JuiceProcCoalition;
 
-/// Reads the resource-coalition id and leader flag for `pid`.
+/// Reads the resource-coalition id for `pid`.
 ///
 /// Returns 0 on success. On failure returns the errno-style code (or -1 for an
 /// unexpected short read) and leaves `*out` untouched; a PID that vanishes
