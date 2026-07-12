@@ -414,17 +414,25 @@ a:focus-visible {
   margin-top: 13px;
   color: #8a8a84;
   font-size: 10px;
+  transition: color var(--duration-color) ease;
+}
+
+.maker-link-label {
   text-decoration: underline;
   text-decoration-color: transparent;
   text-underline-offset: 3px;
-  transition: color var(--duration-color) ease, text-decoration-color var(--duration-color) ease;
+  transition: text-decoration-color var(--duration-color) ease;
 }
 
 .maker-link:hover {
   color: var(--ink);
+}
+
+.maker-link:hover .maker-link-label {
   text-decoration-color: currentColor;
 }
-.maker-link span { padding-left: 2px; font-size: 9px; }
+
+.maker-link-arrow { padding-left: 2px; font-size: 9px; }
 
 .sr-only {
   position: absolute;

@@ -35,7 +35,10 @@ export default function Home() {
           </p>
         </div>
 
-        <a className="maker-link" href="https://x.com/EthanClinick">by Ethan <span aria-hidden="true">↗</span></a>
+        <a className="maker-link" href="https://x.com/EthanClinick">
+          <span className="maker-link-label">By Ethan</span>
+          <span className="maker-link-arrow" aria-hidden="true">↗</span>
+        </a>
       </section>
     </main>
   );
