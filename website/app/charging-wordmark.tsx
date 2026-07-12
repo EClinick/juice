@@ -18,6 +18,7 @@ export function ChargingWordmark() {
   const portRef = useRef<HTMLSpanElement>(null);
   const cableRef = useRef<SVGPathElement>(null);
   const cableHighlightRef = useRef<SVGPathElement>(null);
+  const guideRef = useRef<SVGPathElement>(null);
   const targetRef = useRef<Point>({ x: 0, y: 0 });
   const anchorRef = useRef<Point>({ x: 0, y: 0 });
   const draggingRef = useRef(false);
@@ -43,6 +44,13 @@ export function ChargingWordmark() {
     const path = `M ${anchor.x} ${anchor.y} C ${anchor.x} ${bendY}, ${plugX} ${bendY}, ${plugX} ${plugY}`;
     cableRef.current?.setAttribute("d", path);
     cableHighlightRef.current?.setAttribute("d", path);
+
+    const target = targetRef.current;
+    const guideX = x.get() + PLUG_TIP_X + cableFlexX.get() * 2;
+    const guideY = y.get() + PLUG_HEIGHT / 2 + cableFlexY.get() * 2;
+    const guideDistance = target.x - guideX;
+    const guidePath = `M ${guideX} ${guideY} C ${guideX + guideDistance * 0.42} ${guideY}, ${target.x - guideDistance * 0.18} ${target.y}, ${target.x} ${target.y}`;
+    guideRef.current?.setAttribute("d", guidePath);
   }, [cableFlexX, cableFlexY, x, y]);
 
   const moveHome = useCallback(
@@ -215,6 +223,7 @@ export function ChargingWordmark() {
       <svg className="charging-cable" aria-hidden="true">
         <path ref={cableRef} className="cable-shadow" />
         <path ref={cableHighlightRef} className="cable-highlight" />
+        <path ref={guideRef} className="plug-guide" />
       </svg>
 
       <motion.button

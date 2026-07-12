@@ -223,6 +223,23 @@ main {
   stroke-width: 1.5px;
 }
 
+.plug-guide {
+  opacity: 0;
+  stroke: rgba(17,17,16,.34);
+  stroke-width: 2px;
+  stroke-dasharray: 1 9;
+  transition: opacity var(--duration-ui) var(--ease-out);
+}
+
+.is-ready:not(.is-dragging):not(.is-connected) .plug-guide {
+  opacity: 1;
+  animation: guide-drift 1.25s linear infinite;
+}
+
+@keyframes guide-drift {
+  to { stroke-dashoffset: -20; }
+}
+
 .usb-plug {
   position: fixed;
   z-index: 8;
@@ -479,6 +496,7 @@ a:focus-visible {
   .charging-title::after { transition: none; }
 
   .usb-hardware { animation: none !important; }
+  .plug-guide { animation: none !important; }
 
   .plug-instruction { transition-property: opacity; }
   .download-button {
