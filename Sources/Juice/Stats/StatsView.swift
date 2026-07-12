@@ -17,26 +17,50 @@ struct StatsView: View {
     let timelineSource: EnergySource?
     let reading: BatteryReading?
     @ObservedObject private var helper = HelperRegistrationController.shared
-    @StateObject private var live = LivePowerController()
+    /// The app-scoped live-power source of truth, shared with the popover so the
+    /// two views can never disagree about which apps are live.
+    @ObservedObject private var live = LivePowerCoordinator.shared
 
     /// The charge timeline always covers the last 7 days.
     private static let timelineHours = 24 * 7
 
+    /// A per-instance live-loop identity. The presenter swaps in a new
+    /// StatsView on reopen while the old one tears down; distinct tokens mean
+    /// the stale instance's teardown detaches only itself, never the fresh
+    /// visible instance. `windowWillClose` releases whatever stats token(s)
+    /// remain, covering the retained-window `.onDisappear` gap.
+    @State private var consumerID = UUID()
+
     @State private var range: EnergyRange = .today
-    @State private var apps: [AppEnergy] = []
+    /// Non-today history only. Today reads the coordinator's published result so
+    /// the live hybrid and its Earlier Today rows always agree with one query.
+    @State private var historyApps: [AppEnergy] = []
     @State private var timeline: [BatterySample] = []
     @State private var timelineAvailability: TimelineAvailability = .loading
     @State private var timelineWindowEnd = Date()
     @State private var refreshedAt = Date()
-    @State private var origin: DataOrigin = .loading
-    @State private var energyError: String?
-    @State private var coverageDayCount: Int?
+    @State private var historyOrigin: DataOrigin = .loading
+    @State private var historyError: String?
+    @State private var historyCoverageDayCount: Int?
     @State private var loadTask: Task<Void, Never>?
-    @State private var merger = LiveTodayMerger()
-    @State private var hybrid: HybridTodayList?
 
     private var replacementAnimation: Animation {
         .timingCurve(0.23, 1, 0.32, 1, duration: 0.18)
+    }
+
+    /// The app-table inputs for the current range: the coordinator's Today
+    /// result on ``.today``, the view's own history fetch otherwise.
+    private var apps: [AppEnergy] {
+        range == .today ? (live.todayResult?.apps ?? []) : historyApps
+    }
+    private var origin: DataOrigin {
+        range == .today ? (live.todayResult?.origin ?? .loading) : historyOrigin
+    }
+    private var energyError: String? {
+        range == .today ? live.todayResult?.errorDescription : historyError
+    }
+    private var coverageDayCount: Int? {
+        range == .today ? live.todayResult?.coverageDayCount : historyCoverageDayCount
     }
 
     private var totalEnergy: Double {
@@ -74,40 +98,23 @@ struct StatsView: View {
         }
         .onChange(of: range) {
             loadTask?.cancel()
-            syncLiveSampling()
+            syncLiveAttachment()
             loadTask = Task { await loadApps() }
-        }
-        .onChange(of: live.reading) {
-            recomputeHybrid()
         }
         .onChange(of: helper.readyGeneration) {
             if origin == .unavailable { retryApps() }
         }
-        .onAppear { syncLiveSampling() }
-        .onDisappear {
-            live.stop()
-            merger.reset()
-            hybrid = nil
-        }
+        // Attachment is gated on the Today range so the shared 2 s loop and the
+        // 30 s history query stay idle while the window sits on a historical
+        // range. Detach preserves the merger's grace state.
+        .onAppear { syncLiveAttachment() }
+        .onDisappear { live.setAttached(false, for: .stats(consumerID)) }
     }
 
-    /// Runs the live power loop only while the Stats window is visible and the
-    /// Today segment is selected; stops it otherwise.
-    private func syncLiveSampling() {
-        if range == .today {
-            live.start()
-        } else {
-            live.stop()
-            merger.reset()
-            hybrid = nil
-        }
-    }
-
-    /// Folds the latest live reading into today's history for the hybrid table.
-    /// `Date()` is captured here at the view layer for the merger's grace period.
-    private func recomputeHybrid() {
-        guard range == .today else { return }
-        hybrid = merger.merge(live: live.reading, today: apps, now: Date())
+    /// Attaches to the shared live loop only while the window is showing Today.
+    /// Idempotent: repeated calls with the same state are absorbed.
+    private func syncLiveAttachment() {
+        live.setAttached(range == .today, for: .stats(consumerID))
     }
 
     // MARK: - Header
@@ -161,14 +168,35 @@ struct StatsView: View {
                 Spacer()
             }
 
-            if range == .today, let hybrid, !hybrid.active.isEmpty {
+            if range == .today, let hybrid = live.hybrid, !hybrid.active.isEmpty {
                 hybridAppTable(hybrid)
             } else {
                 historicalAppTable
             }
+
+            // Today's query status renders here, outside the hybrid-vs-history
+            // branch, so a failed or outdated-helper Today fetch is surfaced
+            // even while live rows are showing in the hybrid table (which never
+            // includes these banners). Mirrors the popover, whose banner sits
+            // unconditionally below the app list.
+            if range == .today {
+                todayStatusBanner
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(16)
+    }
+
+    @ViewBuilder
+    private var todayStatusBanner: some View {
+        if origin == .unavailable {
+            HelperStatusView(queryError: energyError, onRetryQuery: retryApps)
+                .transition(.opacity)
+        } else if live.status == .helperOutdated {
+            Text("Live power needs the updated helper - restart Juice to update it.")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+        }
     }
 
     @ViewBuilder
@@ -210,7 +238,11 @@ struct StatsView: View {
             .transition(.opacity)
         }
 
-        if origin == .unavailable {
+        // Today's unavailable / outdated-helper banners are rendered by
+        // ``todayStatusBanner`` at the app-table level so they show whether the
+        // hybrid or this historical fallback is on screen; only the non-today
+        // captions live here to avoid double-rendering.
+        if origin == .unavailable, range != .today {
             HelperStatusView(queryError: energyError, onRetryQuery: retryApps)
                 .transition(.opacity)
         } else if origin == .live, range != .today {
@@ -228,11 +260,6 @@ struct StatsView: View {
             Text("Stored details are summarized by day.")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
-        }
-        if range == .today, live.status == .helperOutdated {
-            Text("Live power needs the updated helper - restart Juice to update it.")
-                .font(.caption2)
-                .foregroundStyle(.orange)
         }
     }
 
@@ -393,28 +420,35 @@ struct StatsView: View {
     }
 
     private func loadApps() async {
+        // Today is owned and published by the coordinator (one query feeds both
+        // the hybrid and its Earlier Today rows), so the window only fetches the
+        // historical ranges itself.
+        guard range != .today else { return }
         // Capture the requested range: if the picker changes while the query
         // is in flight, the stale result must not overwrite the newer
         // selection's data.
         let range = self.range
         withAnimation(replacementAnimation) {
-            origin = .loading
-            apps = []
-            energyError = nil
-            coverageDayCount = nil
+            historyOrigin = .loading
+            historyApps = []
+            historyError = nil
+            historyCoverageDayCount = nil
         }
         let result = await selector.topApps(range: range)
         guard !Task.isCancelled, range == self.range else { return }
         withAnimation(replacementAnimation) {
-            apps = result.apps.sorted { $0.energyWh > $1.energyWh }
-            origin = result.origin
-            coverageDayCount = result.coverageDayCount
-            energyError = result.errorDescription
+            historyApps = result.apps.sorted { $0.energyWh > $1.energyWh }
+            historyOrigin = result.origin
+            historyCoverageDayCount = result.coverageDayCount
+            historyError = result.errorDescription
         }
-        recomputeHybrid()
     }
 
     private func retryApps() {
+        if range == .today {
+            live.refreshTodayNow()
+            return
+        }
         loadTask?.cancel()
         loadTask = Task { await loadApps() }
     }

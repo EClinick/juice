@@ -7,12 +7,22 @@ import AppKit
 /// requires activating the app explicitly. A single window is reused across
 /// invocations: repeated calls bring the existing window to the front rather
 /// than opening duplicates.
-final class StatsWindowPresenter {
+@MainActor
+final class StatsWindowPresenter: NSObject, NSWindowDelegate {
     static let shared = StatsWindowPresenter()
 
     private var window: NSWindow?
 
-    private init() {}
+    private override init() { super.init() }
+
+    /// The window is retained (`isReleasedWhenClosed = false`) and reused, so
+    /// SwiftUI `.onDisappear` on the hosted StatsView cannot be trusted to fire
+    /// on close. Detaching the whole Stats consumer family here guarantees the
+    /// shared live loop stops when the window closes, whatever per-instance
+    /// token the current view holds.
+    func windowWillClose(_ notification: Notification) {
+        LivePowerCoordinator.shared.detachAll(kind: .stats)
+    }
 
     func show(selector: EnergySourceSelector, timelineSource: EnergySource?, reading: BatteryReading?) {
         NSApp.activate(ignoringOtherApps: true)
@@ -50,6 +60,7 @@ final class StatsWindowPresenter {
             window.setContentSize(minimumContentSize)
         }
         window.isReleasedWhenClosed = false
+        window.delegate = self
 
         self.window = window
         window.makeKeyAndOrderFront(nil)

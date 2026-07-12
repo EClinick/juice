@@ -5,25 +5,48 @@ struct PopoverView: View {
     @ObservedObject var model: BatteryViewModel
     @ObservedObject private var updater = UpdateController.shared
     @ObservedObject private var helper = HelperRegistrationController.shared
-    @StateObject private var live = LivePowerController()
+    /// The app-scoped live-power source of truth, shared with the Stats window
+    /// so the two views can never disagree about which apps are live.
+    @ObservedObject private var live = LivePowerCoordinator.shared
 
     private let selector = EnergySourceSelector()
 
+    /// A per-instance live-loop identity. If SwiftUI spins up a second
+    /// PopoverView while the first is still unwinding (rapid close/reopen), each
+    /// instance owns a distinct token, so the stale instance's teardown detaches
+    /// only itself and never the fresh, visible instance.
+    @State private var consumerID = UUID()
+
     @State private var range: EnergyRange = .today
-    @State private var topApps: [AppEnergy] = []
+    /// Non-today history only. Today reads the coordinator's published result so
+    /// the live hybrid and its Earlier Today rows always agree with one query.
+    @State private var historyApps: [AppEnergy] = []
     @State private var timeline: [BatterySample] = []
     @State private var timelineAvailability: TimelineAvailability = .loading
     @State private var timelineWindowEnd = Date()
-    @State private var origin: DataOrigin = .loading
-    @State private var energyError: String?
+    @State private var historyOrigin: DataOrigin = .loading
+    @State private var historyError: String?
     @State private var insights: [Insight] = []
-    @State private var coverageDayCount: Int?
+    @State private var historyCoverageDayCount: Int?
     @State private var loadTask: Task<Void, Never>?
-    @State private var merger = LiveTodayMerger()
-    @State private var hybrid: HybridTodayList?
 
     private var replacementAnimation: Animation {
         .timingCurve(0.23, 1, 0.32, 1, duration: 0.18)
+    }
+
+    /// The app-table inputs for the current range: the coordinator's Today
+    /// result on ``.today``, the view's own history fetch otherwise.
+    private var topApps: [AppEnergy] {
+        range == .today ? (live.todayResult?.apps ?? []) : historyApps
+    }
+    private var origin: DataOrigin {
+        range == .today ? (live.todayResult?.origin ?? .loading) : historyOrigin
+    }
+    private var energyError: String? {
+        range == .today ? live.todayResult?.errorDescription : historyError
+    }
+    private var coverageDayCount: Int? {
+        range == .today ? live.todayResult?.coverageDayCount : historyCoverageDayCount
     }
 
     var body: some View {
@@ -83,7 +106,7 @@ struct PopoverView: View {
                     apps: topApps,
                     range: $range,
                     origin: origin,
-                    hybrid: range == .today ? hybrid : nil,
+                    hybrid: range == .today ? live.hybrid : nil,
                     batteryWatts: model.reading.map { abs($0.watts) },
                     onAC: model.reading?.onAC ?? false,
                     totalAppWatts: range == .today ? live.reading?.totalAppWatts : nil)
@@ -218,43 +241,25 @@ struct PopoverView: View {
         .task { await loadEnergy() }
         .onChange(of: range) {
             loadTask?.cancel()
-            syncLiveSampling()
+            syncLiveAttachment()
             loadTask = Task { await loadTopApps() }
-        }
-        .onChange(of: live.reading) {
-            recomputeHybrid()
         }
         .onChange(of: helper.readyGeneration) {
             if origin == .unavailable { retryTopApps() }
         }
-        // The popover recreates its content on open and tears it down on close,
-        // so onDisappear reliably stops sampling when the popover closes.
-        .onAppear { syncLiveSampling() }
-        .onDisappear {
-            live.stop()
-            merger.reset()
-            hybrid = nil
-        }
+        // The popover recreates its content on open and tears it down on close.
+        // Attachment is gated on the Today range so the shared 2 s loop and the
+        // 30 s history query stay idle while the popover sits on Week / All
+        // Time. Detach preserves the merger's grace state, so a reopen keeps the
+        // same active-membership timeline instead of wiping it.
+        .onAppear { syncLiveAttachment() }
+        .onDisappear { live.setAttached(false, for: .popover(consumerID)) }
     }
 
-    /// Runs the live power loop only while the popover is visible and the Now
-    /// segment is selected; stops it otherwise.
-    private func syncLiveSampling() {
-        if range == .today {
-            live.start()
-        } else {
-            live.stop()
-            merger.reset()
-            hybrid = nil
-        }
-    }
-
-    /// Folds the latest live reading into today's history for the hybrid view.
-    /// The merger needs the wall clock for its grace period, so `Date()` is
-    /// captured here at the view layer rather than inside the merger.
-    private func recomputeHybrid() {
-        guard range == .today else { return }
-        hybrid = merger.merge(live: live.reading, today: topApps, now: Date())
+    /// Attaches to the shared live loop only while the popover is showing Today.
+    /// Idempotent: repeated calls with the same state are absorbed.
+    private func syncLiveAttachment() {
+        live.setAttached(range == .today, for: .popover(consumerID))
     }
 
     @ViewBuilder
@@ -268,7 +273,7 @@ struct PopoverView: View {
 
     /// Mirrors TopAppsView's condition for rendering the two-section hybrid.
     private var showsHybridToday: Bool {
-        range == .today && !(hybrid?.active.isEmpty ?? true)
+        range == .today && !(live.hybrid?.active.isEmpty ?? true)
     }
 
     private var timelineSource: EnergySource? {
@@ -316,31 +321,35 @@ struct PopoverView: View {
     }
 
     private func loadTopApps() async {
+        // Today is owned and published by the coordinator (one query feeds both
+        // the hybrid and its Earlier Today rows), so the view only fetches the
+        // historical ranges itself.
+        guard range != .today else { return }
         // Capture the requested range: if the selection changes while the
         // query is in flight, the stale result must not overwrite the newer
         // selection's data.
         let range = self.range
         withAnimation(replacementAnimation) {
-            origin = .loading
-            topApps = []
-            energyError = nil
-            coverageDayCount = nil
+            historyOrigin = .loading
+            historyApps = []
+            historyError = nil
+            historyCoverageDayCount = nil
         }
-        // Today feeds the hybrid, whose earlier section caps its own visible
-        // rows, so fetch all of today's apps rather than the historical 8.
-        let limit: Int? = range == .today ? nil : 8
-        let result = await selector.topApps(range: range, limit: limit)
+        let result = await selector.topApps(range: range, limit: 8)
         guard !Task.isCancelled, range == self.range else { return }
         withAnimation(replacementAnimation) {
-            topApps = result.apps
-            origin = result.origin
-            coverageDayCount = result.coverageDayCount
-            energyError = result.errorDescription
+            historyApps = result.apps
+            historyOrigin = result.origin
+            historyCoverageDayCount = result.coverageDayCount
+            historyError = result.errorDescription
         }
-        recomputeHybrid()
     }
 
     private func retryTopApps() {
+        if range == .today {
+            live.refreshTodayNow()
+            return
+        }
         loadTask?.cancel()
         loadTask = Task { await loadTopApps() }
     }
