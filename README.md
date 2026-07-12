@@ -34,7 +34,7 @@ Juice surfaces that data: which apps used how many watt-hours today, over the la
 - **Private by default**: no telemetry, system profile, or accounts. Juice only contacts its release feed when you ask it to check for updates or enable automatic updates.
 
 <p align="center">
-  <img src="docs/images/app-detail.png" width="460" alt="Per-app detail window showing VS Code energy breakdown: 100 percent CPU, hourly bar chart, and explanation bullets">
+  <img src="docs/images/app-detail.png" width="460" alt="Per-app detail window showing Slack energy breakdown across CPU and GPU, an hourly bar chart, explanation bullets, and contributing processes">
 </p>
 
 <p align="center">
