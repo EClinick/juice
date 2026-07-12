@@ -569,7 +569,7 @@ a:focus-visible {
       inset -2px 0 2px rgba(0,0,0,.5);
   }
 
-  @media (max-width: 640px) {
+  @media (max-width: 700px) {
     .charging-title::before,
     .charging-title::after {
       -webkit-mask-size: 100% 100%, 9px 12px;
