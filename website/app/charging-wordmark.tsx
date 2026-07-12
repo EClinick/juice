@@ -62,6 +62,8 @@ export function ChargingWordmark() {
       const homeY = window.innerHeight - PLUG_HEIGHT - 20;
       anchorRef.current = { x: homeLeft + PLUG_BACK_X, y: window.innerHeight + 18 };
       if (instant || reduceMotion) {
+        x.stop();
+        y.stop();
         x.set(homeLeft);
         y.set(homeY);
       } else {
@@ -72,13 +74,13 @@ export function ChargingWordmark() {
     [reduceMotion, x, y],
   );
 
-  const snapToPort = useCallback(() => {
+  const positionAtPort = useCallback((instant = false) => {
     const target = targetRef.current;
-    connectedRef.current = true;
-    setConnected(true);
     const connectedX = target.x + INSERT_DEPTH - PLUG_TIP_X;
     const connectedY = target.y - PLUG_HEIGHT / 2;
-    if (reduceMotion) {
+    if (instant || reduceMotion) {
+      x.stop();
+      y.stop();
       x.set(connectedX);
       y.set(connectedY);
       return;
@@ -86,6 +88,12 @@ export function ChargingWordmark() {
     animate(x, connectedX, CONNECT_SPRING);
     animate(y, connectedY, CONNECT_SPRING);
   }, [reduceMotion, x, y]);
+
+  const snapToPort = useCallback(() => {
+    connectedRef.current = true;
+    setConnected(true);
+    positionAtPort(false);
+  }, [positionAtPort]);
 
   const measure = useCallback(
     (preserveConnection = false) => {
@@ -101,12 +109,12 @@ export function ChargingWordmark() {
         x: homeX - PLUG_WIDTH / 2 + PLUG_BACK_X,
         y: window.innerHeight + 18,
       };
-      if (preserveConnection && connectedRef.current) snapToPort();
+      if (preserveConnection && connectedRef.current) positionAtPort(true);
       else if (!draggingRef.current) moveHome(true);
       drawCable();
       setReady(true);
     },
-    [drawCable, moveHome, snapToPort],
+    [drawCable, moveHome, positionAtPort],
   );
 
   useEffect(() => {
@@ -130,12 +138,14 @@ export function ChargingWordmark() {
     });
     void document.fonts.ready.then(syncPosition);
     window.addEventListener("resize", syncPosition);
+    window.addEventListener("scroll", syncPosition, { passive: true });
     return () => {
       disposed = true;
       cancelAnimationFrame(frame);
       resizeObserver.disconnect();
       styleObserver.disconnect();
       window.removeEventListener("resize", syncPosition);
+      window.removeEventListener("scroll", syncPosition);
     };
   }, [measure]);
 
