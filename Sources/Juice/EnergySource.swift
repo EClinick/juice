@@ -35,6 +35,19 @@ enum EnergyRange: String, CaseIterable, Sendable {
         default: return rawValue
         }
     }
+
+    /// Session and Today both show the shared live-power layer. The remaining
+    /// ranges are historical-only and should not keep the live sampler running.
+    var usesLivePower: Bool {
+        self == .session || self == .today
+    }
+
+    /// The range a newly presented surface should focus based on the latest
+    /// power-source reading. An unknown source keeps the conservative Today
+    /// default until a real battery reading is available.
+    static func initialRange(onAC: Bool?) -> EnergyRange {
+        onAC == false ? .session : .today
+    }
 }
 
 /// An exact, non-calendar energy query window such as one off-charger session.

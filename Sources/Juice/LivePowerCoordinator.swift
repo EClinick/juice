@@ -41,14 +41,14 @@ extension LivePowerController: LivePowerSource {
 /// App-scoped single source of truth for the live "drawing power now" view.
 ///
 /// The popover and the Stats window both render this coordinator's published
-/// state, so they can never disagree about which apps are live: there is one
-/// polling loop, one ``LivePowerModel`` (EMA state), one ``LiveTodayMerger``
-/// (30 s grace / active-membership state), one Today history fetch, and one
-/// merged ``HybridTodayList``.
+/// state, so Session and Today can never disagree about which apps are live:
+/// there is one polling loop, one ``LivePowerModel`` (EMA state), one
+/// ``LiveTodayMerger`` (30 s grace / active-membership state), one Today
+/// history fetch, and one merged ``HybridTodayList``.
 ///
 /// Attachment is reference counted per consumer via an idempotent token API.
 /// A consumer calls ``setAttached(_:for:)`` with a stable id whenever its
-/// (visible AND on the Today range) condition changes; the coordinator samples
+/// (visible AND on a live range) condition changes; the coordinator samples
 /// while at least one consumer is attached and pauses when the last detaches.
 /// Double calls from SwiftUI lifecycle quirks are absorbed because attachment
 /// is keyed by consumer id, not a raw counter.

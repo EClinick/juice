@@ -18,9 +18,13 @@ struct PopoverView: View {
     /// only itself and never the fresh, visible instance.
     @State private var consumerID = UUID()
 
-    @State private var range: EnergyRange = .today
-    /// Non-today history only. Today reads the coordinator's published result so
-    /// the live hybrid and its Earlier Today rows always agree with one query.
+    @State private var range: EnergyRange
+    /// The popover is recreated when opened. Apply the power-aware default once
+    /// per presentation, after the immediate battery refresh, without changing
+    /// tabs underneath someone who manually chooses another range.
+    @State private var didApplyInitialRange = false
+    /// Calendar history other than Today. Today reads the coordinator's
+    /// published result; Session reads its exact-window coordinator.
     @State private var historyApps: [AppEnergy] = []
     @State private var timeline: [BatterySample] = []
     @State private var timelineAvailability: TimelineAvailability = .loading
@@ -33,6 +37,11 @@ struct PopoverView: View {
 
     private var replacementAnimation: Animation {
         .timingCurve(0.23, 1, 0.32, 1, duration: 0.18)
+    }
+
+    init(model: BatteryViewModel) {
+        self.model = model
+        _range = State(initialValue: .initialRange(onAC: model.reading?.onAC))
     }
 
     /// The app-table inputs for the current range: the coordinator's Today
@@ -107,12 +116,12 @@ struct PopoverView: View {
 
                 // The hybrid's own section captions replace this header line;
                 // rendering both would waste a row of the popover's height.
-                if !showsHybridToday {
+                if !showsLiveAppSections {
                     HStack {
                         Text("Top energy users")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        if range == .today,
+                        if range.usesLivePower,
                            live.status == .sampling || live.status == .warmingUp {
                             LiveHint()
                         }
@@ -123,10 +132,10 @@ struct PopoverView: View {
                     apps: topApps,
                     range: $range,
                     origin: origin,
-                    hybrid: range == .today ? live.hybrid : nil,
+                    hybrid: range.usesLivePower ? live.hybrid : nil,
                     batteryWatts: model.reading.map { abs($0.watts) },
                     onAC: model.reading?.onAC ?? false,
-                    totalAppWatts: range == .today ? live.reading?.totalAppWatts : nil,
+                    totalAppWatts: range.usesLivePower ? live.reading?.totalAppWatts : nil,
                     session: batterySession.result?.session)
                 energyStatus
 
@@ -222,6 +231,8 @@ struct PopoverView: View {
         .onAppear {
             model.refresh()
             helper.refresh()
+            applyInitialRange()
+            syncDataAttachments()
         }
         .task { await loadEnergy() }
         .onChange(of: range) {
@@ -233,29 +244,32 @@ struct PopoverView: View {
             if origin == .unavailable { retryTopApps() }
         }
         // The popover recreates its content on open and tears it down on close.
-        // Attachment is gated on the Today range so the shared 2 s loop and the
-        // 30 s history query stay idle while the popover sits on Week / All
-        // Time. Detach preserves the merger's grace state, so a reopen keeps the
-        // same active-membership timeline instead of wiping it.
-        .onAppear { syncDataAttachments() }
         .onDisappear {
             live.setAttached(false, for: .popover(consumerID))
             batterySession.setAttached(false, for: .popover(consumerID))
         }
     }
 
-    /// Attaches to the shared live loop only while the popover is showing Today.
-    /// Idempotent: repeated calls with the same state are absorbed.
+    /// Attaches to the shared live loop while the popover is showing Session or
+    /// Today. Idempotent: repeated calls with the same state are absorbed.
     private func syncDataAttachments() {
-        live.setAttached(range == .today, for: .popover(consumerID))
+        live.setAttached(range.usesLivePower, for: .popover(consumerID))
         batterySession.setAttached(range == .session, for: .popover(consumerID))
+    }
+
+    private func applyInitialRange() {
+        guard !didApplyInitialRange else { return }
+        didApplyInitialRange = true
+        range = .initialRange(onAC: model.reading?.onAC)
     }
 
     @ViewBuilder
     private var energyStatus: some View {
-        if range == .today, live.status == .helperOutdated {
+        if range.usesLivePower, live.status == .helperOutdated {
             liveStatus.transition(.opacity)
-        } else if origin == .loading {
+        }
+
+        if origin == .loading {
             ProgressView().controlSize(.small).transition(.opacity)
         } else if origin == .unavailable {
             HelperStatusView(
@@ -324,9 +338,9 @@ struct PopoverView: View {
         }
     }
 
-    /// Mirrors TopAppsView's condition for rendering the two-section hybrid.
-    private var showsHybridToday: Bool {
-        range == .today && !(live.hybrid?.active.isEmpty ?? true)
+    /// Mirrors TopAppsView's condition for rendering a live-first app list.
+    private var showsLiveAppSections: Bool {
+        range.usesLivePower && !(live.hybrid?.active.isEmpty ?? true)
     }
 
     private var timelineSource: EnergySource? {
