@@ -3,14 +3,20 @@ import Combine
 import JuiceCore
 
 /// One shared, render-ready battery-session result for the popover and Stats.
+enum BatterySessionEnergyCoverage {
+    case full
+    case partial
+    case unavailable
+}
+
 struct BatterySessionUsageResult {
     var session: BatterySession?
     var apps: [AppEnergy]
     var origin: DataOrigin
     var errorDescription: String?
-    /// True when the off-AC period starts before the live powerlog retention
-    /// window, so the visible app totals cannot cover the whole session.
-    var energyCoverageIsPartial: Bool
+    /// Whether retained PowerLog intervals cover all, part, or none of the
+    /// resolved off-AC session.
+    var energyCoverage: BatterySessionEnergyCoverage
 }
 
 /// Resolves battery samples into a session and loads per-app energy for that
@@ -54,7 +60,7 @@ struct BatterySessionUsageLoader {
             return BatterySessionUsageResult(
                 session: nil, apps: [], origin: .unavailable,
                 errorDescription: "Battery-session history could not be read: \(error.localizedDescription)",
-                energyCoverageIsPartial: false)
+                energyCoverage: .unavailable)
         }
 
         if let reading = currentReading() {
@@ -69,18 +75,35 @@ struct BatterySessionUsageLoader {
         guard let session = BatterySessionResolver.latest(in: samples) else {
             return BatterySessionUsageResult(
                 session: nil, apps: [], origin: .live,
-                errorDescription: nil, energyCoverageIsPartial: false)
+                errorDescription: nil, energyCoverage: .unavailable)
         }
 
         let window = EnergyWindow(start: session.start, end: session.end)
         let retentionStart = PowerlogEnergySource.retainedHistoryStart(now: now)
+        let energyCoverage: BatterySessionEnergyCoverage
+        if session.end <= retentionStart {
+            energyCoverage = .unavailable
+        } else if session.start < retentionStart {
+            energyCoverage = .partial
+        } else {
+            energyCoverage = .full
+        }
+
+        // Avoid a helper query that cannot return any fully-contained interval
+        // for a session wholly older than PowerLog's retained window.
+        guard energyCoverage != .unavailable else {
+            return BatterySessionUsageResult(
+                session: session, apps: [], origin: .live,
+                errorDescription: nil, energyCoverage: .unavailable)
+        }
+
         do {
             return BatterySessionUsageResult(
                 session: session,
                 apps: try await loadApps(window),
                 origin: .live,
                 errorDescription: nil,
-                energyCoverageIsPartial: session.start < retentionStart)
+                energyCoverage: energyCoverage)
         } catch {
             await MainActor.run {
                 HelperRegistrationController.shared.refresh()
@@ -88,7 +111,7 @@ struct BatterySessionUsageLoader {
             return BatterySessionUsageResult(
                 session: session, apps: [], origin: .unavailable,
                 errorDescription: error.localizedDescription,
-                energyCoverageIsPartial: session.start < retentionStart)
+                energyCoverage: energyCoverage)
         }
     }
 }
@@ -127,7 +150,7 @@ final class BatterySessionCoordinator: ObservableObject {
                 return BatterySessionUsageResult(
                     session: nil, apps: [], origin: .unavailable,
                     errorDescription: "Battery-session history is unavailable because the local store could not be opened.",
-                    energyCoverageIsPartial: false)
+                    energyCoverage: .unavailable)
             }
             return await loader.load()
         },

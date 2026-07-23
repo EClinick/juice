@@ -77,4 +77,29 @@ import JuiceCore
         #expect(result.origin == .unavailable)
         #expect(result.errorDescription == "helper unavailable")
     }
+
+    @Test func sessionWhollyOutsideRetentionReportsNoCoverageWithoutEnergyQuery() async throws {
+        actor Counter {
+            var value = 0
+            func increment() { value += 1 }
+        }
+        let counter = Counter()
+        let loader = BatterySessionUsageLoader(
+            loadSamples: { _, _ in [
+                sample(-8 * 24 * 3600, percent: 80, onAC: true),
+                sample(-8 * 24 * 3600 + 60, percent: 80, onAC: false),
+                sample(-7 * 24 * 3600, percent: 50, onAC: true),
+            ] },
+            currentReading: { nil },
+            loadApps: { _ in
+                await counter.increment()
+                return []
+            })
+
+        let result = await loader.load(now: now)
+        let session = try #require(result.session)
+        #expect(!session.isActive)
+        #expect(result.energyCoverage == .unavailable)
+        #expect(await counter.value == 0)
+    }
 }

@@ -283,7 +283,11 @@ struct PopoverView: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .transition(.opacity)
-            } else if batterySession.result?.energyCoverageIsPartial == true {
+            } else if batterySession.result?.energyCoverage == .unavailable {
+                Text("App energy is no longer available for this session.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            } else if batterySession.result?.energyCoverage == .partial {
                 Text("App energy covers only the recent part of this session.")
                     .font(.caption2)
                     .foregroundStyle(.orange)

@@ -36,7 +36,7 @@ import Testing
             apps: [AppEnergy(bundleId: app, displayName: app, energyWh: 1, cpuHours: 0)],
             origin: .live,
             errorDescription: nil,
-            energyCoverageIsPartial: false)
+            energyCoverage: .full)
     }
 
     private func settle() async {
