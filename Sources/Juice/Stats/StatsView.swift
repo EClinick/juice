@@ -20,6 +20,7 @@ struct StatsView: View {
     /// The app-scoped live-power source of truth, shared with the popover so the
     /// two views can never disagree about which apps are live.
     @ObservedObject private var live = LivePowerCoordinator.shared
+    @ObservedObject private var batterySession = BatterySessionCoordinator.shared
 
     /// The charge timeline always covers the last 7 days.
     private static let timelineHours = 24 * 7
@@ -51,16 +52,32 @@ struct StatsView: View {
     /// The app-table inputs for the current range: the coordinator's Today
     /// result on ``.today``, the view's own history fetch otherwise.
     private var apps: [AppEnergy] {
-        range == .today ? (live.todayResult?.apps ?? []) : historyApps
+        switch range {
+        case .session: return batterySession.result?.apps ?? []
+        case .today: return live.todayResult?.apps ?? []
+        default: return historyApps
+        }
     }
     private var origin: DataOrigin {
-        range == .today ? (live.todayResult?.origin ?? .loading) : historyOrigin
+        switch range {
+        case .session: return batterySession.result?.origin ?? .loading
+        case .today: return live.todayResult?.origin ?? .loading
+        default: return historyOrigin
+        }
     }
     private var energyError: String? {
-        range == .today ? live.todayResult?.errorDescription : historyError
+        switch range {
+        case .session: return batterySession.result?.errorDescription
+        case .today: return live.todayResult?.errorDescription
+        default: return historyError
+        }
     }
     private var coverageDayCount: Int? {
-        range == .today ? live.todayResult?.coverageDayCount : historyCoverageDayCount
+        switch range {
+        case .session: return nil
+        case .today: return live.todayResult?.coverageDayCount
+        default: return historyCoverageDayCount
+        }
     }
 
     private var totalEnergy: Double {
@@ -98,7 +115,7 @@ struct StatsView: View {
         }
         .onChange(of: range) {
             loadTask?.cancel()
-            syncLiveAttachment()
+            syncDataAttachments()
             loadTask = Task { await loadApps() }
         }
         .onChange(of: helper.readyGeneration) {
@@ -107,14 +124,18 @@ struct StatsView: View {
         // Attachment is gated on the Today range so the shared 2 s loop and the
         // 30 s history query stay idle while the window sits on a historical
         // range. Detach preserves the merger's grace state.
-        .onAppear { syncLiveAttachment() }
-        .onDisappear { live.setAttached(false, for: .stats(consumerID)) }
+        .onAppear { syncDataAttachments() }
+        .onDisappear {
+            live.setAttached(false, for: .stats(consumerID))
+            batterySession.setAttached(false, for: .stats(consumerID))
+        }
     }
 
     /// Attaches to the shared live loop only while the window is showing Today.
     /// Idempotent: repeated calls with the same state are absorbed.
-    private func syncLiveAttachment() {
+    private func syncDataAttachments() {
         live.setAttached(range == .today, for: .stats(consumerID))
+        batterySession.setAttached(range == .session, for: .stats(consumerID))
     }
 
     // MARK: - Header
@@ -139,13 +160,18 @@ struct StatsView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(maxWidth: 320)
+            .frame(maxWidth: 380)
         }
         .padding(16)
     }
 
     private var rangeSubtitle: String {
         switch range {
+        case .session:
+            if let session = batterySession.result?.session {
+                return "\(BatterySessionFormatting.boundary(session)) · \(BatterySessionFormatting.summary(session))"
+            }
+            return "Energy usage during the current or last battery session"
         case .today: return "Live power and energy usage over the last day"
         case .threeDays: return "Energy usage over the last 3 days"
         case .week: return "Energy usage over the last week"
@@ -181,6 +207,8 @@ struct StatsView: View {
             // unconditionally below the app list.
             if range == .today {
                 todayStatusBanner
+            } else if range == .session {
+                sessionStatusBanner
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -200,6 +228,39 @@ struct StatsView: View {
     }
 
     @ViewBuilder
+    private var sessionStatusBanner: some View {
+        if origin == .unavailable {
+            HelperStatusView(queryError: energyError, onRetryQuery: retryApps)
+                .transition(.opacity)
+        } else if batterySession.result?.session == nil {
+            Text("No battery session has been recorded yet.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        } else if batterySession.result?.energyCoverageIsPartial == true {
+            Text("App energy covers only the recent part of this session.")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+        } else if apps.isEmpty {
+            Text("No app energy was recorded for this session.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        } else if !apps.isEmpty {
+            Text(sessionEnergyCaption)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private var sessionEnergyCaption: String {
+        let total = apps.reduce(0) { $0 + $1.energyWh }
+        let base = String(format: "Apps used %.1f Wh in this session", total)
+        if batterySession.result?.session?.isActive == true {
+            return "\(base) · recent intervals may take a few minutes to appear."
+        }
+        return "\(base)."
+    }
+
+    @ViewBuilder
     private var historicalAppTable: some View {
         if origin == .loading {
             Group {
@@ -208,7 +269,7 @@ struct StatsView: View {
                 Spacer()
             }
             .transition(.opacity)
-        } else if apps.isEmpty, origin != .unavailable {
+        } else if apps.isEmpty, origin != .unavailable, range != .session {
             Group {
                 Text("No energy data available.")
                     .font(.caption2)
@@ -228,7 +289,8 @@ struct StatsView: View {
                                     appKey: app.bundleId,
                                     displayName: app.displayName,
                                     range: range,
-                                    origin: origin
+                                    origin: origin,
+                                    session: range == .session ? batterySession.result?.session : nil
                                 )
                             })
                     }
@@ -242,10 +304,10 @@ struct StatsView: View {
         // ``todayStatusBanner`` at the app-table level so they show whether the
         // hybrid or this historical fallback is on screen; only the non-today
         // captions live here to avoid double-rendering.
-        if origin == .unavailable, range != .today {
+        if origin == .unavailable, range != .today, range != .session {
             HelperStatusView(queryError: energyError, onRetryQuery: retryApps)
                 .transition(.opacity)
-        } else if origin == .live, range != .today {
+        } else if origin == .live, range != .today, range != .session {
             Text("Live data only (about 3 days) - history store unavailable")
                 .font(.caption2)
                 .foregroundStyle(.orange)
@@ -256,7 +318,7 @@ struct StatsView: View {
                 .foregroundStyle(.tertiary)
                 .transition(.opacity)
         }
-        if range != .today, origin == .store, !apps.isEmpty {
+        if range != .today, range != .session, origin == .store, !apps.isEmpty {
             Text("Stored details are summarized by day.")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
@@ -423,7 +485,7 @@ struct StatsView: View {
         // Today is owned and published by the coordinator (one query feeds both
         // the hybrid and its Earlier Today rows), so the window only fetches the
         // historical ranges itself.
-        guard range != .today else { return }
+        guard range != .today, range != .session else { return }
         // Capture the requested range: if the picker changes while the query
         // is in flight, the stale result must not overwrite the newer
         // selection's data.
@@ -447,6 +509,10 @@ struct StatsView: View {
     private func retryApps() {
         if range == .today {
             live.refreshTodayNow()
+            return
+        }
+        if range == .session {
+            batterySession.refreshNow()
             return
         }
         loadTask?.cancel()

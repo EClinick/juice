@@ -20,6 +20,7 @@ struct BatterySample: Identifiable {
 
 /// The time window used when ranking per-app energy usage.
 enum EnergyRange: String, CaseIterable, Sendable {
+    case session = "Session"
     case today = "Today"
     case threeDays = "3 Days"
     case week = "Week"
@@ -28,8 +29,18 @@ enum EnergyRange: String, CaseIterable, Sendable {
     /// Short label for the segmented picker; "All" keeps the segments inside
     /// the 320 px popover, the rest use the raw value.
     var pickerLabel: String {
-        self == .allTime ? "All" : rawValue
+        switch self {
+        case .threeDays: return "3D"
+        case .allTime: return "All"
+        default: return rawValue
+        }
     }
+}
+
+/// An exact, non-calendar energy query window such as one off-charger session.
+struct EnergyWindow: Equatable, Sendable {
+    var start: Date
+    var end: Date
 }
 
 /// Whether a persisted battery timeline can be queried independently of

@@ -4,7 +4,8 @@ import JuiceCore
 
 /// Ranked list of per-app energy usage with a range picker. On ``.today`` the
 /// view is a hybrid: a live "drawing power now" section on top of today's
-/// energy history. Week and All Time are pure history.
+/// energy history. Session is an exact off-charger window; longer ranges are
+/// pure calendar history.
 struct TopAppsView: View {
     let apps: [AppEnergy]
     @Binding var range: EnergyRange
@@ -19,6 +20,9 @@ struct TopAppsView: View {
     var onAC: Bool = false
     /// Total smoothed app watts for the live attribution footer.
     var totalAppWatts: Double?
+    /// Exact battery-session context for the Session range. The same value is
+    /// passed into app detail so every surface uses identical bounds.
+    var session: BatterySession?
 
     /// Rows shown across both hybrid sections combined, matching the popover's
     /// former 8-row history cap.
@@ -48,6 +52,19 @@ struct TopAppsView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+
+            if range == .session, let session {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(BatterySessionFormatting.boundary(session))
+                        .lineLimit(1)
+                    Text(BatterySessionFormatting.summary(session))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .accessibilityElement(children: .combine)
+            }
 
             if range == .today, let hybrid, !hybrid.active.isEmpty {
                 hybridToday(hybrid)
@@ -186,7 +203,8 @@ struct TopAppsView: View {
             appKey: appKey,
             displayName: displayName,
             range: range,
-            origin: origin)
+            origin: origin,
+            session: range == .session ? session : nil)
     }
 
     /// Apps versus system-and-display split for the footer, or nil when the
