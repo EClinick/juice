@@ -41,17 +41,15 @@ extension LivePowerController: LivePowerSource {
 /// App-scoped single source of truth for the live "drawing power now" view.
 ///
 /// The popover and the Stats window both render this coordinator's published
-/// state, so they can never disagree about which apps are live: there is one
-/// polling loop, one ``LivePowerModel`` (EMA state), one ``LiveTodayMerger``
-/// (30 s grace / active-membership state), one Today history fetch, and one
-/// merged ``HybridTodayList``.
+/// state, so Session and Today can never disagree about which apps are live:
+/// there is one polling loop, one ``LivePowerModel`` (EMA state), one
+/// ``LiveTodayMerger`` (30 s grace / active-membership state), one Today
+/// history fetch, and one merged ``HybridTodayList``.
 ///
 /// Attachment is reference counted per consumer via an idempotent token API.
-/// A consumer calls ``setAttached(_:for:)`` with a stable id whenever its
-/// (visible AND on the Today range) condition changes; the coordinator samples
-/// while at least one consumer is attached and pauses when the last detaches.
-/// Double calls from SwiftUI lifecycle quirks are absorbed because attachment
-/// is keyed by consumer id, not a raw counter.
+/// Each token also records whether that consumer needs Today history. Live
+/// sampling runs for Session and Today, while the slower Today query runs only
+/// when at least one attached consumer is actually showing Today.
 ///
 /// Pausing does NOT reset the merger's grace state - detaching only stops the
 /// clock, so a brief close/reopen keeps an app in the active section instead of
@@ -109,8 +107,9 @@ final class LivePowerCoordinator: ObservableObject {
     private let todayRefreshInterval: Duration
     private var merger = LiveTodayMerger()
 
-    /// The set of currently-attached consumers. Sampling runs while non-empty.
-    private var attached: Set<Consumer> = []
+    /// Currently attached consumers and whether each needs Today history.
+    /// Sampling runs while non-empty; history refreshes while any value is true.
+    private var attached: [Consumer: Bool] = [:]
     private var readingObservation: Task<Void, Never>?
     private var statusObservation: Task<Void, Never>?
     private var todayRefresh: Task<Void, Never>?
@@ -141,15 +140,19 @@ final class LivePowerCoordinator: ObservableObject {
         self.todayRefreshInterval = todayRefreshInterval
     }
 
-    /// Idempotently attaches or detaches a consumer. Callers pass whether the
-    /// consumer currently wants live data (visible AND on the Today range); the
-    /// coordinator reconciles the running state from the resulting attached set.
-    func setAttached(_ wantsLive: Bool, for consumer: Consumer) {
+    /// Idempotently attaches or detaches a consumer and independently records
+    /// whether that live consumer needs the Today-history query.
+    func setAttached(
+        _ wantsLive: Bool,
+        includesTodayHistory: Bool = true,
+        for consumer: Consumer
+    ) {
         let wasEmpty = attached.isEmpty
+        let neededTodayHistory = needsTodayHistory
         if wantsLive {
-            attached.insert(consumer)
+            attached[consumer] = includesTodayHistory
         } else {
-            attached.remove(consumer)
+            attached[consumer] = nil
         }
         let isEmpty = attached.isEmpty
 
@@ -157,6 +160,10 @@ final class LivePowerCoordinator: ObservableObject {
             startSampling()
         } else if !wasEmpty && isEmpty {
             stopSampling()
+        } else if !neededTodayHistory && needsTodayHistory {
+            startTodayRefresh()
+        } else if neededTodayHistory && !needsTodayHistory {
+            stopTodayRefresh()
         }
     }
 
@@ -166,14 +173,18 @@ final class LivePowerCoordinator: ObservableObject {
     /// the window's token(s) are released even if the view never sees teardown.
     func detachAll(kind: ConsumerKind) {
         let wasEmpty = attached.isEmpty
-        attached = attached.filter { $0.kind != kind }
+        let neededTodayHistory = needsTodayHistory
+        attached = attached.filter { $0.key.kind != kind }
         if !wasEmpty && attached.isEmpty {
             stopSampling()
+        } else if neededTodayHistory && !needsTodayHistory {
+            stopTodayRefresh()
         }
     }
 
     /// The count of attached consumers, for tests asserting reference behavior.
     var attachedConsumerCount: Int { attached.count }
+    private var needsTodayHistory: Bool { attached.values.contains(true) }
 
     /// Forces an immediate off-cadence Today refresh (a manual retry after a
     /// failed or empty fetch). No-op when nothing is attached, since the
@@ -184,7 +195,7 @@ final class LivePowerCoordinator: ObservableObject {
     /// discarded on completion, so a newer result can never be clobbered by an
     /// older one and a completion after detach never publishes.
     func refreshTodayNow() {
-        guard !attached.isEmpty else { return }
+        guard needsTodayHistory else { return }
         manualRefresh?.cancel()
         let generation = invalidateRefreshes()
         manualRefresh = Task { [weak self] in
@@ -200,7 +211,7 @@ final class LivePowerCoordinator: ObservableObject {
 
         source.start()
         observeSource()
-        startTodayRefresh()
+        if needsTodayHistory { startTodayRefresh() }
     }
 
     private func stopSampling() {
@@ -209,13 +220,7 @@ final class LivePowerCoordinator: ObservableObject {
         readingObservation = nil
         statusObservation?.cancel()
         statusObservation = nil
-        todayRefresh?.cancel()
-        todayRefresh = nil
-        manualRefresh?.cancel()
-        manualRefresh = nil
-        // Bump the generation so any fetch still in flight (periodic or manual)
-        // is discarded on completion instead of publishing after detach.
-        _ = invalidateRefreshes()
+        stopTodayRefresh()
         // The source's stop() clears its reading; mirror that so the hints fall
         // back to "warming up" on reattach. The merger is deliberately NOT
         // reset: grace state persists across close/reopen.
@@ -263,6 +268,15 @@ final class LivePowerCoordinator: ObservableObject {
                 try? await Task.sleep(for: self.todayRefreshInterval)
             }
         }
+    }
+
+    private func stopTodayRefresh() {
+        todayRefresh?.cancel()
+        todayRefresh = nil
+        manualRefresh?.cancel()
+        manualRefresh = nil
+        // Discard any fetch that completes after the last Today consumer leaves.
+        _ = invalidateRefreshes()
     }
 
     /// Bumps and returns the new refresh generation, invalidating any fetch that

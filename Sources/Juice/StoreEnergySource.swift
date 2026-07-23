@@ -39,6 +39,11 @@ struct StoreEnergySource: EnergySource {
         let formatter = RollupBuilder.dayFormatter(calendar: calendar)
         let start: Date
         switch range {
+        case .session:
+            // Exact session windows never use daily rollups. This fallback is
+            // intentionally harmless for callers that only need a day key;
+            // EnergySourceSelector rejects Session before reaching the store.
+            start = now
         case .today:
             start = now
         case .threeDays:

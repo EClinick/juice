@@ -20,6 +20,7 @@ struct BatterySample: Identifiable {
 
 /// The time window used when ranking per-app energy usage.
 enum EnergyRange: String, CaseIterable, Sendable {
+    case session = "Session"
     case today = "Today"
     case threeDays = "3 Days"
     case week = "Week"
@@ -28,8 +29,31 @@ enum EnergyRange: String, CaseIterable, Sendable {
     /// Short label for the segmented picker; "All" keeps the segments inside
     /// the 320 px popover, the rest use the raw value.
     var pickerLabel: String {
-        self == .allTime ? "All" : rawValue
+        switch self {
+        case .threeDays: return "3D"
+        case .allTime: return "All"
+        default: return rawValue
+        }
     }
+
+    /// Session and Today both show the shared live-power layer. The remaining
+    /// ranges are historical-only and should not keep the live sampler running.
+    var usesLivePower: Bool {
+        self == .session || self == .today
+    }
+
+    /// The range a newly presented surface should focus based on the latest
+    /// power-source reading. An unknown source keeps the conservative Today
+    /// default until a real battery reading is available.
+    static func initialRange(onAC: Bool?) -> EnergyRange {
+        onAC == false ? .session : .today
+    }
+}
+
+/// An exact, non-calendar energy query window such as one off-charger session.
+struct EnergyWindow: Equatable, Sendable {
+    var start: Date
+    var end: Date
 }
 
 /// Whether a persisted battery timeline can be queried independently of

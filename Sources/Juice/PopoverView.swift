@@ -8,6 +8,7 @@ struct PopoverView: View {
     /// The app-scoped live-power source of truth, shared with the Stats window
     /// so the two views can never disagree about which apps are live.
     @ObservedObject private var live = LivePowerCoordinator.shared
+    @ObservedObject private var batterySession = BatterySessionCoordinator.shared
 
     private let selector = EnergySourceSelector()
 
@@ -17,9 +18,13 @@ struct PopoverView: View {
     /// only itself and never the fresh, visible instance.
     @State private var consumerID = UUID()
 
-    @State private var range: EnergyRange = .today
-    /// Non-today history only. Today reads the coordinator's published result so
-    /// the live hybrid and its Earlier Today rows always agree with one query.
+    @State private var range: EnergyRange
+    /// The popover is recreated when opened. Apply the power-aware default once
+    /// per presentation, after the immediate battery refresh, without changing
+    /// tabs underneath someone who manually chooses another range.
+    @State private var didApplyInitialRange = false
+    /// Calendar history other than Today. Today reads the coordinator's
+    /// published result; Session reads its exact-window coordinator.
     @State private var historyApps: [AppEnergy] = []
     @State private var timeline: [BatterySample] = []
     @State private var timelineAvailability: TimelineAvailability = .loading
@@ -34,19 +39,40 @@ struct PopoverView: View {
         .timingCurve(0.23, 1, 0.32, 1, duration: 0.18)
     }
 
+    init(model: BatteryViewModel) {
+        self.model = model
+        _range = State(initialValue: .initialRange(onAC: model.reading?.onAC))
+    }
+
     /// The app-table inputs for the current range: the coordinator's Today
     /// result on ``.today``, the view's own history fetch otherwise.
     private var topApps: [AppEnergy] {
-        range == .today ? (live.todayResult?.apps ?? []) : historyApps
+        switch range {
+        case .session: return batterySession.result?.apps ?? []
+        case .today: return live.todayResult?.apps ?? []
+        default: return historyApps
+        }
     }
     private var origin: DataOrigin {
-        range == .today ? (live.todayResult?.origin ?? .loading) : historyOrigin
+        switch range {
+        case .session: return batterySession.result?.origin ?? .loading
+        case .today: return live.todayResult?.origin ?? .loading
+        default: return historyOrigin
+        }
     }
     private var energyError: String? {
-        range == .today ? live.todayResult?.errorDescription : historyError
+        switch range {
+        case .session: return batterySession.result?.errorDescription
+        case .today: return live.todayResult?.errorDescription
+        default: return historyError
+        }
     }
     private var coverageDayCount: Int? {
-        range == .today ? live.todayResult?.coverageDayCount : historyCoverageDayCount
+        switch range {
+        case .today: return live.todayResult?.coverageDayCount
+        case .session: return nil
+        default: return historyCoverageDayCount
+        }
     }
 
     var body: some View {
@@ -90,12 +116,12 @@ struct PopoverView: View {
 
                 // The hybrid's own section captions replace this header line;
                 // rendering both would waste a row of the popover's height.
-                if !showsHybridToday {
+                if !showsLiveAppSections {
                     HStack {
                         Text("Top energy users")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        if range == .today,
+                        if range.usesLivePower,
                            live.status == .sampling || live.status == .warmingUp {
                             LiveHint()
                         }
@@ -106,44 +132,12 @@ struct PopoverView: View {
                     apps: topApps,
                     range: $range,
                     origin: origin,
-                    hybrid: range == .today ? live.hybrid : nil,
+                    hybrid: range.usesLivePower ? live.hybrid : nil,
                     batteryWatts: model.reading.map { abs($0.watts) },
                     onAC: model.reading?.onAC ?? false,
-                    totalAppWatts: range == .today ? live.reading?.totalAppWatts : nil)
-                if range == .today, live.status == .helperOutdated {
-                    liveStatus
-                        .transition(.opacity)
-                } else if origin == .loading {
-                    ProgressView()
-                        .controlSize(.small)
-                        .transition(.opacity)
-                } else if origin == .unavailable {
-                    HelperStatusView(
-                        controller: helper,
-                        queryError: energyError,
-                        onRetryQuery: retryTopApps)
-                        .transition(.opacity)
-                } else if topApps.isEmpty {
-                    Text("No app energy was recorded for this period.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .transition(.opacity)
-                } else if origin == .live, range != .today {
-                    Text("Live data only (about 3 days) - history store unavailable")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                        .transition(.opacity)
-                } else if origin == .store, let days = coverageDayCount {
-                    Text("History covers \(days) day\(days == 1 ? "" : "s") so far")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .transition(.opacity)
-                }
-                if range != .today, origin == .store, !topApps.isEmpty {
-                    Text("Stored details are summarized by day.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
+                    totalAppWatts: range.usesLivePower ? live.reading?.totalAppWatts : nil,
+                    session: batterySession.result?.session)
+                energyStatus
 
                 Divider()
 
@@ -237,29 +231,109 @@ struct PopoverView: View {
         .onAppear {
             model.refresh()
             helper.refresh()
+            applyInitialRange()
+            syncDataAttachments()
         }
         .task { await loadEnergy() }
         .onChange(of: range) {
             loadTask?.cancel()
-            syncLiveAttachment()
+            syncDataAttachments()
             loadTask = Task { await loadTopApps() }
         }
         .onChange(of: helper.readyGeneration) {
             if origin == .unavailable { retryTopApps() }
         }
         // The popover recreates its content on open and tears it down on close.
-        // Attachment is gated on the Today range so the shared 2 s loop and the
-        // 30 s history query stay idle while the popover sits on Week / All
-        // Time. Detach preserves the merger's grace state, so a reopen keeps the
-        // same active-membership timeline instead of wiping it.
-        .onAppear { syncLiveAttachment() }
-        .onDisappear { live.setAttached(false, for: .popover(consumerID)) }
+        .onDisappear {
+            live.setAttached(false, for: .popover(consumerID))
+            batterySession.setAttached(false, for: .popover(consumerID))
+        }
     }
 
-    /// Attaches to the shared live loop only while the popover is showing Today.
-    /// Idempotent: repeated calls with the same state are absorbed.
-    private func syncLiveAttachment() {
-        live.setAttached(range == .today, for: .popover(consumerID))
+    /// Attaches to the shared live loop while the popover is showing Session or
+    /// Today. Idempotent: repeated calls with the same state are absorbed.
+    private func syncDataAttachments() {
+        live.setAttached(
+            range.usesLivePower,
+            includesTodayHistory: range == .today,
+            for: .popover(consumerID))
+        batterySession.setAttached(range == .session, for: .popover(consumerID))
+    }
+
+    private func applyInitialRange() {
+        guard !didApplyInitialRange else { return }
+        didApplyInitialRange = true
+        range = .initialRange(onAC: model.reading?.onAC)
+    }
+
+    @ViewBuilder
+    private var energyStatus: some View {
+        if range.usesLivePower, live.status == .helperOutdated {
+            liveStatus.transition(.opacity)
+        }
+
+        if origin == .loading {
+            ProgressView().controlSize(.small).transition(.opacity)
+        } else if origin == .unavailable {
+            HelperStatusView(
+                controller: helper,
+                queryError: energyError,
+                onRetryQuery: retryTopApps)
+                .transition(.opacity)
+        } else if range == .session {
+            if batterySession.result?.session == nil {
+                Text("No battery session has been recorded yet.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .transition(.opacity)
+            } else if batterySession.result?.energyCoverage == .unavailable {
+                Text("App energy is no longer available for this session.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            } else if batterySession.result?.energyCoverage == .partial {
+                Text("App energy covers only the recent part of this session.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            } else if topApps.isEmpty {
+                Text("No app energy was recorded for this session.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } else {
+                Text(sessionEnergyCaption)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        } else if topApps.isEmpty {
+            Text("No app energy was recorded for this period.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .transition(.opacity)
+        } else if origin == .live, range != .today {
+            Text("Live data only (about 3 days) - history store unavailable")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+                .transition(.opacity)
+        } else if origin == .store, let days = coverageDayCount {
+            Text("History covers \(days) day\(days == 1 ? "" : "s") so far")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .transition(.opacity)
+        }
+
+        if range != .today, range != .session, origin == .store, !topApps.isEmpty {
+            Text("Stored details are summarized by day.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private var sessionEnergyCaption: String {
+        let total = topApps.reduce(0) { $0 + $1.energyWh }
+        let base = String(format: "Apps used %.1f Wh in this session", total)
+        if batterySession.result?.session?.isActive == true {
+            return "\(base) · recent intervals may take a few minutes to appear."
+        }
+        return "\(base)."
     }
 
     @ViewBuilder
@@ -271,9 +345,9 @@ struct PopoverView: View {
         }
     }
 
-    /// Mirrors TopAppsView's condition for rendering the two-section hybrid.
-    private var showsHybridToday: Bool {
-        range == .today && !(live.hybrid?.active.isEmpty ?? true)
+    /// Mirrors TopAppsView's condition for rendering a live-first app list.
+    private var showsLiveAppSections: Bool {
+        range.usesLivePower && !(live.hybrid?.active.isEmpty ?? true)
     }
 
     private var timelineSource: EnergySource? {
@@ -324,7 +398,7 @@ struct PopoverView: View {
         // Today is owned and published by the coordinator (one query feeds both
         // the hybrid and its Earlier Today rows), so the view only fetches the
         // historical ranges itself.
-        guard range != .today else { return }
+        guard range != .today, range != .session else { return }
         // Capture the requested range: if the selection changes while the
         // query is in flight, the stale result must not overwrite the newer
         // selection's data.
@@ -348,6 +422,10 @@ struct PopoverView: View {
     private func retryTopApps() {
         if range == .today {
             live.refreshTodayNow()
+            return
+        }
+        if range == .session {
+            batterySession.refreshNow()
             return
         }
         loadTask?.cancel()

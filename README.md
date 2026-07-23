@@ -24,7 +24,7 @@ Juice surfaces that data: which apps used how many watt-hours today, over the la
 ## Features
 
 - **Menu bar live readout**: battery percent and live watts drawn (or charging wattage), updated continuously.
-- **Top energy users**: per-app watt-hours for Today, 3 Days, Week, or All Time, with real app icons.
+- **Top energy users**: per-app watt-hours for the current or last battery session, Today, 3 Days, Week, or All Time, with real app icons.
 - **Per-app detail**: click any app to see where its energy went (CPU vs GPU vs Neural Engine), an hour-by-hour usage chart, and a plain-English explanation of the usage pattern.
 - **Charge timeline**: battery level over the last 24 hours, sampled locally every minute, with on-AC periods highlighted.
 - **Insights**: drain-rate anomalies measured against your own 7-day baseline, apps using far more than their typical energy, the energy hog of the week, and charging-habit observations.

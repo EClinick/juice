@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import JuiceCore
+import JuiceXPCShared
 
 /// Opens and manages the per-app energy detail window.
 ///
@@ -17,24 +18,23 @@ final class AppDetailPresenter {
         appKey: String,
         displayName: String,
         range: EnergyRange,
-        origin: DataOrigin
+        origin: DataOrigin,
+        session: BatterySession? = nil
     ) {
         NSApp.activate(ignoringOtherApps: true)
 
         // One captured window end anchors the interval query, the chart's
         // x-domain, and the explanation's hour count.
-        let windowEnd = Date()
+        let windowEnd = session?.end ?? Date()
         let store = Self.usesStoredHistory(range: range, origin: origin)
             ? JuiceApp.sampler?.store : nil
         let formatter = RollupBuilder.dayFormatter()
         let earliestStoredStart = store
             .flatMap { try? $0.earliestRollupDay() }
             .flatMap { formatter.date(from: $0) }
-        let windowStart = Self.windowStart(
-            range: range,
-            usesStoredHistory: store != nil,
-            earliestStoredStart: earliestStoredStart,
-            now: windowEnd)
+        let windowStart = session?.start ?? Self.windowStart(
+            range: range, usesStoredHistory: store != nil,
+            earliestStoredStart: earliestStoredStart, now: windowEnd)
         let windowHours = max(1, Int((windowEnd.timeIntervalSince(windowStart) / 3600)
             .rounded(.up)))
         let storedSinceDay = store.map { _ in
@@ -45,8 +45,9 @@ final class AppDetailPresenter {
         let root = AppDetailView(
             displayName: displayName,
             bundleId: appKey,
-            rangeLabel: (range == .week || range == .allTime) && store == nil
-                ? "Available PowerLog history" : range.rawValue,
+            rangeLabel: session.map(BatterySessionFormatting.title)
+                ?? ((range == .week || range == .allTime) && store == nil
+                    ? "Available PowerLog history" : range.rawValue),
             windowStart: windowStart,
             windowEnd: windowEnd,
             windowHours: windowHours,
@@ -73,8 +74,15 @@ final class AppDetailPresenter {
                         )
                     }.value
                 }
-                let intervals = try await source.appIntervals(
-                    appKey: appKey, since: windowStart)
+                let intervals: [EnergyInterval]
+                if session != nil {
+                    intervals = try await source.appIntervals(
+                        appKey: appKey,
+                        in: EnergyWindow(start: windowStart, end: windowEnd))
+                } else {
+                    intervals = try await source.appIntervals(
+                        appKey: appKey, since: windowStart)
+                }
                 return BreakdownBuilder.build(intervals: intervals, appKey: appKey)
             }
         )
@@ -103,7 +111,7 @@ final class AppDetailPresenter {
     }
 
     static func usesStoredHistory(range: EnergyRange, origin: DataOrigin) -> Bool {
-        range != .today && origin == .store
+        range != .today && range != .session && origin == .store
     }
 
     static func windowStart(
@@ -121,6 +129,7 @@ final class AppDetailPresenter {
                 for: range, now: now, calendar: calendar)
             return RollupBuilder.dayFormatter(calendar: calendar).date(from: day) ?? now
         }
+        if range == .session { return now }
         if range == .week || range == .allTime {
             return PowerlogEnergySource.retainedHistoryStart(
                 now: now, calendar: calendar)

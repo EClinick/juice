@@ -2,27 +2,48 @@ import SwiftUI
 import AppKit
 import JuiceCore
 
-/// Ranked list of per-app energy usage with a range picker. On ``.today`` the
-/// view is a hybrid: a live "drawing power now" section on top of today's
-/// energy history. Week and All Time are pure history.
+/// Ranked list of per-app energy usage with a range picker. Session and Today
+/// both lead with the shared live "drawing power now" section. Session pairs
+/// that with exact off-charger energy; Today pairs it with calendar history.
 struct TopAppsView: View {
     let apps: [AppEnergy]
     @Binding var range: EnergyRange
     let origin: DataOrigin
-    /// The merged live/history split for the Today view. Present only when
-    /// ``range`` is ``.today`` and live sampling has produced a reading; nil
-    /// otherwise (Today then renders as plain history).
+    @State private var isSessionLiveExpanded = true
+    @State private var isTodayLiveExpanded = true
+    /// The shared live/history result. Session reads its active rows and joins
+    /// them with exact session energy; Today renders the result verbatim.
     var hybrid: HybridTodayList?
-    /// Battery draw in watts for the live attribution footer; nil off ``.today``.
+    /// Battery draw in watts for the live attribution footer.
     var batteryWatts: Double?
     /// The footer is omitted on AC, where battery watts mean charging rate.
     var onAC: Bool = false
     /// Total smoothed app watts for the live attribution footer.
     var totalAppWatts: Double?
+    /// Exact battery-session context for the Session range. The same value is
+    /// passed into app detail so every surface uses identical bounds.
+    var session: BatterySession?
 
     /// Rows shown across both hybrid sections combined, matching the popover's
     /// former 8-row history cap.
     private static let hybridRowCap = 8
+
+    /// Allocates cumulative rows without ever removing the section.
+    /// Expanded live apps spend the shared budget first; collapsing Live gives
+    /// history the full budget. Overflow consumes one row of its own.
+    static func cumulativeRowCounts(
+        activeCount: Int,
+        appCount: Int,
+        liveExpanded: Bool
+    ) -> (visible: Int, folded: Int) {
+        let rowBudget = liveExpanded
+            ? max(2, hybridRowCap - activeCount)
+            : hybridRowCap
+        let visible = appCount > rowBudget
+            ? max(1, rowBudget - 1)
+            : appCount
+        return (visible, max(0, appCount - visible))
+    }
 
     private var maxEnergy: Double {
         max(apps.map(\.energyWh).max() ?? 0, 0.001)
@@ -49,7 +70,22 @@ struct TopAppsView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
 
-            if range == .today, let hybrid, !hybrid.active.isEmpty {
+            if range == .session, let session {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(BatterySessionFormatting.boundary(session))
+                        .lineLimit(1)
+                    Text(BatterySessionFormatting.summary(session))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .accessibilityElement(children: .combine)
+            }
+
+            if range == .session, let hybrid, !hybrid.active.isEmpty {
+                liveSession(hybrid)
+            } else if range == .today, let hybrid, !hybrid.active.isEmpty {
                 hybridToday(hybrid)
             } else {
                 historyList
@@ -75,101 +111,128 @@ struct TopAppsView: View {
 
     // MARK: - Hybrid Today
 
-    /// The hybrid's row plan: which rows render in each section and what each
-    /// section's fold row absorbs. Active rows spend the budget first; each
-    /// section folds its own overflow (in its own unit - watts above, Wh
-    /// below) so a currently-active app is never miscategorized as history.
-    /// Rows including fold rows never exceed ``hybridRowCap``, so the hybrid
-    /// cannot outgrow the plain 8-row list it replaced.
-    private struct HybridRowPlan {
-        let visibleActive: [HybridTodayList.ActiveApp]
-        let foldedActiveCount: Int
-        let foldedActiveWatts: Double
-        let visibleEarlier: [AppEnergy]
-        let foldedEarlierCount: Int
-        let foldedEarlierWh: Double
-    }
-
-    private static func rowPlan(for hybrid: HybridTodayList) -> HybridRowPlan {
-        let cap = hybridRowCap
-        let activeCount = hybrid.active.count
-        let earlierCount = hybrid.earlier.count
-
-        let activeCap: Int
-        let earlierCap: Int
-        if activeCount + earlierCount <= cap {
-            activeCap = activeCount
-            earlierCap = earlierCount
-        } else if activeCount < cap {
-            // Active fits; the earlier section overflows and pays one slot
-            // for its fold row (possibly collapsing to just the fold).
-            activeCap = activeCount
-            earlierCap = cap - activeCount - 1
-        } else if earlierCount == 0 {
-            // Only active rows overflow; one slot for their fold row.
-            activeCap = cap - 1
-            earlierCap = 0
-        } else {
-            // Both sections need a fold row; earlier collapses to just its
-            // fold so the live section keeps the most rows.
-            activeCap = cap - 2
-            earlierCap = 0
-        }
-
-        let foldedActive = hybrid.active.dropFirst(activeCap)
-        let foldedEarlier = hybrid.earlier.dropFirst(earlierCap)
-        return HybridRowPlan(
-            visibleActive: Array(hybrid.active.prefix(activeCap)),
-            foldedActiveCount: foldedActive.count,
-            foldedActiveWatts: foldedActive.reduce(0) { $0 + $1.watts },
-            visibleEarlier: Array(hybrid.earlier.prefix(earlierCap)),
-            foldedEarlierCount: foldedEarlier.count,
-            foldedEarlierWh: foldedEarlier.reduce(0) { $0 + $1.energyWh }
-        )
-    }
-
     @ViewBuilder
     private func hybridToday(_ hybrid: HybridTodayList) -> some View {
-        let plan = Self.rowPlan(for: hybrid)
-        let maxWatts = max(plan.visibleActive.map(\.watts).max() ?? 0, 0.001)
-        let earlierMax = max(plan.visibleEarlier.map(\.energyWh).max() ?? 0, 0.001)
+        let historyRows = Self.cumulativeRowCounts(
+            activeCount: hybrid.active.count,
+            appCount: apps.count,
+            liveExpanded: isTodayLiveExpanded)
+        let visibleHistory = Array(apps.prefix(historyRows.visible))
+        let foldedHistory = apps.dropFirst(visibleHistory.count)
+        let maxWatts = max(hybrid.active.map(\.watts).max() ?? 0, 0.001)
+        let historyMax = max(visibleHistory.map(\.energyWh).max() ?? 0, 0.001)
+        let totalLiveWatts = hybrid.active.reduce(0) { $0 + $1.watts }
 
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 4) {
-                    LiveDot()
-                    Text("DRAWING POWER NOW")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(plan.visibleActive) { app in
-                    LiveActiveRow(
-                        app: app,
-                        fraction: app.watts / maxWatts,
-                        onTap: { showDetail(appKey: app.appKey, displayName: app.displayName) })
-                }
-                if plan.foldedActiveCount > 0 {
-                    FoldedAppsRow(
-                        count: plan.foldedActiveCount,
-                        valueText: liveWattsText(plan.foldedActiveWatts))
+                CollapsibleLiveHeader(
+                    isExpanded: $isTodayLiveExpanded,
+                    appCount: hybrid.active.count,
+                    totalWatts: totalLiveWatts)
+
+                if isTodayLiveExpanded {
+                    ForEach(hybrid.active) { app in
+                        LiveActiveRow(
+                            app: app,
+                            energyWh: app.todayWh,
+                            energyContext: "today",
+                            fraction: app.watts / maxWatts,
+                            onTap: {
+                                showDetail(appKey: app.appKey, displayName: app.displayName)
+                            })
+                    }
                 }
             }
 
-            if !plan.visibleEarlier.isEmpty || plan.foldedEarlierCount > 0 {
+            if !visibleHistory.isEmpty || !foldedHistory.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("EARLIER TODAY")
+                    Text("TODAY ENERGY")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                    ForEach(plan.visibleEarlier) { app in
+                    ForEach(visibleHistory) { app in
                         AppEnergyRow(
                             app: app,
-                            fraction: app.energyWh / earlierMax,
+                            fraction: app.energyWh / historyMax,
                             onTap: { showDetail(appKey: app.bundleId, displayName: app.displayName) })
                     }
-                    if plan.foldedEarlierCount > 0 {
+                    if !foldedHistory.isEmpty {
                         FoldedAppsRow(
-                            count: plan.foldedEarlierCount,
-                            valueText: String(format: "%.1f Wh", plan.foldedEarlierWh))
+                            count: foldedHistory.count,
+                            valueText: String(
+                                format: "%.1f Wh",
+                                foldedHistory.reduce(0) { $0 + $1.energyWh }))
+                    }
+                }
+            }
+
+            if let footer = attribution() {
+                LiveAttributionFooter(appWatts: footer.appWatts, systemWatts: footer.systemWatts)
+            }
+        }
+        .transition(.opacity)
+    }
+
+    /// Session keeps every live app visible because current draw is the primary
+    /// signal. The cumulative ranking remains below it in both disclosure
+    /// states; collapsing Live only gives that ranking more of the row budget.
+    @ViewBuilder
+    private func liveSession(_ hybrid: HybridTodayList) -> some View {
+        let sessionByKey = Dictionary(
+            apps.map { ($0.bundleId, $0) },
+            uniquingKeysWith: { first, _ in first })
+        // Live rows spend the compact popover's budget first, but cumulative
+        // Session data always keeps at least one app plus its overflow row.
+        // Collapsing Live restores the complete eight-row history budget.
+        let historyRows = Self.cumulativeRowCounts(
+            activeCount: hybrid.active.count,
+            appCount: apps.count,
+            liveExpanded: isSessionLiveExpanded)
+        let visibleHistory = Array(apps.prefix(historyRows.visible))
+        let foldedHistory = apps.dropFirst(visibleHistory.count)
+        let maxWatts = max(hybrid.active.map(\.watts).max() ?? 0, 0.001)
+        let historyMax = max(visibleHistory.map(\.energyWh).max() ?? 0, 0.001)
+        let totalLiveWatts = hybrid.active.reduce(0) { $0 + $1.watts }
+
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 6) {
+                CollapsibleLiveHeader(
+                    isExpanded: $isSessionLiveExpanded,
+                    appCount: hybrid.active.count,
+                    totalWatts: totalLiveWatts)
+
+                if isSessionLiveExpanded {
+                    ForEach(hybrid.active) { app in
+                        LiveActiveRow(
+                            app: app,
+                            energyWh: sessionByKey[app.appKey]?.energyWh,
+                            energyContext: "session",
+                            fraction: app.watts / maxWatts,
+                            onTap: {
+                                showDetail(appKey: app.appKey, displayName: app.displayName)
+                            })
+                    }
+                }
+            }
+
+            if !visibleHistory.isEmpty || !foldedHistory.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("SESSION ENERGY")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    ForEach(visibleHistory) { app in
+                        AppEnergyRow(
+                            app: app,
+                            fraction: app.energyWh / historyMax,
+                            onTap: {
+                                showDetail(appKey: app.bundleId, displayName: app.displayName)
+                            })
+                    }
+                    if !foldedHistory.isEmpty {
+                        FoldedAppsRow(
+                            count: foldedHistory.count,
+                            valueText: String(
+                                format: "%.1f Wh",
+                                foldedHistory.reduce(0) { $0 + $1.energyWh }))
                     }
                 }
             }
@@ -186,7 +249,8 @@ struct TopAppsView: View {
             appKey: appKey,
             displayName: displayName,
             range: range,
-            origin: origin)
+            origin: origin,
+            session: range == .session ? session : nil)
     }
 
     /// Apps versus system-and-display split for the footer, or nil when the
@@ -206,11 +270,49 @@ func liveWattsText(_ watts: Double) -> String {
     return String(format: "%.2f W", watts)
 }
 
+/// Shared disclosure control for the popover's Session and Today live layers.
+private struct CollapsibleLiveHeader: View {
+    @Binding var isExpanded: Bool
+    let appCount: Int
+    let totalWatts: Double
+
+    var body: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.16)) {
+                isExpanded.toggle()
+            }
+        } label: {
+            HStack(spacing: 5) {
+                LiveDot()
+                Text("DRAWING POWER NOW")
+                Spacer()
+                if !isExpanded {
+                    Text("\(appCount) app\(appCount == 1 ? "" : "s") · \(liveWattsText(totalWatts))")
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
+                }
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Drawing power now")
+        .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+        .accessibilityHint(isExpanded ? "Collapses live apps" : "Expands live apps")
+    }
+}
+
 /// One active-power row in the hybrid Today view: 18 px icon, name with an
 /// optional "· X.X Wh today" subtext, a bar scaled to the section max, and a
 /// green watts value. Tapping opens the per-app detail window.
 private struct LiveActiveRow: View {
     let app: HybridTodayList.ActiveApp
+    let energyWh: Double?
+    let energyContext: String
     let fraction: Double
     let onTap: () -> Void
 
@@ -225,7 +327,7 @@ private struct LiveActiveRow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     (Text(app.displayName)
                         .font(.caption)
-                     + todaySubtext)
+                     + energySubtext)
                         .lineLimit(1)
 
                     GeometryReader { geo in
@@ -260,10 +362,10 @@ private struct LiveActiveRow: View {
         .accessibilityHint("Opens energy details")
     }
 
-    private var todaySubtext: Text {
+    private var energySubtext: Text {
         // Below 0.05 Wh the value renders as "0.0" - noise, not information.
-        guard let wh = app.todayWh, wh >= 0.05 else { return Text("") }
-        return Text(String(format: " · %.1f Wh today", wh))
+        guard let energyWh, energyWh >= 0.05 else { return Text("") }
+        return Text(String(format: " · %.1f Wh %@", energyWh, energyContext))
             .font(.caption)
             .foregroundStyle(.tertiary)
     }

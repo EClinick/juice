@@ -22,6 +22,7 @@ final class StatsWindowPresenter: NSObject, NSWindowDelegate {
     /// token the current view holds.
     func windowWillClose(_ notification: Notification) {
         LivePowerCoordinator.shared.detachAll(kind: .stats)
+        BatterySessionCoordinator.shared.detachAll(kind: .stats)
     }
 
     func show(selector: EnergySourceSelector, timelineSource: EnergySource?, reading: BatteryReading?) {

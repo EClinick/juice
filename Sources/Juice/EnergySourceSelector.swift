@@ -54,6 +54,15 @@ struct EnergySourceSelector {
     }
 
     func topApps(range: EnergyRange, limit: Int? = nil) async -> TopAppsResult {
+        // Session is an exact start/end window resolved from battery samples,
+        // not a calendar range. BatterySessionCoordinator owns that query so a
+        // daily store rollup can never be mistaken for session data.
+        if range == .session {
+            return TopAppsResult(
+                apps: [], origin: .unavailable, coverageDayCount: nil,
+                errorDescription: "Battery-session energy needs an exact session window.")
+        }
+
         if range != .today, let store = store() {
             if let apps = try? await storedApps(store, range),
                !apps.isEmpty {
@@ -94,7 +103,7 @@ struct EnergySourceSelector {
     /// rollup starts after the range would - i.e. the store covers less than
     /// the full selected range.
     private func coverageDayCount(store: JuiceStore, range: EnergyRange) -> Int? {
-        guard range != .today else { return nil }
+        guard range != .today, range != .session else { return nil }
         let rangeStart = StoreEnergySource.sinceDay(for: range)
         guard let earliest = try? store.earliestRollupDay(),
               earliest > rangeStart,

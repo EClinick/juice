@@ -10,6 +10,14 @@ import JuiceXPCShared
 /// installed (M3+). ``batteryTimeline(hours:until:)`` returns an empty array
 /// until M4 introduces the local sample store.
 struct PowerlogEnergySource: EnergySource {
+    enum QueryError: LocalizedError {
+        case sessionRequiresWindow
+
+        var errorDescription: String? {
+            "Battery-session energy needs an exact start and end time."
+        }
+    }
+
     let client: HelperClient
 
     init(client: HelperClient = HelperClient()) {
@@ -17,8 +25,37 @@ struct PowerlogEnergySource: EnergySource {
     }
 
     func topApps(range: EnergyRange) async throws -> [AppEnergy] {
+        guard range != .session else { throw QueryError.sessionRequiresWindow }
         let intervals = try await client.fetchIntervals(since: Self.rangeStart(for: range))
+        return Self.aggregate(intervals: intervals)
+    }
 
+    /// Per-app energy for an exact window. Only fully-contained powerlog
+    /// intervals are included: a boundary bucket can straddle an unplug or
+    /// reconnect, and silently assigning all of it to the battery session would
+    /// count energy used on the wrong power source.
+    func topApps(in window: EnergyWindow) async throws -> [AppEnergy] {
+        Self.aggregate(intervals: try await intervals(in: window))
+    }
+
+    func intervals(in window: EnergyWindow) async throws -> [EnergyInterval] {
+        guard window.end >= window.start else { return [] }
+        let intervals = try await client.fetchIntervals(since: window.start)
+        return Self.intervals(intervals, fullyContainedIn: window)
+    }
+
+    static func intervals(
+        _ intervals: [EnergyInterval],
+        fullyContainedIn window: EnergyWindow
+    ) -> [EnergyInterval] {
+        let start = window.start.timeIntervalSince1970
+        let end = window.end.timeIntervalSince1970
+        return intervals.filter {
+            $0.start >= start && $0.end >= $0.start && $0.end <= end
+        }
+    }
+
+    static func aggregate(intervals: [EnergyInterval]) -> [AppEnergy] {
         struct Totals {
             var joules: Double = 0
             var cpuSeconds: Double = 0
@@ -41,10 +78,12 @@ struct PowerlogEnergySource: EnergySource {
                     bundleId: key,
                     displayName: Self.displayName(for: key),
                     energyWh: value.joules / 3.6e12,
-                    cpuHours: value.cpuSeconds / 3600
-                )
+                    cpuHours: value.cpuSeconds / 3600)
             }
-            .sorted { $0.energyWh > $1.energyWh }
+            .sorted {
+                if $0.energyWh == $1.energyWh { return $0.bundleId < $1.bundleId }
+                return $0.energyWh > $1.energyWh
+            }
     }
 
     /// Fetches the raw energy intervals for a single app over `range`.
@@ -52,11 +91,17 @@ struct PowerlogEnergySource: EnergySource {
     /// `appKey` follows the same keying as ``topApps(range:)``: the bundle id
     /// when present and non-empty, otherwise the launchd coalition name.
     func appIntervals(appKey: String, range: EnergyRange) async throws -> [EnergyInterval] {
-        try await appIntervals(appKey: appKey, since: Self.rangeStart(for: range))
+        guard range != .session else { throw QueryError.sessionRequiresWindow }
+        return try await appIntervals(appKey: appKey, since: Self.rangeStart(for: range))
     }
 
     func appIntervals(appKey: String, since: Date) async throws -> [EnergyInterval] {
         try await client.fetchIntervals(since: since)
+            .filter { BreakdownBuilder.appKey(for: $0) == appKey }
+    }
+
+    func appIntervals(appKey: String, in window: EnergyWindow) async throws -> [EnergyInterval] {
+        try await intervals(in: window)
             .filter { BreakdownBuilder.appKey(for: $0) == appKey }
     }
 
@@ -74,6 +119,11 @@ struct PowerlogEnergySource: EnergySource {
         calendar: Calendar = .current
     ) -> Date {
         switch range {
+        case .session:
+            // Session callers must provide EnergyWindow. Returning `now` keeps
+            // this total helper deterministic without inventing a calendar
+            // interpretation; public query methods reject this case above.
+            return now
         case .today:
             return calendar.startOfDay(for: now)
         case .threeDays:
