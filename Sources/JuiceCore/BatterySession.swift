@@ -5,7 +5,7 @@ import Foundation
 /// A session starts at the first observed off-AC sample after AC power and ends
 /// at the first subsequent on-AC sample. The resolver can also return an active
 /// session (whose end is the newest sample) or a partial session when history
-/// begins after the unplug transition.
+/// begins after the unplug transition or ends before a later observed state.
 public struct BatterySession: Sendable, Equatable {
     public var start: Date
     public var end: Date
@@ -13,6 +13,7 @@ public struct BatterySession: Sendable, Equatable {
     public var endPercent: Int
     public var isActive: Bool
     public var isStartPartial: Bool
+    public var isEndPartial: Bool
 
     public init(
         start: Date,
@@ -20,7 +21,8 @@ public struct BatterySession: Sendable, Equatable {
         startPercent: Int,
         endPercent: Int,
         isActive: Bool,
-        isStartPartial: Bool
+        isStartPartial: Bool,
+        isEndPartial: Bool = false
     ) {
         self.start = start
         self.end = end
@@ -28,9 +30,11 @@ public struct BatterySession: Sendable, Equatable {
         self.endPercent = endPercent
         self.isActive = isActive
         self.isStartPartial = isStartPartial
+        self.isEndPartial = isEndPartial
     }
 
     public var duration: TimeInterval { max(0, end.timeIntervalSince(start)) }
+    public var isPartial: Bool { isStartPartial || isEndPartial }
 
     /// Battery percentage points lost during the off-AC period. Battery
     /// calibration can occasionally make the reported percentage rise while
@@ -62,6 +66,22 @@ public enum BatterySessionResolver {
         var latestCompleted: BatterySession?
 
         for (index, sample) in ordered.enumerated() {
+            if let interrupted = open,
+               sample.date.timeIntervalSince(interrupted.lastOffAC.date) > maximumBoundaryGap {
+                // A long observation gap can hide any number of AC transitions.
+                // End the known segment at its last observed battery sample
+                // rather than spanning the unknown period.
+                latestCompleted = BatterySession(
+                    start: interrupted.firstOffAC.date,
+                    end: interrupted.lastOffAC.date,
+                    startPercent: interrupted.firstOffAC.percent,
+                    endPercent: interrupted.lastOffAC.percent,
+                    isActive: false,
+                    isStartPartial: interrupted.isStartPartial,
+                    isEndPartial: true)
+                open = nil
+            }
+
             if sample.onAC {
                 if let closing = open {
                     latestCompleted = BatterySession(

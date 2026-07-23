@@ -233,6 +233,55 @@ import JuiceCore
         #expect(coordinator.todayResult?.apps.map(\.bundleId) == ["slack"])
     }
 
+    @Test("Session samples live power without querying Today history")
+    func sessionAttachmentSkipsTodayHistory() async {
+        let now = t0
+        let loader = TodayLoader(result: todayResult([("slack", 3.0)]))
+        let (coordinator, source) = makeCoordinator(clock: { now }, loader: loader)
+
+        coordinator.setAttached(
+            true,
+            includesTodayHistory: false,
+            for: .popover(popoverID))
+        await settle()
+
+        #expect(source.isRunning)
+        #expect(loader.callCount == 0)
+        coordinator.refreshTodayNow()
+        await settle()
+        #expect(loader.callCount == 0)
+    }
+
+    @Test("Switching between Session and Today toggles only history refresh")
+    func sessionTodayHistoryGating() async {
+        let now = t0
+        let loader = TodayLoader(result: todayResult([("slack", 3.0)]))
+        let (coordinator, source) = makeCoordinator(clock: { now }, loader: loader)
+
+        coordinator.setAttached(
+            true,
+            includesTodayHistory: false,
+            for: .popover(popoverID))
+        await settle()
+        #expect(source.startCount == 1)
+        #expect(loader.callCount == 0)
+
+        coordinator.setAttached(
+            true,
+            includesTodayHistory: true,
+            for: .popover(popoverID))
+        await settle()
+        #expect(source.startCount == 1)
+        #expect(loader.callCount == 1)
+
+        coordinator.setAttached(
+            true,
+            includesTodayHistory: false,
+            for: .popover(popoverID))
+        await settle()
+        #expect(source.stopCount == 0)
+    }
+
     @Test("Both consumers read the same published hybrid verbatim")
     func sharedStateIsConsistent() {
         let now = t0

@@ -3,7 +3,8 @@ import JuiceCore
 
 enum BatterySessionFormatting {
     static func title(_ session: BatterySession) -> String {
-        session.isActive ? "Current battery session" : "Last battery session"
+        if session.isPartial { return "Recorded battery session" }
+        return session.isActive ? "Current battery session" : "Last battery session"
     }
 
     static func boundary(_ session: BatterySession, calendar: Calendar = .current) -> String {
@@ -16,7 +17,8 @@ enum BatterySessionFormatting {
             ? .omitted : .abbreviated
         let start = session.start.formatted(date: startDate, time: .shortened)
         let end = session.end.formatted(date: .omitted, time: .shortened)
-        return "Last battery session · \(start)–\(end)"
+        let prefix = session.isPartial ? "Recorded battery session" : "Last battery session"
+        return "\(prefix) · \(start)–\(end)"
     }
 
     static func summary(_ session: BatterySession) -> String {

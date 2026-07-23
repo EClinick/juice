@@ -253,7 +253,10 @@ struct PopoverView: View {
     /// Attaches to the shared live loop while the popover is showing Session or
     /// Today. Idempotent: repeated calls with the same state are absorbed.
     private func syncDataAttachments() {
-        live.setAttached(range.usesLivePower, for: .popover(consumerID))
+        live.setAttached(
+            range.usesLivePower,
+            includesTodayHistory: range == .today,
+            for: .popover(consumerID))
         batterySession.setAttached(range == .session, for: .popover(consumerID))
     }
 

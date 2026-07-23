@@ -23,7 +23,7 @@ import Testing
             sample(0, percent: 100, onAC: true),
             sample(1, percent: 100, onAC: false),
             sample(30, percent: 91, onAC: false),
-        ]))
+        ], maximumBoundaryGap: 30 * 60))
 
         #expect(session.isActive)
         #expect(!session.isStartPartial)
@@ -39,7 +39,7 @@ import Testing
             sample(40, percent: 78, onAC: false),
             sample(41, percent: 78, onAC: true),
             sample(80, percent: 92, onAC: true),
-        ]))
+        ], maximumBoundaryGap: 40 * 60))
 
         #expect(!session.isActive)
         #expect(session.start == base.addingTimeInterval(60))
@@ -56,7 +56,7 @@ import Testing
             sample(21, percent: 90, onAC: true),
             sample(22, percent: 90, onAC: false),
             sample(35, percent: 84, onAC: false),
-        ]))
+        ], maximumBoundaryGap: 20 * 60))
 
         #expect(session.isActive)
         #expect(session.start == base.addingTimeInterval(22 * 60))
@@ -87,10 +87,40 @@ import Testing
             sample(0, percent: 100, onAC: true),
             sample(1, percent: 100, onAC: false),
             sample(24 * 60 + 30, percent: 45, onAC: false),
-        ]))
+        ], maximumBoundaryGap: 25 * 60 * 60))
 
         #expect(session.isActive)
         #expect(session.duration == (24 * 60 + 29) * 60)
+    }
+
+    @Test func longGapStartsANewPartialBatterySegment() throws {
+        let session = try #require(BatterySessionResolver.latest(in: [
+            sample(0, percent: 100, onAC: true),
+            sample(1, percent: 100, onAC: false),
+            sample(2, percent: 98, onAC: false),
+            sample(20, percent: 75, onAC: false),
+            sample(21, percent: 74, onAC: false),
+        ]))
+
+        #expect(session.isActive)
+        #expect(session.isStartPartial)
+        #expect(session.start == base.addingTimeInterval(20 * 60))
+        #expect(session.end == base.addingTimeInterval(21 * 60))
+        #expect(session.batteryPercentUsed == 1)
+    }
+
+    @Test func longGapBeforeReconnectEndsAtLastObservedBatterySample() throws {
+        let session = try #require(BatterySessionResolver.latest(in: [
+            sample(0, percent: 100, onAC: true),
+            sample(1, percent: 100, onAC: false),
+            sample(2, percent: 98, onAC: false),
+            sample(20, percent: 90, onAC: true),
+        ]))
+
+        #expect(!session.isActive)
+        #expect(session.isEndPartial)
+        #expect(session.end == base.addingTimeInterval(2 * 60))
+        #expect(session.batteryPercentUsed == 2)
     }
 
     @Test func duplicateTimestampUsesLastSample() throws {

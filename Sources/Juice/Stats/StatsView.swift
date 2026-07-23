@@ -144,7 +144,10 @@ struct StatsView: View {
     /// Attaches to the shared live loop while the window is showing Session or
     /// Today. Idempotent: repeated calls with the same state are absorbed.
     private func syncDataAttachments() {
-        live.setAttached(range.usesLivePower, for: .stats(consumerID))
+        live.setAttached(
+            range.usesLivePower,
+            includesTodayHistory: range == .today,
+            for: .stats(consumerID))
         batterySession.setAttached(range == .session, for: .stats(consumerID))
     }
 
