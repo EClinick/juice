@@ -47,8 +47,10 @@ struct JuiceApp: App {
             PopoverView(model: model)
         } label: {
             // Icon only, like the system battery item; recomputed from the
-            // observed model so it tracks every reading change.
-            Image(nsImage: BatteryStatusIcon.image(for: model.reading))
+            // observed model so it tracks battery and Low Power Mode changes.
+            Image(nsImage: BatteryStatusIcon.image(
+                for: model.reading,
+                isLowPowerModeEnabled: model.isLowPowerModeEnabled))
         }
         .menuBarExtraStyle(.window)
     }

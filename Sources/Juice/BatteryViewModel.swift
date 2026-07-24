@@ -5,19 +5,40 @@ import Combine
 final class BatteryViewModel: ObservableObject {
     @Published var reading: BatteryReading?
     @Published var lastError: String?
+    @Published private(set) var isLowPowerModeEnabled: Bool
 
     /// Invoked after each successful refresh with the fresh reading.
     var onReading: ((BatteryReading) -> Void)?
 
     private var timer: AnyCancellable?
+    private var powerStateObserver: AnyCancellable?
+    private let lowPowerModeProvider: () -> Bool
 
-    init(onReading: ((BatteryReading) -> Void)? = nil) {
+    init(
+        onReading: ((BatteryReading) -> Void)? = nil,
+        lowPowerModeProvider: @escaping () -> Bool = {
+            ProcessInfo.processInfo.isLowPowerModeEnabled
+        },
+        notificationCenter: NotificationCenter = .default
+    ) {
         self.onReading = onReading
+        self.lowPowerModeProvider = lowPowerModeProvider
+        isLowPowerModeEnabled = lowPowerModeProvider()
         refresh()
         // Background cadence; the popover triggers an immediate refresh on open.
         timer = Timer.publish(every: 60, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in self?.refresh() }
+        // Power mode can change independently of a battery reading. Observe the
+        // system notification so the menu bar icon updates immediately.
+        powerStateObserver = notificationCenter.publisher(
+            for: .NSProcessInfoPowerStateDidChange
+        )
+        .receive(on: RunLoop.main)
+        .sink { [weak self] _ in
+            guard let self else { return }
+            self.isLowPowerModeEnabled = self.lowPowerModeProvider()
+        }
     }
 
     func refresh() {

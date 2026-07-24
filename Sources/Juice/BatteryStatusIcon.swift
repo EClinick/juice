@@ -5,40 +5,87 @@ import AppKit
 /// proportional to the charge percent, and a lightning bolt knocked out of the
 /// fill while plugged in. Pure: the image depends only on the inputs.
 enum BatteryStatusIcon {
+    enum FillStyle: Equatable {
+        case standard
+        case lowPower
+        case lowBattery
+    }
+
     /// Glyph size in points; the drawing handler re-renders at each backing
     /// scale so retina menu bars stay crisp.
     static let size = NSSize(width: 26, height: 13)
 
     /// Convenience over the current reading; a missing reading renders as a
     /// full battery so the item never looks broken at startup.
-    static func image(for reading: BatteryReading?) -> NSImage {
+    static func image(
+        for reading: BatteryReading?,
+        isLowPowerModeEnabled: Bool = false
+    ) -> NSImage {
         guard let r = reading else {
-            return image(percent: 100, isCharging: false, onAC: false)
+            return image(
+                percent: 100,
+                isCharging: false,
+                onAC: false,
+                isLowPowerModeEnabled: isLowPowerModeEnabled)
         }
-        return image(percent: r.percent, isCharging: r.isCharging, onAC: r.onAC)
+        return image(
+            percent: r.percent,
+            isCharging: r.isCharging,
+            onAC: r.onAC,
+            isLowPowerModeEnabled: isLowPowerModeEnabled)
     }
 
-    static func image(percent: Int, isCharging: Bool, onAC: Bool) -> NSImage {
+    static func image(
+        percent: Int,
+        isCharging: Bool,
+        onAC: Bool,
+        isLowPowerModeEnabled: Bool = false
+    ) -> NSImage {
         let percent = min(max(percent, 0), 100)
-        // Match the system's low-battery treatment: red fill, and the image is
-        // no longer a template so the red survives menu bar tinting.
-        let isLow = percent <= 20 && !onAC
+        let fillStyle = fillStyle(
+            percent: percent,
+            onAC: onAC,
+            isLowPowerModeEnabled: isLowPowerModeEnabled)
+        let fillColor: NSColor? = if fillStyle == .lowBattery {
+            .systemRed
+        } else if fillStyle == .lowPower {
+            .systemYellow
+        } else {
+            nil
+        }
         // Like the system icon, the bolt shows whenever the charger is
         // plugged in, including when the battery is full and merely held.
         let showBolt = isCharging || onAC
         let image = NSImage(size: size, flipped: false) { _ in
-            draw(percent: percent, showBolt: showBolt, isLow: isLow)
+            draw(percent: percent, showBolt: showBolt, fillColor: fillColor)
             return true
         }
-        image.isTemplate = !isLow
+        image.isTemplate = fillColor == nil
         return image
     }
 
-    private static func draw(percent: Int, showBolt: Bool, isLow: Bool) {
+    /// Mirrors the system's status priority: a critically low battery stays
+    /// red, otherwise Low Power Mode uses the familiar yellow fill.
+    static func fillStyle(
+        percent: Int,
+        onAC: Bool,
+        isLowPowerModeEnabled: Bool
+    ) -> FillStyle {
+        if percent <= 20 && !onAC { return .lowBattery }
+        if isLowPowerModeEnabled { return .lowPower }
+        return .standard
+    }
+
+    private static func draw(
+        percent: Int,
+        showBolt: Bool,
+        fillColor: NSColor?
+    ) {
         // Template images must be pure black; the non-template low-battery
-        // variant uses labelColor so the outline still adapts to the menu
-        // bar's appearance (the handler re-runs at every draw).
-        let color = isLow ? NSColor.labelColor : NSColor.black
+        // and Low Power Mode variants use labelColor so the outline still
+        // adapts to the menu bar's appearance (the handler re-runs at every
+        // draw).
+        let color = fillColor == nil ? NSColor.black : NSColor.labelColor
 
         // Body outline: geometry on half-points so the 1 pt stroke lands on
         // whole pixels at 1x (and pairs of pixels at 2x) instead of blurring.
@@ -61,7 +108,7 @@ enum BatteryStatusIcon {
             let fillRect = NSRect(
                 x: interior.minX, y: interior.minY,
                 width: width, height: interior.height)
-            (isLow ? NSColor.systemRed : color).setFill()
+            (fillColor ?? color).setFill()
             NSBezierPath(roundedRect: fillRect, xRadius: 1.5, yRadius: 1.5).fill()
         }
 
