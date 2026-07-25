@@ -15,7 +15,7 @@ struct StatsView: View {
 
     let selector: EnergySourceSelector
     let timelineSource: EnergySource?
-    let reading: BatteryReading?
+    @ObservedObject var model: BatteryViewModel
     @ObservedObject private var helper = HelperRegistrationController.shared
     /// The app-scoped live-power source of truth, shared with the popover so the
     /// two views can never disagree about which apps are live.
@@ -33,6 +33,9 @@ struct StatsView: View {
     @State private var consumerID = UUID()
 
     @State private var range: EnergyRange
+    @AppStorage(StatsRangeVisibility.storageKey)
+    private var rangeVisibilityStorage = StatsRangeVisibility.defaultStorageValue
+    @State private var isCustomizingRanges = false
     /// Calendar history other than Today. Today reads the coordinator's
     /// published result; Session reads its exact-window coordinator.
     @State private var historyApps: [AppEnergy] = []
@@ -49,15 +52,23 @@ struct StatsView: View {
         .timingCurve(0.23, 1, 0.32, 1, duration: 0.18)
     }
 
+    private var visibleRanges: [EnergyRange] {
+        StatsRangeVisibility.visibleRanges(from: rangeVisibilityStorage)
+    }
+
+    private var showsLivePower: Bool {
+        range.usesLivePower(onAC: model.reading?.onAC)
+    }
+
     init(
         selector: EnergySourceSelector,
         timelineSource: EnergySource?,
-        reading: BatteryReading?
+        model: BatteryViewModel
     ) {
         self.selector = selector
         self.timelineSource = timelineSource
-        self.reading = reading
-        _range = State(initialValue: .initialRange(onAC: reading?.onAC))
+        self.model = model
+        _range = State(initialValue: .initialRange(onAC: model.reading?.onAC))
     }
 
     /// The app-table inputs for the current range: the coordinator's Today
@@ -129,23 +140,31 @@ struct StatsView: View {
             syncDataAttachments()
             loadTask = Task { await loadApps() }
         }
+        .onChange(of: model.reading?.onAC) {
+            syncDataAttachments()
+        }
         .onChange(of: helper.readyGeneration) {
             if origin == .unavailable { retryApps() }
         }
         // Attachment is gated on the two live ranges so the shared 2 s loop
         // stays idle while the window sits on historical ranges.
-        .onAppear { syncDataAttachments() }
+        .onAppear {
+            range = StatsRangeVisibility.preferredRange(
+                range,
+                from: rangeVisibilityStorage)
+            syncDataAttachments()
+        }
         .onDisappear {
             live.setAttached(false, for: .stats(consumerID))
             batterySession.setAttached(false, for: .stats(consumerID))
         }
     }
 
-    /// Attaches to the shared live loop while the window is showing Session or
-    /// Today. Idempotent: repeated calls with the same state are absorbed.
+    /// Attaches to the shared live loop for Today, and for Session only while
+    /// unplugged. Idempotent: repeated calls with the same state are absorbed.
     private func syncDataAttachments() {
         live.setAttached(
-            range.usesLivePower,
+            showsLivePower,
             includesTodayHistory: range == .today,
             for: .stats(consumerID))
         batterySession.setAttached(range == .session, for: .stats(consumerID))
@@ -164,10 +183,29 @@ struct StatsView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button {
+                    withAnimation(replacementAnimation) {
+                        isCustomizingRanges.toggle()
+                    }
+                } label: {
+                    Label(
+                        isCustomizingRanges ? "Done" : "Customize Tabs",
+                        systemImage: isCustomizingRanges
+                            ? "checkmark"
+                            : "slider.horizontal.3")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help(isCustomizingRanges ? "Finish customizing tabs" : "Choose which tabs appear")
+            }
+
+            if isCustomizingRanges {
+                rangeSettings
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
 
             Picker("Range", selection: $range) {
-                ForEach(EnergyRange.allCases, id: \.self) { range in
+                ForEach(visibleRanges, id: \.self) { range in
                     Text(range.pickerLabel).tag(range)
                 }
             }
@@ -176,6 +214,51 @@ struct StatsView: View {
             .frame(maxWidth: 380)
         }
         .padding(16)
+    }
+
+    private var rangeSettings: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Visible tabs")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Show All") {
+                    rangeVisibilityStorage = StatsRangeVisibility.defaultStorageValue
+                }
+                .buttonStyle(.plain)
+                .font(.caption)
+                .disabled(visibleRanges.count == EnergyRange.allCases.count)
+            }
+
+            HStack(spacing: 14) {
+                ForEach(EnergyRange.allCases, id: \.self) { candidate in
+                    Toggle(
+                        candidate.rawValue,
+                        isOn: visibilityBinding(for: candidate))
+                    .toggleStyle(.checkbox)
+                    .disabled(
+                        visibleRanges.count == 1
+                            && visibleRanges.contains(candidate))
+                }
+            }
+        }
+        .padding(10)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func visibilityBinding(for candidate: EnergyRange) -> Binding<Bool> {
+        Binding(
+            get: { visibleRanges.contains(candidate) },
+            set: { isVisible in
+                let updated = StatsRangeVisibility.updating(
+                    candidate,
+                    isVisible: isVisible,
+                    in: rangeVisibilityStorage)
+                rangeVisibilityStorage = updated
+
+                range = StatsRangeVisibility.preferredRange(range, from: updated)
+            })
     }
 
     private var rangeSubtitle: String {
@@ -200,7 +283,7 @@ struct StatsView: View {
                 Text("Apps by energy")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if range.usesLivePower,
+                if showsLivePower,
                    live.status == .sampling || live.status == .warmingUp {
                     LiveHint()
                 }
@@ -209,7 +292,10 @@ struct StatsView: View {
 
             if range == .today, let hybrid = live.hybrid, !hybrid.active.isEmpty {
                 hybridAppTable(hybrid)
-            } else if range == .session, let hybrid = live.hybrid, !hybrid.active.isEmpty {
+            } else if range == .session,
+                      showsLivePower,
+                      let hybrid = live.hybrid,
+                      !hybrid.active.isEmpty {
                 liveSessionAppTable(hybrid)
             } else {
                 historicalAppTable
@@ -244,7 +330,7 @@ struct StatsView: View {
 
     @ViewBuilder
     private var sessionStatusBanner: some View {
-        if live.status == .helperOutdated {
+        if showsLivePower, live.status == .helperOutdated {
             Text("Live power needs the updated helper - restart Juice to update it.")
                 .font(.caption2)
                 .foregroundStyle(.orange)
@@ -409,8 +495,8 @@ struct StatsView: View {
         }
         .transition(.opacity)
 
-        // The Stats window's BatteryReading is a stale snapshot, so the model's
-        // own unattributed-system figure is shown instead of a battery split.
+        // The coordinator's own unattributed-system figure is shown instead of
+        // a battery split.
         if let reading = live.reading {
             Text(String(
                 format: "Unattributed system processes: %.1f W", reading.systemWatts))
@@ -528,11 +614,11 @@ struct StatsView: View {
 
     private var footer: some View {
         HStack(spacing: 6) {
-            if let health = reading?.healthPercent {
+            if let health = model.reading?.healthPercent {
                 Text("Health \(health)%")
                 Text("·")
             }
-            if let cycles = reading?.cycleCount {
+            if let cycles = model.reading?.cycleCount {
                 Text("\(cycles) cycles")
                 Text("·")
             }

@@ -19,6 +19,8 @@ struct PopoverView: View {
     @State private var consumerID = UUID()
 
     @State private var range: EnergyRange
+    @AppStorage(StatsRangeVisibility.storageKey)
+    private var rangeVisibilityStorage = StatsRangeVisibility.defaultStorageValue
     /// The popover is recreated when opened. Apply the power-aware default once
     /// per presentation, after the immediate battery refresh, without changing
     /// tabs underneath someone who manually chooses another range.
@@ -37,6 +39,14 @@ struct PopoverView: View {
 
     private var replacementAnimation: Animation {
         .timingCurve(0.23, 1, 0.32, 1, duration: 0.18)
+    }
+
+    private var visibleRanges: [EnergyRange] {
+        StatsRangeVisibility.visibleRanges(from: rangeVisibilityStorage)
+    }
+
+    private var showsLivePower: Bool {
+        range.usesLivePower(onAC: model.reading?.onAC)
     }
 
     init(model: BatteryViewModel) {
@@ -121,7 +131,7 @@ struct PopoverView: View {
                         Text("Top energy users")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        if range.usesLivePower,
+                        if showsLivePower,
                            live.status == .sampling || live.status == .warmingUp {
                             LiveHint()
                         }
@@ -132,10 +142,11 @@ struct PopoverView: View {
                     apps: topApps,
                     range: $range,
                     origin: origin,
-                    hybrid: range.usesLivePower ? live.hybrid : nil,
+                    ranges: visibleRanges,
+                    hybrid: showsLivePower ? live.hybrid : nil,
                     batteryWatts: model.reading.map { abs($0.watts) },
                     onAC: model.reading?.onAC ?? false,
-                    totalAppWatts: range.usesLivePower ? live.reading?.totalAppWatts : nil,
+                    totalAppWatts: showsLivePower ? live.reading?.totalAppWatts : nil,
                     session: batterySession.result?.session)
                 energyStatus
 
@@ -218,7 +229,7 @@ struct PopoverView: View {
                     StatsWindowPresenter.shared.show(
                         selector: selector,
                         timelineSource: timelineSource,
-                        reading: model.reading
+                        model: model
                     )
                 }
                 Spacer()
@@ -240,6 +251,14 @@ struct PopoverView: View {
             syncDataAttachments()
             loadTask = Task { await loadTopApps() }
         }
+        .onChange(of: model.reading?.onAC) {
+            syncDataAttachments()
+        }
+        .onChange(of: rangeVisibilityStorage) {
+            range = StatsRangeVisibility.preferredRange(
+                range,
+                from: rangeVisibilityStorage)
+        }
         .onChange(of: helper.readyGeneration) {
             if origin == .unavailable { retryTopApps() }
         }
@@ -250,11 +269,11 @@ struct PopoverView: View {
         }
     }
 
-    /// Attaches to the shared live loop while the popover is showing Session or
-    /// Today. Idempotent: repeated calls with the same state are absorbed.
+    /// Attaches to the shared live loop for Today, and for Session only while
+    /// unplugged. Idempotent: repeated calls with the same state are absorbed.
     private func syncDataAttachments() {
         live.setAttached(
-            range.usesLivePower,
+            showsLivePower,
             includesTodayHistory: range == .today,
             for: .popover(consumerID))
         batterySession.setAttached(range == .session, for: .popover(consumerID))
@@ -263,12 +282,14 @@ struct PopoverView: View {
     private func applyInitialRange() {
         guard !didApplyInitialRange else { return }
         didApplyInitialRange = true
-        range = .initialRange(onAC: model.reading?.onAC)
+        range = StatsRangeVisibility.preferredRange(
+            .initialRange(onAC: model.reading?.onAC),
+            from: rangeVisibilityStorage)
     }
 
     @ViewBuilder
     private var energyStatus: some View {
-        if range.usesLivePower, live.status == .helperOutdated {
+        if showsLivePower, live.status == .helperOutdated {
             liveStatus.transition(.opacity)
         }
 
@@ -347,7 +368,7 @@ struct PopoverView: View {
 
     /// Mirrors TopAppsView's condition for rendering a live-first app list.
     private var showsLiveAppSections: Bool {
-        range.usesLivePower && !(live.hybrid?.active.isEmpty ?? true)
+        showsLivePower && !(live.hybrid?.active.isEmpty ?? true)
     }
 
     private var timelineSource: EnergySource? {
