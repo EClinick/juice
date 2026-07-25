@@ -36,10 +36,11 @@ enum EnergyRange: String, CaseIterable, Sendable {
         }
     }
 
-    /// Session and Today both show the shared live-power layer. The remaining
-    /// ranges are historical-only and should not keep the live sampler running.
-    var usesLivePower: Bool {
-        self == .session || self == .today
+    /// Today always shows the shared live-power layer. Session shows it only
+    /// while the Mac is unplugged; a completed session stays historical on AC.
+    /// The remaining ranges are historical-only.
+    func usesLivePower(onAC: Bool?) -> Bool {
+        self == .today || (self == .session && onAC == false)
     }
 
     /// The range a newly presented surface should focus based on the latest

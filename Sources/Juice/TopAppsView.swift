@@ -9,6 +9,7 @@ struct TopAppsView: View {
     let apps: [AppEnergy]
     @Binding var range: EnergyRange
     let origin: DataOrigin
+    var ranges = EnergyRange.allCases
     @State private var isSessionLiveExpanded = true
     @State private var isTodayLiveExpanded = true
     /// The shared live/history result. Session reads its active rows and joins
@@ -63,7 +64,7 @@ struct TopAppsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Picker("Range", selection: $range) {
-                ForEach(EnergyRange.allCases, id: \.self) { range in
+                ForEach(ranges, id: \.self) { range in
                     Text(range.pickerLabel).tag(range)
                 }
             }

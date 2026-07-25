@@ -25,13 +25,13 @@ final class StatsWindowPresenter: NSObject, NSWindowDelegate {
         BatterySessionCoordinator.shared.detachAll(kind: .stats)
     }
 
-    func show(selector: EnergySourceSelector, timelineSource: EnergySource?, reading: BatteryReading?) {
+    func show(selector: EnergySourceSelector, timelineSource: EnergySource?, model: BatteryViewModel) {
         NSApp.activate(ignoringOtherApps: true)
 
         let root = StatsView(
             selector: selector,
             timelineSource: timelineSource,
-            reading: reading
+            model: model
         )
 
         if let window {
