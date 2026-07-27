@@ -200,6 +200,26 @@ struct PopoverView: View {
 
             if updater.isAvailable {
                 VStack(alignment: .leading, spacing: 5) {
+                    if let readyUpdate = updater.readyUpdate {
+                        HStack(spacing: 8) {
+                            Image(systemName: "arrow.down.circle.fill")
+                                .foregroundStyle(.blue)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("Juice \(readyUpdate.version) is ready")
+                                    .font(.caption.weight(.semibold))
+                                Text("Restart Juice to finish installing.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Update & Relaunch") {
+                                updater.installReadyUpdate()
+                            }
+                            .controlSize(.small)
+                            .buttonStyle(.borderedProminent)
+                        }
+                    }
+
                     HStack {
                         Toggle("Automatic updates", isOn: Binding(
                             get: { updater.automaticallyUpdates },
@@ -208,7 +228,11 @@ struct PopoverView: View {
                         .toggleStyle(.switch)
                         .controlSize(.small)
                         Spacer()
-                        Button("Check for Updates…") { updater.checkForUpdates() }
+                        if updater.readyUpdate == nil {
+                            Button("Check for Updates…") {
+                                updater.checkForUpdates()
+                            }
+                        }
                     }
                     Text("Turn this off to update manually.")
                         .font(.caption2)
