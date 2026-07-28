@@ -44,6 +44,10 @@ fi
 if [[ "$SIGNING_IDENTITY" == "-" ]]; then
     SWIFT_FLAGS+=(-Xswiftc -DDEV_HELPER)
 fi
+# Link the app-bundle framework path into every Juice executable slice before
+# SwiftPM applies its native signature. This keeps LC_RPATH ahead of
+# LC_CODE_SIGNATURE and avoids rewriting the finished Mach-O.
+SWIFT_FLAGS+=(-Xlinker -rpath -Xlinker "@executable_path/../Frameworks")
 
 cd "$ROOT"
 APP_BINARIES=()
@@ -108,18 +112,6 @@ else
     chmod 755 "$APP_PATH/Contents/MacOS/Juice"
     chmod 755 "$APP_PATH/Contents/Library/HelperTools/JuiceHelper"
 fi
-
-# SwiftPM linker-signs the native arm64 slice, while the cross-compiled Intel
-# slice is unsigned. Strip that inherited per-slice signature before changing
-# Mach-O load commands; otherwise install_name_tool can place the new rpath
-# after LC_CODE_SIGNATURE in arm64. Newer static verification accepts that
-# layout, but macOS 26.3 rejects the running process's dynamic signature.
-codesign --remove-signature "$APP_PATH/Contents/MacOS/Juice"
-
-# SwiftPM gives command-line executables an @loader_path rpath. App bundles
-# keep frameworks in Contents/Frameworks, so add the standard app-bundle rpath
-# before applying one fresh signature to the completed universal executable.
-install_name_tool -add_rpath @executable_path/../Frameworks "$APP_PATH/Contents/MacOS/Juice"
 
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP_PATH/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_PATH/Contents/Info.plist"
