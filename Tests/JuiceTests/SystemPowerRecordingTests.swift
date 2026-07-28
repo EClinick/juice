@@ -150,9 +150,12 @@ struct SystemPowerRecordingTests {
         let apps = try store.systemAppEnergyTotals(
             since: t0,
             until: t0.addingTimeInterval(4))
+        let systemEnergyWh = try #require(system.first?.energyWh)
+        let appEnergyWh = try #require(apps.first?.energyWh)
+        let expectedWh = 60.0 * 2 / 3600
         #expect(system.count == 1)
         #expect(apps.count == 1)
-        #expect(abs((system.first?.energyWh ?? 0) - (60.0 * 2 / 3600)) < 1e-9)
-        #expect(abs((apps.first?.energyWh ?? 0) - (60.0 * 2 / 3600)) < 1e-9)
+        #expect(abs(systemEnergyWh - expectedWh) < 1e-9)
+        #expect(abs(appEnergyWh - expectedWh) < 1e-9)
     }
 }
