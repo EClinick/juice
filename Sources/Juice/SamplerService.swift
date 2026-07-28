@@ -15,6 +15,14 @@ actor SamplerService {
         var appKey: String
     }
 
+    private struct ServerPowerAccumulator {
+        var energyWh = 0.0
+        var coveredDuration = 0.0
+        var peakWatts = 0.0
+        var coverageStart: Date?
+        var coverageEnd: Date?
+    }
+
     /// The underlying store is thread-safe (GRDB serializes access), so it is
     /// safe to hand out to non-actor readers like the stats timeline.
     nonisolated let store: JuiceStore
@@ -51,8 +59,10 @@ actor SamplerService {
 
     private var lastPrune: Date = .distantPast
     private var lastSystemPowerSample: Date?
+    private var lastSystemPowerAggregateFlush: Date?
     private var lastServerReading: LivePowerReading?
     private var lastServerReadingDate: Date?
+    private var pendingSystemPower: [Date: ServerPowerAccumulator] = [:]
     /// Two-second app-energy increments accumulated between the one-minute
     /// SQLite flushes used for permanent server history.
     private var pendingServerAppEnergy: [ServerAppBucketKey: StoredSystemAppEnergyBucket] = [:]
@@ -122,6 +132,11 @@ actor SamplerService {
             // delivery prevents a delayed task from creating a negative or
             // overlapping integration interval.
             guard now > previousDate else { return }
+            accumulateSystemPower(
+                previousWatts: lastServerReading.totalMeteredWatts,
+                currentWatts: reading.totalMeteredWatts,
+                start: previousDate,
+                end: now)
             accumulateServerAppEnergy(SystemAppEnergyAnalytics.increments(
                 previous: lastServerReading,
                 current: reading,
@@ -131,15 +146,21 @@ actor SamplerService {
         lastServerReading = reading
         lastServerReadingDate = now
 
-        guard recordSystemPower(reading.totalMeteredWatts, at: now) else { return }
+        if lastSystemPowerAggregateFlush == nil {
+            lastSystemPowerAggregateFlush = now
+        }
+        guard let lastSystemPowerAggregateFlush,
+              now.timeIntervalSince(lastSystemPowerAggregateFlush)
+                >= Self.systemPowerSampleInterval else {
+            return
+        }
 
-        if !pendingServerAppEnergy.isEmpty {
-            do {
-                try store.addSystemAppEnergy(Array(pendingServerAppEnergy.values))
-                pendingServerAppEnergy.removeAll(keepingCapacity: true)
-            } catch {
-                NSLog("Juice: failed to persist server app energy: \(error)")
-            }
+        do {
+            try persistPendingServerHistory()
+            self.lastSystemPowerAggregateFlush = now
+        } catch {
+            NSLog("Juice: failed to persist server power history: \(error)")
+            return
         }
 
         guard now.timeIntervalSince(lastServerRollupCheck)
@@ -147,6 +168,81 @@ actor SamplerService {
         else { return }
         lastServerRollupCheck = now
         await updateRollupsIfStale()
+    }
+
+    /// Persists the in-memory tail during normal app termination.
+    func flushServerHistory() {
+        do {
+            try persistPendingServerHistory()
+        } catch {
+            NSLog("Juice: failed to flush server power history: \(error)")
+        }
+    }
+
+    private func persistPendingServerHistory() throws {
+        let system = pendingSystemPower.map {
+            StoredSystemPowerSample(
+                date: $0.key,
+                watts: $0.value.energyWh * 3600 / $0.value.coveredDuration,
+                coveredDuration: $0.value.coveredDuration,
+                energyWh: $0.value.energyWh,
+                peakWatts: $0.value.peakWatts,
+                coverageStart: $0.value.coverageStart,
+                coverageEnd: $0.value.coverageEnd)
+        }
+        let apps = Array(pendingServerAppEnergy.values)
+        try store.addServerPowerHistory(system: system, apps: apps)
+        pendingSystemPower.removeAll(keepingCapacity: true)
+        pendingServerAppEnergy.removeAll(keepingCapacity: true)
+    }
+
+    private func accumulateSystemPower(
+        previousWatts: Double,
+        currentWatts: Double,
+        start: Date,
+        end: Date
+    ) {
+        let duration = end.timeIntervalSince(start)
+        guard duration > 0,
+              duration <= 5 * 60,
+              previousWatts.isFinite,
+              previousWatts >= 0,
+              currentWatts.isFinite,
+              currentWatts >= 0 else {
+            return
+        }
+
+        var segmentStart = start
+        while segmentStart < end {
+            guard let minute = calendar.dateInterval(of: .minute, for: segmentStart) else {
+                break
+            }
+            let segmentEnd = min(end, minute.end)
+            let segmentDuration = segmentEnd.timeIntervalSince(segmentStart)
+            let startFraction = segmentStart.timeIntervalSince(start) / duration
+            let endFraction = segmentEnd.timeIntervalSince(start) / duration
+            let startWatts = previousWatts
+                + (currentWatts - previousWatts) * startFraction
+            let endWatts = previousWatts
+                + (currentWatts - previousWatts) * endFraction
+
+            var accumulator = pendingSystemPower[minute.start]
+                ?? ServerPowerAccumulator()
+            accumulator.energyWh += (startWatts + endWatts) / 2
+                * segmentDuration / 3600
+            accumulator.coveredDuration += segmentDuration
+            accumulator.peakWatts = max(
+                accumulator.peakWatts,
+                max(startWatts, endWatts))
+            accumulator.coverageStart = min(
+                accumulator.coverageStart ?? segmentStart,
+                segmentStart)
+            accumulator.coverageEnd = max(
+                accumulator.coverageEnd ?? segmentEnd,
+                segmentEnd)
+            pendingSystemPower[minute.start] = accumulator
+            segmentStart = segmentEnd
+        }
     }
 
     private func accumulateServerAppEnergy(

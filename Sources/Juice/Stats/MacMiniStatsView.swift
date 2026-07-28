@@ -22,9 +22,9 @@ struct MacMiniStatsView: View {
         var appKey: String
         var displayName: String
         var liveWatts: Double?
-        var energyWh: Double
-        var activeDuration: TimeInterval
-        var peakWatts: Double
+        var energyWh: Double?
+        var activeDuration: TimeInterval?
+        var peakWatts: Double?
     }
 
     private var appRows: [AppRow] {
@@ -44,9 +44,11 @@ struct MacMiniStatsView: View {
                 appKey: key,
                 displayName: current?.displayName ?? total?.displayName ?? key,
                 liveWatts: current?.watts,
-                energyWh: total?.energyWh ?? 0,
-                activeDuration: total?.activeDuration ?? 0,
-                peakWatts: max(total?.peakWatts ?? 0, current?.watts ?? 0))
+                energyWh: total?.energyWh,
+                activeDuration: total?.activeDuration,
+                peakWatts: data == nil
+                    ? nil
+                    : max(total?.peakWatts ?? 0, current?.watts ?? 0))
         }
         .sorted {
             switch ($0.liveWatts, $1.liveWatts) {
@@ -57,8 +59,8 @@ struct MacMiniStatsView: View {
             case (nil, _?):
                 return false
             default:
-                if $0.energyWh != $1.energyWh {
-                    return $0.energyWh > $1.energyWh
+                if ($0.energyWh ?? 0) != ($1.energyWh ?? 0) {
+                    return ($0.energyWh ?? 0) > ($1.energyWh ?? 0)
                 }
                 return $0.displayName.localizedCaseInsensitiveCompare($1.displayName)
                     == .orderedAscending
@@ -67,7 +69,7 @@ struct MacMiniStatsView: View {
     }
 
     private var maxAppEnergy: Double {
-        max(appRows.map(\.energyWh).max() ?? 0, 0.001)
+        max(appRows.compactMap(\.energyWh).max() ?? 0, 0.001)
     }
 
     var body: some View {
@@ -171,14 +173,20 @@ struct MacMiniStatsView: View {
             .font(.system(size: 9, weight: .semibold))
             .foregroundStyle(.tertiary)
 
+            if let loadError {
+                Text(loadError)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if data == nil {
+                ProgressView("Loading app energy history…")
+                    .controlSize(.small)
+            }
+
             if appRows.isEmpty {
-                if loadError != nil {
-                    Text(loadError ?? "Server app history is unavailable.")
+                if data != nil {
+                    Text("Collecting app energy—live apps appear as soon as they draw measurable power.")
                         .font(.caption)
-                        .foregroundStyle(.orange)
-                } else {
-                    ProgressView("Measuring app power…")
-                        .controlSize(.small)
+                        .foregroundStyle(.tertiary)
                 }
                 Spacer()
             } else {
@@ -215,14 +223,14 @@ struct MacMiniStatsView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(app.displayName)
         .accessibilityValue(
-            "\(app.liveWatts.map(liveWattsText) ?? "not live"), \(serverEnergyText(app.energyWh))")
+            "\(app.liveWatts.map(liveWattsText) ?? "not live"), \(app.energyWh.map(serverEnergyText) ?? "energy unavailable")")
         .accessibilityHint("Opens app energy details")
     }
 
     private func appRowLabel(_ app: AppRow) -> some View {
         let isLive = app.liveWatts != nil
         let liveText = app.liveWatts.map(liveWattsText) ?? "—"
-        let barFraction = CGFloat(max(0, min(1, app.energyWh / maxAppEnergy)))
+        let barFraction = CGFloat(max(0, min(1, (app.energyWh ?? 0) / maxAppEnergy)))
         let rowBackground = isLive ? Color.green.opacity(0.06) : Color.clear
 
         return HStack(spacing: 10) {
@@ -260,12 +268,12 @@ struct MacMiniStatsView: View {
                 .monospacedDigit()
                 .frame(width: 64, alignment: .trailing)
 
-            Text(serverEnergyText(app.energyWh))
+            Text(app.energyWh.map(serverEnergyText) ?? "—")
                 .font(.callout)
                 .monospacedDigit()
                 .frame(width: 72, alignment: .trailing)
 
-            Text(liveWattsText(app.peakWatts))
+            Text(app.peakWatts.map(liveWattsText) ?? "—")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
@@ -377,7 +385,7 @@ struct MacMiniStatsView: View {
                         AxisGridLine().foregroundStyle(.quaternary)
                         AxisValueLabel {
                             if let watts = value.as(Double.self) {
-                                Text("\(Int(watts.rounded()))W")
+                                Text(chartWattsText(watts))
                             }
                         }
                     }
@@ -420,6 +428,8 @@ struct MacMiniStatsView: View {
     }
 
     private func load() async {
+        data = nil
+        loadError = nil
         guard let store else {
             data = nil
             loadError = "The local server history store is unavailable."

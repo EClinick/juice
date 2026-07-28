@@ -139,6 +139,17 @@ public final class JuiceStore: @unchecked Sendable {
                 on: "system_app_energy_hour",
                 columns: ["app_key", "bucket_start"])
         }
+        migrator.registerMigration("v6") { db in
+            // New Mac mini recordings store exact minute energy, coverage,
+            // and peak values. Null columns identify legacy point samples.
+            try db.alter(table: "system_power_sample") { t in
+                t.add(column: "covered_seconds", .double)
+                t.add(column: "energy_wh", .double)
+                t.add(column: "peak_watts", .double)
+                t.add(column: "coverage_start", .double)
+                t.add(column: "coverage_end", .double)
+            }
+        }
         return migrator
     }
 
@@ -240,6 +251,125 @@ public final class JuiceStore: @unchecked Sendable {
         }
     }
 
+    /// Atomically adds one portion of a live reading interval to its
+    /// minute-aligned aggregate. This preserves short spikes and exact energy
+    /// while retaining the compact one-row-per-minute history footprint.
+    public func addSystemPowerAggregate(
+        bucketStart: Date,
+        energyWh: Double,
+        coveredDuration: TimeInterval,
+        peakWatts: Double,
+        coverageStart: Date,
+        coverageEnd: Date
+    ) throws {
+        guard coveredDuration.isFinite,
+              coveredDuration > 0,
+              coverageEnd > coverageStart else {
+            return
+        }
+        try addSystemPowerAggregates([
+            StoredSystemPowerSample(
+                date: bucketStart,
+                watts: energyWh * 3600 / coveredDuration,
+                coveredDuration: coveredDuration,
+                energyWh: energyWh,
+                peakWatts: peakWatts,
+                coverageStart: coverageStart,
+                coverageEnd: coverageEnd),
+        ])
+    }
+
+    public func addSystemPowerAggregates(
+        _ aggregates: [StoredSystemPowerSample]
+    ) throws {
+        let valid = aggregates.filter {
+            guard let coveredDuration = $0.coveredDuration,
+                  let energyWh = $0.energyWh,
+                  let peakWatts = $0.peakWatts,
+                  let coverageStart = $0.coverageStart,
+                  let coverageEnd = $0.coverageEnd else {
+                return false
+            }
+            return energyWh.isFinite
+                && energyWh >= 0
+                && coveredDuration.isFinite
+                && coveredDuration > 0
+                && peakWatts.isFinite
+                && peakWatts >= 0
+                && coverageEnd > coverageStart
+        }
+        guard !valid.isEmpty else { return }
+        try dbQueue.write { db in
+            try Self.upsertSystemPower(valid, in: db)
+        }
+    }
+
+    /// Commits whole-system and per-app live increments in one SQLite
+    /// transaction so the two server totals can never diverge on a partial
+    /// write.
+    public func addServerPowerHistory(
+        system: [StoredSystemPowerSample],
+        apps: [StoredSystemAppEnergyBucket]
+    ) throws {
+        guard !system.isEmpty || !apps.isEmpty else { return }
+        try dbQueue.write { db in
+            try Self.upsertSystemPower(system, in: db)
+            try Self.upsertSystemAppEnergy(apps, in: db)
+        }
+    }
+
+    private static func upsertSystemPower(
+        _ aggregates: [StoredSystemPowerSample],
+        in db: Database
+    ) throws {
+        for aggregate in aggregates {
+            try db.execute(
+                sql: """
+                    INSERT INTO system_power_sample (
+                        ts, watts, covered_seconds, energy_wh, peak_watts,
+                        coverage_start, coverage_end
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(ts) DO UPDATE SET
+                        covered_seconds =
+                            COALESCE(system_power_sample.covered_seconds, 0)
+                            + excluded.covered_seconds,
+                        energy_wh =
+                            COALESCE(system_power_sample.energy_wh, 0)
+                            + excluded.energy_wh,
+                        peak_watts = MAX(
+                            COALESCE(system_power_sample.peak_watts, 0),
+                            excluded.peak_watts),
+                        coverage_start = MIN(
+                            COALESCE(
+                                system_power_sample.coverage_start,
+                                excluded.coverage_start),
+                            excluded.coverage_start),
+                        coverage_end = MAX(
+                            COALESCE(
+                                system_power_sample.coverage_end,
+                                excluded.coverage_end),
+                            excluded.coverage_end),
+                        watts = (
+                            COALESCE(system_power_sample.energy_wh, 0)
+                            + excluded.energy_wh
+                        ) * 3600 / (
+                            COALESCE(system_power_sample.covered_seconds, 0)
+                            + excluded.covered_seconds
+                        )
+                    """,
+                arguments: [
+                    aggregate.date.timeIntervalSince1970,
+                    aggregate.watts,
+                    aggregate.coveredDuration,
+                    aggregate.energyWh,
+                    aggregate.peakWatts,
+                    aggregate.coverageStart?.timeIntervalSince1970,
+                    aggregate.coverageEnd?.timeIntervalSince1970,
+                ])
+        }
+    }
+
     public func systemPowerSamples(
         since: Date,
         until: Date
@@ -248,14 +378,37 @@ public final class JuiceStore: @unchecked Sendable {
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT ts, watts FROM system_power_sample
-                    WHERE ts >= ? AND ts <= ? ORDER BY ts
+                    SELECT ts, watts, covered_seconds, energy_wh, peak_watts,
+                           coverage_start, coverage_end
+                    FROM system_power_sample
+                    WHERE (
+                        covered_seconds IS NOT NULL
+                        AND coverage_end > ?
+                        AND coverage_start < ?
+                    ) OR (
+                        covered_seconds IS NULL
+                        AND ts >= ?
+                        AND ts <= ?
+                    )
+                    ORDER BY ts
                     """,
-                arguments: [since.timeIntervalSince1970, until.timeIntervalSince1970])
+                arguments: [
+                    since.timeIntervalSince1970,
+                    until.timeIntervalSince1970,
+                    since.timeIntervalSince1970,
+                    until.timeIntervalSince1970,
+                ])
             return rows.map { row in
                 StoredSystemPowerSample(
                     date: Date(timeIntervalSince1970: row["ts"]),
-                    watts: row["watts"])
+                    watts: row["watts"],
+                    coveredDuration: row["covered_seconds"],
+                    energyWh: row["energy_wh"],
+                    peakWatts: row["peak_watts"],
+                    coverageStart: (row["coverage_start"] as Double?)
+                        .map(Date.init(timeIntervalSince1970:)),
+                    coverageEnd: (row["coverage_end"] as Double?)
+                        .map(Date.init(timeIntervalSince1970:)))
             }
         }
     }
@@ -264,7 +417,7 @@ public final class JuiceStore: @unchecked Sendable {
         try dbQueue.read { db in
             try Double.fetchOne(
                 db,
-                sql: "SELECT MIN(ts) FROM system_power_sample")
+                sql: "SELECT MIN(COALESCE(coverage_start, ts)) FROM system_power_sample")
                 .map(Date.init(timeIntervalSince1970:))
         }
     }
@@ -272,7 +425,10 @@ public final class JuiceStore: @unchecked Sendable {
     public func pruneSystemPowerSamples(olderThan cutoff: Date) throws {
         try dbQueue.write { db in
             try db.execute(
-                sql: "DELETE FROM system_power_sample WHERE ts < ?",
+                sql: """
+                    DELETE FROM system_power_sample
+                    WHERE COALESCE(coverage_end, ts) < ?
+                    """,
                 arguments: [cutoff.timeIntervalSince1970])
         }
     }
@@ -286,31 +442,38 @@ public final class JuiceStore: @unchecked Sendable {
     ) throws {
         guard !increments.isEmpty else { return }
         try dbQueue.write { db in
-            for increment in increments {
-                try db.execute(
-                    sql: """
-                        INSERT INTO system_app_energy_hour
-                            (bucket_start, app_key, display_name, wh,
-                             active_seconds, peak_watts)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(bucket_start, app_key) DO UPDATE SET
-                            display_name = excluded.display_name,
-                            wh = system_app_energy_hour.wh + excluded.wh,
-                            active_seconds = system_app_energy_hour.active_seconds
-                                + excluded.active_seconds,
-                            peak_watts = MAX(
-                                system_app_energy_hour.peak_watts,
-                                excluded.peak_watts)
-                        """,
-                    arguments: [
-                        increment.bucketStart.timeIntervalSince1970,
-                        increment.appKey,
-                        increment.displayName,
-                        increment.energyWh,
-                        increment.activeDuration,
-                        increment.peakWatts,
-                    ])
-            }
+            try Self.upsertSystemAppEnergy(increments, in: db)
+        }
+    }
+
+    private static func upsertSystemAppEnergy(
+        _ increments: [StoredSystemAppEnergyBucket],
+        in db: Database
+    ) throws {
+        for increment in increments {
+            try db.execute(
+                sql: """
+                    INSERT INTO system_app_energy_hour
+                        (bucket_start, app_key, display_name, wh,
+                         active_seconds, peak_watts)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(bucket_start, app_key) DO UPDATE SET
+                        display_name = excluded.display_name,
+                        wh = system_app_energy_hour.wh + excluded.wh,
+                        active_seconds = system_app_energy_hour.active_seconds
+                            + excluded.active_seconds,
+                        peak_watts = MAX(
+                            system_app_energy_hour.peak_watts,
+                            excluded.peak_watts)
+                    """,
+                arguments: [
+                    increment.bucketStart.timeIntervalSince1970,
+                    increment.appKey,
+                    increment.displayName,
+                    increment.energyWh,
+                    increment.activeDuration,
+                    increment.peakWatts,
+                ])
         }
     }
 

@@ -253,6 +253,34 @@ private func makeStore() throws -> JuiceStore {
         #expect(samples == [StoredSystemPowerSample(date: now, watts: 15)])
     }
 
+    @Test func systemPowerAggregatesAccumulateWithinMinute() throws {
+        let store = try makeStore()
+        let minute = Date(timeIntervalSince1970: 1_700_000_040)
+
+        try store.addSystemPowerAggregate(
+            bucketStart: minute,
+            energyWh: 0.05,
+            coveredDuration: 30,
+            peakWatts: 12,
+            coverageStart: minute,
+            coverageEnd: minute.addingTimeInterval(30))
+        try store.addSystemPowerAggregate(
+            bucketStart: minute,
+            energyWh: 0.10,
+            coveredDuration: 30,
+            peakWatts: 20,
+            coverageStart: minute.addingTimeInterval(30),
+            coverageEnd: minute.addingTimeInterval(60))
+
+        let sample = try #require(try store.systemPowerSamples(
+            since: minute,
+            until: minute.addingTimeInterval(60)).first)
+        #expect(abs(sample.watts - 9) < 1e-9)
+        #expect(sample.coveredDuration == 60)
+        #expect(abs((sample.energyWh ?? 0) - 0.15) < 1e-9)
+        #expect(sample.peakWatts == 20)
+    }
+
     @Test func pruneSystemPowerSamplesKeepsRecentHistory() throws {
         let store = try makeStore()
         let now = Date(timeIntervalSince1970: 1_700_000_000)

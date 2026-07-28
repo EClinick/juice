@@ -116,6 +116,56 @@ struct SystemPowerAnalyticsTests {
         #expect(buckets.map(\.averageWatts) == [15, 45])
         #expect(buckets.map(\.peakWatts) == [30, 60])
     }
+
+    @Test("Minute aggregates retain exact energy, coverage, and peak")
+    func minuteAggregates() throws {
+        let aggregate = StoredSystemPowerSample(
+            date: t0,
+            watts: 1,
+            coveredDuration: 60,
+            energyWh: 1.0 / 60,
+            peakWatts: 60,
+            coverageStart: t0,
+            coverageEnd: t0.addingTimeInterval(60))
+        let summary = SystemPowerAnalytics.summary(
+            samples: [aggregate],
+            windowStart: t0,
+            windowEnd: t0.addingTimeInterval(60))
+        let bucket = try #require(SystemPowerAnalytics.buckets(
+            samples: [aggregate],
+            windowStart: t0,
+            windowEnd: t0.addingTimeInterval(60),
+            bucketDuration: 60).first)
+
+        #expect(abs(summary.energyWh - (1.0 / 60)) < 1e-9)
+        #expect(summary.averageWatts == 1)
+        #expect(summary.peakWatts == 60)
+        #expect(summary.coveredDuration == 60)
+        #expect(bucket.averageWatts == 1)
+        #expect(bucket.peakWatts == 60)
+    }
+
+    @Test("Partial current minute is not scaled down twice")
+    func partialMinuteAggregate() {
+        let end = t0.addingTimeInterval(30)
+        let aggregate = StoredSystemPowerSample(
+            date: t0,
+            watts: 10,
+            coveredDuration: 30,
+            energyWh: 10.0 / 120,
+            peakWatts: 20,
+            coverageStart: t0,
+            coverageEnd: end)
+        let summary = SystemPowerAnalytics.summary(
+            samples: [aggregate],
+            windowStart: t0,
+            windowEnd: end)
+
+        #expect(abs(summary.energyWh - (10.0 / 120)) < 1e-9)
+        #expect(summary.averageWatts == 10)
+        #expect(summary.coveredDuration == 30)
+        #expect(summary.peakWatts == 20)
+    }
 }
 
 @Suite("System app energy analytics")

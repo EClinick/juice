@@ -85,6 +85,14 @@ struct TopAppsViewBehaviorTests {
         #expect(liveWattsText(0) == "0.00 W")
     }
 
+    @Test("sub-centiwatt chart ticks remain distinguishable")
+    func chartWattFormatting() {
+        #expect(chartWattsText(0) == "0.00 W")
+        #expect(chartWattsText(0.001) == "1.0 mW")
+        #expect(chartWattsText(0.002) == "2.0 mW")
+        #expect(chartWattsText(0.01) == "0.01 W")
+    }
+
     @Test("positive server energy never rounds to zero")
     func serverEnergyFormatting() {
         #expect(serverEnergyText(0) == "0 Wh")
@@ -92,6 +100,16 @@ struct TopAppsViewBehaviorTests {
         #expect(serverEnergyText(0.004_585) == "4.6 mWh")
         #expect(serverEnergyText(0.334) == "0.3 Wh")
         #expect(serverEnergyText(1_250) == "1.25 kWh")
+    }
+
+    @Test("server activity duration never rounds a positive value to zero")
+    func serverActivityDurationFormatting() {
+        #expect(serverActiveDurationText(0) == "0 seconds")
+        #expect(serverActiveDurationText(30.0 / 3600) == "30 seconds")
+        #expect(serverActiveDurationText(2.0 / 60) == "2 minutes")
+        #expect(serverActiveDurationText(1) == "1.0 hour")
+        #expect(serverActiveDurationText(1.49) == "1.5 hours")
+        #expect(serverActiveDurationText(2) == "2.0 hours")
     }
 
     @Test("popover and Stats breakdown use one live snapshot formatter")

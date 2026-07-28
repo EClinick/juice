@@ -4,10 +4,30 @@ import Foundation
 public struct StoredSystemPowerSample: Sendable, Equatable {
     public var date: Date
     public var watts: Double
+    /// Present for minute aggregates recorded from the live Mac mini stream.
+    /// Older rows remain point samples and leave these fields nil.
+    public var coveredDuration: TimeInterval?
+    public var energyWh: Double?
+    public var peakWatts: Double?
+    public var coverageStart: Date?
+    public var coverageEnd: Date?
 
-    public init(date: Date, watts: Double) {
+    public init(
+        date: Date,
+        watts: Double,
+        coveredDuration: TimeInterval? = nil,
+        energyWh: Double? = nil,
+        peakWatts: Double? = nil,
+        coverageStart: Date? = nil,
+        coverageEnd: Date? = nil
+    ) {
         self.date = date
         self.watts = watts
+        self.coveredDuration = coveredDuration
+        self.energyWh = energyWh
+        self.peakWatts = peakWatts
+        self.coverageStart = coverageStart
+        self.coverageEnd = coverageEnd
     }
 }
 
@@ -191,6 +211,38 @@ public enum SystemPowerAnalytics {
         var segmentCount = 0
     }
 
+    private struct Aggregate {
+        var start: Date
+        var end: Date
+        var coveredDuration: TimeInterval
+        var energyWh: Double
+        var peakWatts: Double
+    }
+
+    private static func aggregate(from sample: StoredSystemPowerSample) -> Aggregate? {
+        guard let coveredDuration = sample.coveredDuration,
+              let energyWh = sample.energyWh,
+              let peakWatts = sample.peakWatts,
+              coveredDuration > 0,
+              coveredDuration <= 60,
+              energyWh.isFinite,
+              energyWh >= 0,
+              peakWatts.isFinite,
+              peakWatts >= 0,
+              let start = sample.coverageStart,
+              let end = sample.coverageEnd,
+              end > start,
+              coveredDuration <= end.timeIntervalSince(start) else {
+            return nil
+        }
+        return Aggregate(
+            start: start,
+            end: end,
+            coveredDuration: coveredDuration,
+            energyWh: energyWh,
+            peakWatts: peakWatts)
+    }
+
     /// Integrates consecutive samples using a trapezoid. Segments separated by
     /// more than `maximumGap` are omitted so app downtime is reported as
     /// missing coverage rather than fabricated server energy.
@@ -211,13 +263,32 @@ public enum SystemPowerAnalytics {
                 sampleCount: 0)
         }
 
-        let ordered = samples
-            .filter { $0.date >= windowStart && $0.date <= windowEnd }
+        let valid = samples
+            .filter { sample in
+                if let aggregate = aggregate(from: sample) {
+                    return aggregate.end > windowStart && aggregate.start < windowEnd
+                }
+                return sample.date >= windowStart && sample.date <= windowEnd
+            }
             .filter { $0.watts.isFinite && $0.watts >= 0 }
             .sorted { $0.date < $1.date }
+        let aggregates = valid.compactMap(aggregate(from:))
+        let ordered = valid.filter { aggregate(from: $0) == nil }
 
         var energyWh = 0.0
         var coveredDuration = 0.0
+        var peaks = ordered.map(\.watts)
+
+        for aggregate in aggregates {
+            let overlapStart = max(windowStart, aggregate.start)
+            let overlapEnd = min(windowEnd, aggregate.end)
+            let wallDuration = overlapEnd.timeIntervalSince(overlapStart)
+            guard wallDuration > 0 else { continue }
+            let fraction = wallDuration / aggregate.end.timeIntervalSince(aggregate.start)
+            energyWh += aggregate.energyWh * fraction
+            coveredDuration += aggregate.coveredDuration * fraction
+            peaks.append(aggregate.peakWatts)
+        }
 
         for (previous, current) in zip(ordered, ordered.dropFirst()) {
             let duration = current.date.timeIntervalSince(previous.date)
@@ -234,10 +305,10 @@ public enum SystemPowerAnalytics {
             windowStart: windowStart,
             windowEnd: windowEnd,
             averageWatts: averageWatts,
-            peakWatts: ordered.map(\.watts).max(),
+            peakWatts: peaks.max(),
             energyWh: energyWh,
             coveredDuration: coveredDuration,
-            sampleCount: ordered.count)
+            sampleCount: ordered.count + aggregates.count)
     }
 
     public static func buckets(
@@ -249,11 +320,44 @@ public enum SystemPowerAnalytics {
     ) -> [SystemPowerBucket] {
         guard windowEnd > windowStart, bucketDuration > 0 else { return [] }
 
-        let ordered = samples
-            .filter { $0.date >= windowStart && $0.date <= windowEnd }
+        let valid = samples
+            .filter { sample in
+                if let aggregate = aggregate(from: sample) {
+                    return aggregate.end > windowStart && aggregate.start < windowEnd
+                }
+                return sample.date >= windowStart && sample.date <= windowEnd
+            }
             .filter { $0.watts.isFinite && $0.watts >= 0 }
             .sorted { $0.date < $1.date }
+        let aggregates = valid.compactMap(aggregate(from:))
+        let ordered = valid.filter { aggregate(from: $0) == nil }
         var accumulators: [Int: BucketAccumulator] = [:]
+
+        for aggregate in aggregates {
+            var segmentStart = max(windowStart, aggregate.start)
+            let aggregateEnd = min(windowEnd, aggregate.end)
+            while segmentStart < aggregateEnd {
+                let offset = segmentStart.timeIntervalSince(windowStart)
+                let index = max(0, Int(floor(offset / bucketDuration)))
+                let segmentEnd = min(
+                    aggregateEnd,
+                    windowStart.addingTimeInterval(Double(index + 1) * bucketDuration))
+                let segmentDuration = segmentEnd.timeIntervalSince(segmentStart)
+                guard segmentDuration > 0 else { break }
+
+                var accumulator = accumulators[index] ?? BucketAccumulator()
+                let fraction = segmentDuration
+                    / aggregate.end.timeIntervalSince(aggregate.start)
+                accumulator.energyWh += aggregate.energyWh * fraction
+                accumulator.coveredDuration += aggregate.coveredDuration * fraction
+                accumulator.peakWatts = max(
+                    accumulator.peakWatts,
+                    aggregate.peakWatts)
+                accumulator.segmentCount += 1
+                accumulators[index] = accumulator
+                segmentStart = segmentEnd
+            }
+        }
 
         for (previous, current) in zip(ordered, ordered.dropFirst()) {
             let fullDuration = current.date.timeIntervalSince(previous.date)

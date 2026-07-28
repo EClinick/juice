@@ -505,7 +505,7 @@ struct AppDetailView: View {
     }
 
     private func serverSummary(_ breakdown: AppEnergyBreakdown) -> some View {
-        let activeHoursText = String(format: "%.1f", breakdown.activeHours)
+        let activeDurationText = serverActiveDurationText(breakdown.activeHours)
         let averageWattsText = liveWattsText(
             breakdown.activeHours > 0
                 ? breakdown.totalWh / breakdown.activeHours
@@ -516,7 +516,7 @@ struct AppDetailView: View {
                 .foregroundStyle(.secondary)
             if breakdown.activeHours > 0 {
                 Text(
-                    "Active for \(activeHoursText) hours, "
+                    "Active for \(activeDurationText), "
                     + "averaging \(averageWattsText) while active.")
                     .font(.callout)
             } else {

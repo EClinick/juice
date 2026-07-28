@@ -85,6 +85,18 @@ struct SystemPowerRecordingTests {
         #expect(totals.count == 1)
         #expect(abs((totals.first?.energyWh ?? 0) - expectedWh) < 1e-9)
         #expect(totals.first?.activeDuration == 4)
+
+        let samples = try store.systemPowerSamples(
+            since: t0,
+            until: t0.addingTimeInterval(120))
+        let summary = SystemPowerAnalytics.summary(
+            samples: samples,
+            windowStart: t0,
+            windowEnd: t0.addingTimeInterval(60))
+        #expect(abs(summary.energyWh - expectedWh) < 1e-9)
+        #expect(summary.averageWatts == 2)
+        #expect(summary.peakWatts == 60)
+        #expect(summary.coveredDuration == 60)
     }
 
     @Test("Non-monotonic server readings are ignored")
@@ -113,5 +125,34 @@ struct SystemPowerRecordingTests {
         let expectedWh = expectedJoules / 3_600
 
         #expect(abs((totals.first?.energyWh ?? 0) - expectedWh) < 1e-9)
+    }
+
+    @Test("Termination flush persists the pending system and app tail")
+    func flushesPendingTail() async throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("juice-power-test-\(UUID().uuidString).sqlite").path
+        let store = try JuiceStore(path: path)
+        let recorder = SamplerService(store: store)
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+
+        await recorder.recordServerReading(reading(appWatts: 0), at: t0)
+        await recorder.recordServerReading(
+            reading(appWatts: 60),
+            at: t0.addingTimeInterval(2))
+        await recorder.recordServerReading(
+            reading(appWatts: 0),
+            at: t0.addingTimeInterval(4))
+        await recorder.flushServerHistory()
+
+        let system = try store.systemPowerSamples(
+            since: t0,
+            until: t0.addingTimeInterval(4))
+        let apps = try store.systemAppEnergyTotals(
+            since: t0,
+            until: t0.addingTimeInterval(4))
+        #expect(system.count == 1)
+        #expect(apps.count == 1)
+        #expect(abs((system.first?.energyWh ?? 0) - (60.0 * 2 / 3600)) < 1e-9)
+        #expect(abs((apps.first?.energyWh ?? 0) - (60.0 * 2 / 3600)) < 1e-9)
     }
 }

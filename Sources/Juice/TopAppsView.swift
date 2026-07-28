@@ -9,6 +9,9 @@ struct TopAppsView: View {
     let apps: [AppEnergy]
     @Binding var range: EnergyRange
     let origin: DataOrigin
+    /// Lets a surface retain its loading/error presentation while ensuring
+    /// row taps use the correct underlying detail provider.
+    var detailOrigin: DataOrigin? = nil
     var ranges = EnergyRange.allCases
     var showsRangePicker = true
     /// Server mode keeps current watts visible while the selected range only
@@ -373,7 +376,7 @@ struct TopAppsView: View {
             appKey: appKey,
             displayName: displayName,
             range: range,
-            origin: origin,
+            origin: detailOrigin ?? origin,
             session: range == .session ? session : nil)
     }
 
@@ -412,6 +415,20 @@ func liveWattsText(_ watts: Double) -> String {
         return "<0.01 W"
     }
     return String(format: "%.2f W", watts)
+}
+
+/// Chart axes need distinct labels even when every tick is below the live
+/// readout's centiwatt display threshold.
+func chartWattsText(_ watts: Double) -> String {
+    guard watts > 0, watts < 0.01 else { return liveWattsText(watts) }
+    let milliwatts = watts * 1000
+    if milliwatts >= 1 {
+        return String(format: "%.1f mW", milliwatts)
+    }
+    if milliwatts >= 0.01 {
+        return String(format: "%.2f mW", milliwatts)
+    }
+    return "<0.01 mW"
 }
 
 /// Shared disclosure control for the popover's Session and Today live layers.

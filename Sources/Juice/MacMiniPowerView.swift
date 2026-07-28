@@ -200,6 +200,7 @@ struct MacMiniPowerView: View {
                 apps: apps,
                 range: $range,
                 origin: appOrigin,
+                detailOrigin: .server,
                 ranges: macMiniPowerRanges,
                 showsRangePicker: false,
                 showsLiveAcrossRanges: true,
@@ -283,8 +284,8 @@ struct MacMiniPowerView: View {
                         .font(.system(size: 38, weight: .semibold, design: .rounded))
                         .monospacedDigit()
                         .contentTransition(.numericText())
-                        .accessibilityLabel(
-                            String(format: "Current power %.1f watts", watts))
+                        .accessibilityLabel("Current power")
+                        .accessibilityValue(liveWattsText(watts))
                     Text("Current CPU, GPU, and Neural Engine draw")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -384,7 +385,7 @@ struct MacMiniPowerView: View {
                             .foregroundStyle(.quaternary)
                         AxisValueLabel {
                             if let watts = value.as(Double.self) {
-                                Text("\(Int(watts.rounded()))W")
+                                Text(chartWattsText(watts))
                             }
                         }
                     }
@@ -432,6 +433,10 @@ struct MacMiniPowerView: View {
         guard let store else {
             dashboard = nil
             loadError = "Power history is unavailable because the local store could not be opened."
+            historyApps = []
+            historyOrigin = .unavailable
+            historyError = loadError
+            loadedAppRange = range
             return
         }
 

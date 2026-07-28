@@ -30,6 +30,24 @@ func serverEnergyText(_ wattHours: Double) -> String {
     return "<0.01 mWh"
 }
 
+func serverActiveDurationText(_ activeHours: Double) -> String {
+    let seconds = max(0, activeHours * 3600)
+    if seconds >= 3600 {
+        let displayedHours = ((seconds / 3600) * 10).rounded() / 10
+        let hoursText = String(format: "%.1f", displayedHours)
+        return "\(hoursText) \(displayedHours == 1 ? "hour" : "hours")"
+    }
+    if seconds >= 60 {
+        let minutes = max(1, Int((seconds / 60).rounded()))
+        return "\(minutes) \(minutes == 1 ? "minute" : "minutes")"
+    }
+    if seconds > 0 {
+        let wholeSeconds = max(1, Int(seconds.rounded()))
+        return "\(wholeSeconds) \(wholeSeconds == 1 ? "second" : "seconds")"
+    }
+    return "0 seconds"
+}
+
 /// Uses the exact same live reading and watt formatter on every Mac mini
 /// surface, with Stats optionally appending the already-summed total.
 func serverPowerBreakdownText(

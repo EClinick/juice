@@ -1,6 +1,18 @@
 import SwiftUI
 import JuiceCore
 
+private final class JuiceApplicationDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        guard let sampler = JuiceApp.sampler else { return }
+        let completed = DispatchSemaphore(value: 0)
+        Task.detached {
+            await sampler.flushServerHistory()
+            completed.signal()
+        }
+        _ = completed.wait(timeout: .now() + 2)
+    }
+}
+
 @main
 struct JuiceApp: App {
     /// Shared sampler backed by the local store; nil only if the store
@@ -16,6 +28,8 @@ struct JuiceApp: App {
 
     private static let menuBarConsumerID = UUID()
 
+    @NSApplicationDelegateAdaptor(JuiceApplicationDelegate.self)
+    private var appDelegate
     @StateObject private var model: BatteryViewModel
     @ObservedObject private var live = LivePowerCoordinator.shared
     // Create the updater with the app so Sparkle can schedule opted-in checks
