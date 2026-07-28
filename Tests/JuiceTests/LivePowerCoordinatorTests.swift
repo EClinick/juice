@@ -112,6 +112,7 @@ import JuiceCore
         let coordinator = LivePowerCoordinator(
             source: source,
             loadToday: { await loader.load() },
+            loadSystemLoad: { nil },
             now: clock,
             todayRefreshInterval: .seconds(3600))
         return (coordinator, source)
@@ -126,6 +127,7 @@ import JuiceCore
         let coordinator = LivePowerCoordinator(
             source: source,
             loadToday: { await gated.load() },
+            loadSystemLoad: { nil },
             now: clock,
             todayRefreshInterval: interval)
         return (coordinator, source)
@@ -145,6 +147,24 @@ import JuiceCore
     /// runs to completion before assertions.
     private func settle() async {
         for _ in 0..<5 { await Task.yield() }
+    }
+
+    @Test("System load is captured with each live app reading")
+    func systemLoadTracksLiveReadingCadence() {
+        var loads = [24.0, 31.0]
+        let coordinator = LivePowerCoordinator(
+            source: FakeSource(),
+            loadToday: { self.todayResult([]) },
+            loadSystemLoad: { loads.removeFirst() })
+
+        coordinator.apply(reading: reading([liveApp("editor", watts: 4)]))
+        #expect(coordinator.systemLoadWatts == 24)
+
+        coordinator.apply(reading: reading([liveApp("editor", watts: 7)]))
+        #expect(coordinator.systemLoadWatts == 31)
+
+        coordinator.apply(reading: nil)
+        #expect(coordinator.systemLoadWatts == nil)
     }
 
     @Test("Reference counting: the loop starts once and stops only on the last detach")

@@ -5,9 +5,6 @@ import IOKit
 struct BatteryReading {
     var percent: Int
     var watts: Double          // positive = discharging, negative = charging
-    /// Current whole-system load reported by the power controller. Unlike
-    /// `watts`, this remains a consumption reading while the battery charges.
-    var systemLoadWatts: Double?
     var isCharging: Bool
     var onAC: Bool
     var timeRemainingMinutes: Int?   // nil while macOS is still estimating
@@ -24,6 +21,27 @@ enum BatteryMonitorError: Error {
 /// Reads battery state from the AppleSmartBattery IORegistry service.
 /// No special permissions required.
 struct BatteryMonitor {
+    private static func properties() throws -> [String: Any] {
+        let service = IOServiceGetMatchingService(
+            kIOMainPortDefault,
+            IOServiceMatching("AppleSmartBattery")
+        )
+        guard service != 0 else { throw BatteryMonitorError.serviceNotFound }
+        defer { IOObjectRelease(service) }
+
+        var propsRef: Unmanaged<CFMutableDictionary>?
+        guard IORegistryEntryCreateCFProperties(
+            service,
+            &propsRef,
+            kCFAllocatorDefault,
+            0
+        ) == KERN_SUCCESS,
+        let properties = propsRef?.takeRetainedValue() as? [String: Any] else {
+            throw BatteryMonitorError.propertiesUnreadable
+        }
+        return properties
+    }
+
     /// `PowerTelemetryData.SystemLoad` is reported in milliwatts. It is a
     /// whole-system load rather than the battery's signed charge/discharge
     /// rate, so it can back live attribution while connected to AC power.
@@ -39,19 +57,16 @@ struct BatteryMonitor {
         return watts.isFinite && watts >= 0 ? watts : nil
     }
 
-    static func read() throws -> BatteryReading {
-        let service = IOServiceGetMatchingService(
-            kIOMainPortDefault,
-            IOServiceMatching("AppleSmartBattery")
-        )
-        guard service != 0 else { throw BatteryMonitorError.serviceNotFound }
-        defer { IOObjectRelease(service) }
+    /// Reads only the current whole-system load for the live attribution loop.
+    /// Failures leave the optional footer unavailable rather than disturbing
+    /// the primary battery reading.
+    static func currentSystemLoadWatts() -> Double? {
+        guard let properties = try? properties() else { return nil }
+        return systemLoadWatts(from: properties)
+    }
 
-        var propsRef: Unmanaged<CFMutableDictionary>?
-        guard IORegistryEntryCreateCFProperties(service, &propsRef, kCFAllocatorDefault, 0) == KERN_SUCCESS,
-              let props = propsRef?.takeRetainedValue() as? [String: Any] else {
-            throw BatteryMonitorError.propertiesUnreadable
-        }
+    static func read() throws -> BatteryReading {
+        let props = try properties()
 
         func int(_ key: String) -> Int? { props[key] as? Int }
         func signedInt64(_ key: String) -> Int64? { (props[key] as? NSNumber)?.int64Value }
@@ -90,7 +105,6 @@ struct BatteryMonitor {
         return BatteryReading(
             percent: percent,
             watts: watts,
-            systemLoadWatts: systemLoadWatts(from: props),
             isCharging: bool("IsCharging"),
             onAC: bool("ExternalConnected"),
             timeRemainingMinutes: timeRemaining,
