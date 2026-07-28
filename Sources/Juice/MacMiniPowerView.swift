@@ -108,7 +108,7 @@ enum MacMiniPowerDataLoader {
 }
 
 struct MacMiniPowerChartPoint: Identifiable {
-    var id: Date { bucket.start }
+    var id: SystemPowerBucket.ID { bucket.id }
     var bucket: SystemPowerBucket
     var segment: Int
 }
@@ -119,13 +119,14 @@ enum MacMiniPowerChartSegments {
         bucketDuration: TimeInterval
     ) -> [MacMiniPowerChartPoint] {
         var segment = 0
-        var previous: Date?
+        var previous: SystemPowerBucket?
         return buckets.map { bucket in
             if let previous,
-               bucket.start.timeIntervalSince(previous) > bucketDuration * 1.5 {
+               bucket.continuity != previous.continuity
+                || bucket.start.timeIntervalSince(previous.start) > bucketDuration * 1.5 {
                 segment += 1
             }
-            previous = bucket.start
+            previous = bucket
             return MacMiniPowerChartPoint(bucket: bucket, segment: segment)
         }
     }

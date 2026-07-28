@@ -166,6 +166,34 @@ struct SystemPowerAnalyticsTests {
         #expect(summary.coveredDuration == 30)
         #expect(summary.peakWatts == 20)
     }
+
+    @Test("Coarse buckets retain gaps between minute aggregates")
+    func coarseBucketsRetainInternalGaps() {
+        func aggregate(_ seconds: TimeInterval) -> StoredSystemPowerSample {
+            let start = t0.addingTimeInterval(seconds)
+            return StoredSystemPowerSample(
+                date: start,
+                watts: 10,
+                coveredDuration: 60,
+                energyWh: 10.0 / 60,
+                peakWatts: 10,
+                coverageStart: start,
+                coverageEnd: start.addingTimeInterval(60))
+        }
+
+        let buckets = SystemPowerAnalytics.buckets(
+            samples: [
+                aggregate(0),
+                aggregate(10 * 60),
+            ],
+            windowStart: t0,
+            windowEnd: t0.addingTimeInterval(15 * 60),
+            bucketDuration: 15 * 60)
+
+        #expect(buckets.count == 2)
+        #expect(buckets.map(\.start) == [t0, t0])
+        #expect(buckets.map(\.continuity) == [0, 1])
+    }
 }
 
 @Suite("System app energy analytics")

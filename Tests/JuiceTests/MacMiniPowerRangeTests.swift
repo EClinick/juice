@@ -202,4 +202,30 @@ struct MacMiniPowerRangeTests {
 
         #expect(points.map(\.segment) == [0, 0, 1])
     }
+
+    @Test("Charts preserve gaps within one coarse bucket")
+    func chartSegmentsPreserveInternalBucketGaps() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let buckets = [
+            SystemPowerBucket(
+                start: start,
+                averageWatts: 4,
+                peakWatts: 5,
+                sampleCount: 1,
+                continuity: 0),
+            SystemPowerBucket(
+                start: start,
+                averageWatts: 7,
+                peakWatts: 8,
+                sampleCount: 1,
+                continuity: 1),
+        ]
+
+        let points = MacMiniPowerChartSegments.points(
+            buckets,
+            bucketDuration: 15 * 60)
+
+        #expect(points.map(\.segment) == [0, 1])
+        #expect(Set(points.map(\.id)).count == 2)
+    }
 }

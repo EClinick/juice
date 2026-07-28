@@ -184,26 +184,41 @@ public struct SystemPowerSummary: Sendable, Equatable {
 /// One chart bucket derived from the same gap-aware, time-weighted segments as
 /// the summary, so uneven scheduling cannot bias its average.
 public struct SystemPowerBucket: Identifiable, Sendable, Equatable {
-    public var id: Date { start }
+    public struct ID: Hashable, Sendable {
+        public var start: Date
+        public var continuity: Int
+    }
+
+    public var id: ID { ID(start: start, continuity: continuity) }
     public var start: Date
     public var averageWatts: Double
     public var peakWatts: Double
     public var sampleCount: Int
+    /// Identifies buckets that belong to the same uninterrupted recording
+    /// span. Multiple spans can occupy one coarse chart bucket.
+    public var continuity: Int
 
     public init(
         start: Date,
         averageWatts: Double,
         peakWatts: Double,
-        sampleCount: Int
+        sampleCount: Int,
+        continuity: Int = 0
     ) {
         self.start = start
         self.averageWatts = averageWatts
         self.peakWatts = peakWatts
         self.sampleCount = sampleCount
+        self.continuity = continuity
     }
 }
 
 public enum SystemPowerAnalytics {
+    private struct BucketKey: Hashable {
+        var index: Int
+        var continuity: Int
+    }
+
     private struct BucketAccumulator {
         var energyWh = 0.0
         var coveredDuration = 0.0
@@ -330,22 +345,32 @@ public enum SystemPowerAnalytics {
             .filter { $0.watts.isFinite && $0.watts >= 0 }
             .sorted { $0.date < $1.date }
         let aggregates = valid.compactMap(aggregate(from:))
+            .sorted { $0.start < $1.start }
         let ordered = valid.filter { aggregate(from: $0) == nil }
-        var accumulators: [Int: BucketAccumulator] = [:]
+        var accumulators: [BucketKey: BucketAccumulator] = [:]
 
+        var aggregateContinuity = 0
+        var previousAggregateEnd: Date?
         for aggregate in aggregates {
+            if let previousAggregateEnd,
+               aggregate.start.timeIntervalSince(previousAggregateEnd) > maximumGap {
+                aggregateContinuity += 1
+            }
             var segmentStart = max(windowStart, aggregate.start)
             let aggregateEnd = min(windowEnd, aggregate.end)
             while segmentStart < aggregateEnd {
                 let offset = segmentStart.timeIntervalSince(windowStart)
                 let index = max(0, Int(floor(offset / bucketDuration)))
+                let key = BucketKey(
+                    index: index,
+                    continuity: aggregateContinuity)
                 let segmentEnd = min(
                     aggregateEnd,
                     windowStart.addingTimeInterval(Double(index + 1) * bucketDuration))
                 let segmentDuration = segmentEnd.timeIntervalSince(segmentStart)
                 guard segmentDuration > 0 else { break }
 
-                var accumulator = accumulators[index] ?? BucketAccumulator()
+                var accumulator = accumulators[key] ?? BucketAccumulator()
                 let fraction = segmentDuration
                     / aggregate.end.timeIntervalSince(aggregate.start)
                 accumulator.energyWh += aggregate.energyWh * fraction
@@ -354,19 +379,33 @@ public enum SystemPowerAnalytics {
                     accumulator.peakWatts,
                     aggregate.peakWatts)
                 accumulator.segmentCount += 1
-                accumulators[index] = accumulator
+                accumulators[key] = accumulator
                 segmentStart = segmentEnd
             }
+            previousAggregateEnd = max(
+                previousAggregateEnd ?? aggregate.end,
+                aggregate.end)
         }
 
+        // Aggregate and legacy point histories are kept in distinct
+        // continuity spaces so an upgrade boundary cannot draw a fabricated
+        // connection between their independently derived coverage.
+        var orderedContinuity = aggregates.isEmpty ? 0 : aggregateContinuity + 1
         for (previous, current) in zip(ordered, ordered.dropFirst()) {
             let fullDuration = current.date.timeIntervalSince(previous.date)
-            guard fullDuration > 0, fullDuration <= maximumGap else { continue }
+            guard fullDuration > 0 else { continue }
+            guard fullDuration <= maximumGap else {
+                orderedContinuity += 1
+                continue
+            }
 
             var segmentStart = previous.date
             while segmentStart < current.date {
                 let offset = segmentStart.timeIntervalSince(windowStart)
                 let index = max(0, Int(floor(offset / bucketDuration)))
+                let key = BucketKey(
+                    index: index,
+                    continuity: orderedContinuity)
                 let bucketEnd = min(
                     current.date,
                     windowStart.addingTimeInterval(Double(index + 1) * bucketDuration))
@@ -382,7 +421,7 @@ public enum SystemPowerAnalytics {
                 let endWatts = previous.watts
                     + (current.watts - previous.watts) * endFraction
 
-                var accumulator = accumulators[index] ?? BucketAccumulator()
+                var accumulator = accumulators[key] ?? BucketAccumulator()
                 accumulator.energyWh += (startWatts + endWatts) / 2
                     * segmentDuration / 3600
                 accumulator.coveredDuration += segmentDuration
@@ -390,22 +429,27 @@ public enum SystemPowerAnalytics {
                     accumulator.peakWatts,
                     max(startWatts, endWatts))
                 accumulator.segmentCount += 1
-                accumulators[index] = accumulator
+                accumulators[key] = accumulator
                 segmentStart = bucketEnd
             }
         }
 
-        return accumulators.keys.sorted().compactMap { index in
-            guard let accumulator = accumulators[index],
+        let keys = accumulators.keys.sorted {
+            if $0.index != $1.index { return $0.index < $1.index }
+            return $0.continuity < $1.continuity
+        }
+        return keys.compactMap { key in
+            guard let accumulator = accumulators[key],
                   accumulator.coveredDuration > 0 else {
                 return nil
             }
             return SystemPowerBucket(
-                start: windowStart.addingTimeInterval(Double(index) * bucketDuration),
+                start: windowStart.addingTimeInterval(Double(key.index) * bucketDuration),
                 averageWatts: accumulator.energyWh * 3600
                     / accumulator.coveredDuration,
                 peakWatts: accumulator.peakWatts,
-                sampleCount: accumulator.segmentCount)
+                sampleCount: accumulator.segmentCount,
+                continuity: key.continuity)
         }
     }
 }
