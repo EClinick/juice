@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import JuiceCore
 
 /// Opens and manages the standalone Stats window.
 ///
@@ -33,24 +34,53 @@ final class StatsWindowPresenter: NSObject, NSWindowDelegate {
             timelineSource: timelineSource,
             model: model
         )
+        present(
+            root,
+            title: "Juice - Stats",
+            minimumContentSize: NSSize(
+                width: StatsView.minimumContentWidth,
+                height: StatsView.minimumContentHeight),
+            contentSize: NSSize(width: 760, height: 480))
+    }
 
+    func showServer(store: JuiceStore?) {
+        NSApp.activate(ignoringOtherApps: true)
+
+        present(
+            MacMiniStatsView(store: store),
+            title: "Juice - Mac mini Stats",
+            minimumContentSize: NSSize(
+                width: MacMiniStatsView.minimumContentWidth,
+                height: MacMiniStatsView.minimumContentHeight),
+            contentSize: NSSize(width: 940, height: 600))
+    }
+
+    private func present<Content: View>(
+        _ root: Content,
+        title: String,
+        minimumContentSize: NSSize,
+        contentSize: NSSize
+    ) {
         if let window {
             // Refresh the content so the reopened window reflects current data.
             window.contentViewController = NSHostingController(rootView: root)
+            window.title = title
+            window.contentMinSize = minimumContentSize
+            let currentSize = window.contentView?.bounds.size ?? .zero
+            if currentSize.width < minimumContentSize.width
+                || currentSize.height < minimumContentSize.height {
+                window.setContentSize(contentSize)
+            }
             window.makeKeyAndOrderFront(nil)
             return
         }
 
         let controller = NSHostingController(rootView: root)
         let window = NSWindow(contentViewController: controller)
-        window.title = "Juice - Stats"
+        window.title = title
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        let minimumContentSize = NSSize(
-            width: StatsView.minimumContentWidth,
-            height: StatsView.minimumContentHeight
-        )
         window.contentMinSize = minimumContentSize
-        window.setContentSize(NSSize(width: 760, height: 480))
+        window.setContentSize(contentSize)
         window.setFrameAutosaveName("JuiceStatsWindow")
 
         // Older versions allowed a 560-point-wide saved frame. Resize that

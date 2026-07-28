@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 import JuiceXPCShared
 @testable import JuiceCore
 
@@ -48,6 +49,7 @@ import JuiceXPCShared
         #expect(app != nil)
         #expect(app?.appKey == appAKey)
         #expect(abs((app?.watts ?? 0) - 1.0) < 1e-6)
+        #expect(reading?.sampledAt == Date(timeIntervalSince1970: 2))
     }
 
     @Test func wattsSumCPUGPUAndANE() {
@@ -61,6 +63,22 @@ import JuiceXPCShared
             sample(coalition: 10, path: appAPath, cpuNJ: 2_000_000_000, gpuNJ: 4_000_000_000, aneNJ: 6_000_000_000)
         ]))
         #expect(abs((reading?.apps.first?.watts ?? 0) - 6.0) < 1e-6)
+    }
+
+    @Test func totalMeteredWattsIncludesAppsAndSystemProcesses() {
+        let app = AppPowerReading(
+            appKey: "app",
+            bundlePath: nil,
+            displayName: "App",
+            watts: 2.5)
+        let reading = LivePowerReading(
+            apps: [app],
+            idleAppCount: 0,
+            idleWatts: 0,
+            totalAppWatts: 2.5,
+            systemWatts: 1.25)
+
+        #expect(reading.totalMeteredWatts == 3.75)
     }
 
     @Test func negativeDeltaClampsToZero() {

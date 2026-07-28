@@ -23,4 +23,20 @@ struct BatteryViewModelTests {
 
         #expect(model.isLowPowerModeEnabled)
     }
+
+    @MainActor
+    @Test("Mac mini mode treats the missing battery as supported")
+    func macMiniSkipsBatteryReader() {
+        var readCount = 0
+        let model = BatteryViewModel(
+            isMacMini: true,
+            batteryReader: {
+                readCount += 1
+                throw BatteryMonitorError.serviceNotFound
+            })
+
+        #expect(readCount == 0)
+        #expect(model.reading == nil)
+        #expect(model.lastError == nil)
+    }
 }

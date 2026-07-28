@@ -10,6 +10,19 @@ import JuiceXPCShared
 /// double-fetch or interleave store writes. Store I/O therefore also runs on
 /// the cooperative pool, never on the main actor.
 actor SamplerService {
+    private struct ServerAppBucketKey: Hashable {
+        var bucketStart: Date
+        var appKey: String
+    }
+
+    private struct ServerPowerAccumulator {
+        var energyWh = 0.0
+        var coveredDuration = 0.0
+        var peakWatts = 0.0
+        var coverageStart: Date?
+        var coverageEnd: Date?
+    }
+
     /// The underlying store is thread-safe (GRDB serializes access), so it is
     /// safe to hand out to non-actor readers like the stats timeline.
     nonisolated let store: JuiceStore
@@ -17,6 +30,13 @@ actor SamplerService {
 
     /// Keep raw samples for 90 days.
     private static let sampleRetention: TimeInterval = 90 * 24 * 3600
+    /// A one-minute cadence keeps permanent server power history compact
+    /// enough for the All range without downsampling away short load changes.
+    private static let systemPowerSampleInterval: TimeInterval = 60
+    /// A Mac mini has no battery callbacks to drive rollup maintenance. Check
+    /// at most once per minute from its always-on live-power stream; the
+    /// existing 15-minute watermark still controls actual PowerLog fetches.
+    private static let serverRollupCheckInterval: TimeInterval = 60
     /// Refresh rollups when the last successful refresh is older than this.
     private static let rollupStaleness: TimeInterval = 15 * 60
     /// Each refresh rebuilds full days starting this many days back, so a
@@ -38,6 +58,15 @@ actor SamplerService {
     private let dayFormatter = RollupBuilder.dayFormatter()
 
     private var lastPrune: Date = .distantPast
+    private var lastSystemPowerSample: Date?
+    private var lastSystemPowerAggregateFlush: Date?
+    private var lastServerReading: LivePowerReading?
+    private var lastServerReadingDate: Date?
+    private var pendingSystemPower: [Date: ServerPowerAccumulator] = [:]
+    /// Two-second app-energy increments accumulated between the one-minute
+    /// SQLite flushes used for permanent server history.
+    private var pendingServerAppEnergy: [ServerAppBucketKey: StoredSystemAppEnergyBucket] = [:]
+    private var lastServerRollupCheck: Date = .distantPast
     private var isRefreshing = false
     private(set) var lastRollupError: String?
 
@@ -68,6 +97,182 @@ actor SamplerService {
                 try store.pruneSamples(olderThan: now.addingTimeInterval(-Self.sampleRetention))
             } catch {
                 NSLog("Juice: failed to prune battery samples: \(error)")
+            }
+        }
+    }
+
+    /// Records the Mac mini's combined CPU/GPU/ANE power at most once per
+    /// minute. Energy analytics integrate these points and expose any gaps.
+    @discardableResult
+    func recordSystemPower(_ watts: Double, at now: Date = Date()) -> Bool {
+        guard watts.isFinite, watts >= 0 else { return false }
+        if let lastSystemPowerSample,
+           now.timeIntervalSince(lastSystemPowerSample) < Self.systemPowerSampleInterval {
+            return false
+        }
+
+        do {
+            try store.insertSystemPowerSample(ts: now, watts: watts)
+            lastSystemPowerSample = now
+            return true
+        } catch {
+            NSLog("Juice: failed to insert system power sample: \(error)")
+            return false
+        }
+    }
+
+    /// Records the Mac mini's total power and keeps the same per-app daily
+    /// rollup pipeline used by the battery UI advancing while the server runs.
+    /// Without this path, a battery-less Mac only refreshed app history once
+    /// at launch and Week / All could remain permanently empty.
+    func recordServerReading(_ reading: LivePowerReading, at now: Date = Date()) async {
+        if let previousDate = lastServerReadingDate,
+           let lastServerReading {
+            // A wall-clock correction can move helper timestamps backward.
+            // Persist the completed tail and rebase every cadence timestamp;
+            // otherwise all recording would stall until the clock caught up.
+            if now < previousDate {
+                do {
+                    try persistPendingServerHistory()
+                } catch {
+                    NSLog("Juice: failed to persist server history before clock rebase: \(error)")
+                }
+                self.lastServerReading = reading
+                lastServerReadingDate = now
+                lastSystemPowerAggregateFlush = now
+                lastServerRollupCheck = now
+                return
+            }
+            // Duplicate source timestamps have no duration to integrate.
+            guard now > previousDate else { return }
+            accumulateSystemPower(
+                previousWatts: lastServerReading.totalMeteredWatts,
+                currentWatts: reading.totalMeteredWatts,
+                start: previousDate,
+                end: now)
+            accumulateServerAppEnergy(SystemAppEnergyAnalytics.increments(
+                previous: lastServerReading,
+                current: reading,
+                start: previousDate,
+                end: now))
+        }
+        lastServerReading = reading
+        lastServerReadingDate = now
+
+        if lastSystemPowerAggregateFlush == nil {
+            lastSystemPowerAggregateFlush = now
+        }
+        guard let lastSystemPowerAggregateFlush,
+              now.timeIntervalSince(lastSystemPowerAggregateFlush)
+                >= Self.systemPowerSampleInterval else {
+            return
+        }
+
+        do {
+            try persistPendingServerHistory()
+            self.lastSystemPowerAggregateFlush = now
+        } catch {
+            NSLog("Juice: failed to persist server power history: \(error)")
+            return
+        }
+
+        guard now.timeIntervalSince(lastServerRollupCheck)
+                >= Self.serverRollupCheckInterval
+        else { return }
+        lastServerRollupCheck = now
+        await updateRollupsIfStale()
+    }
+
+    /// Persists the in-memory tail during normal app termination.
+    func flushServerHistory() {
+        do {
+            try persistPendingServerHistory()
+        } catch {
+            NSLog("Juice: failed to flush server power history: \(error)")
+        }
+    }
+
+    private func persistPendingServerHistory() throws {
+        let system = pendingSystemPower.map {
+            StoredSystemPowerSample(
+                date: $0.key,
+                watts: $0.value.energyWh * 3600 / $0.value.coveredDuration,
+                coveredDuration: $0.value.coveredDuration,
+                energyWh: $0.value.energyWh,
+                peakWatts: $0.value.peakWatts,
+                coverageStart: $0.value.coverageStart,
+                coverageEnd: $0.value.coverageEnd)
+        }
+        let apps = Array(pendingServerAppEnergy.values)
+        try store.addServerPowerHistory(system: system, apps: apps)
+        pendingSystemPower.removeAll(keepingCapacity: true)
+        pendingServerAppEnergy.removeAll(keepingCapacity: true)
+    }
+
+    private func accumulateSystemPower(
+        previousWatts: Double,
+        currentWatts: Double,
+        start: Date,
+        end: Date
+    ) {
+        let duration = end.timeIntervalSince(start)
+        guard duration > 0,
+              duration <= 5 * 60,
+              previousWatts.isFinite,
+              previousWatts >= 0,
+              currentWatts.isFinite,
+              currentWatts >= 0 else {
+            return
+        }
+
+        var segmentStart = start
+        while segmentStart < end {
+            guard let minute = calendar.dateInterval(of: .minute, for: segmentStart) else {
+                break
+            }
+            let segmentEnd = min(end, minute.end)
+            let segmentDuration = segmentEnd.timeIntervalSince(segmentStart)
+            let startFraction = segmentStart.timeIntervalSince(start) / duration
+            let endFraction = segmentEnd.timeIntervalSince(start) / duration
+            let startWatts = previousWatts
+                + (currentWatts - previousWatts) * startFraction
+            let endWatts = previousWatts
+                + (currentWatts - previousWatts) * endFraction
+
+            var accumulator = pendingSystemPower[minute.start]
+                ?? ServerPowerAccumulator()
+            accumulator.energyWh += (startWatts + endWatts) / 2
+                * segmentDuration / 3600
+            accumulator.coveredDuration += segmentDuration
+            accumulator.peakWatts = max(
+                accumulator.peakWatts,
+                max(startWatts, endWatts))
+            accumulator.coverageStart = min(
+                accumulator.coverageStart ?? segmentStart,
+                segmentStart)
+            accumulator.coverageEnd = max(
+                accumulator.coverageEnd ?? segmentEnd,
+                segmentEnd)
+            pendingSystemPower[minute.start] = accumulator
+            segmentStart = segmentEnd
+        }
+    }
+
+    private func accumulateServerAppEnergy(
+        _ increments: [StoredSystemAppEnergyBucket]
+    ) {
+        for increment in increments {
+            let key = ServerAppBucketKey(
+                bucketStart: increment.bucketStart,
+                appKey: increment.appKey)
+            if var pending = pendingServerAppEnergy[key] {
+                pending.displayName = increment.displayName
+                pending.energyWh += increment.energyWh
+                pending.activeDuration += increment.activeDuration
+                pending.peakWatts = max(pending.peakWatts, increment.peakWatts)
+                pendingServerAppEnergy[key] = pending
+            } else {
+                pendingServerAppEnergy[key] = increment
             }
         }
     }

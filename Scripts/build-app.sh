@@ -113,6 +113,14 @@ else
     chmod 755 "$APP_PATH/Contents/Library/HelperTools/JuiceHelper"
 fi
 
+# Verify the link-time framework path survived the optional universal merge
+# before applying one fresh signature to the completed executable.
+if ! otool -l "$APP_PATH/Contents/MacOS/Juice" \
+    | grep -Fq "path @executable_path/../Frameworks"; then
+    echo "Juice executable is missing its app-bundle framework rpath." >&2
+    exit 1
+fi
+
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP_PATH/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_PATH/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $APP_BUNDLE_ID" "$APP_PATH/Contents/Info.plist"

@@ -65,6 +65,7 @@ final class LivePowerCoordinator: ObservableObject {
     /// whole family (e.g. every Stats window instance) without knowing each
     /// instance's random id.
     enum ConsumerKind: Hashable {
+        case menuBar
         case popover
         case stats
     }
@@ -85,6 +86,7 @@ final class LivePowerCoordinator: ObservableObject {
 
         static func popover(_ id: UUID) -> Consumer { Consumer(kind: .popover, id: id) }
         static func stats(_ id: UUID) -> Consumer { Consumer(kind: .stats, id: id) }
+        static func menuBar(_ id: UUID) -> Consumer { Consumer(kind: .menuBar, id: id) }
     }
 
     /// The latest per-tick live reading (nil until two snapshots establish a
@@ -104,6 +106,9 @@ final class LivePowerCoordinator: ObservableObject {
     /// coordinator fetch is reflected honestly instead of silently dropping the
     /// Earlier Today rows.
     @Published private(set) var todayResult: EnergySourceSelector.TopAppsResult?
+    /// Optional app-level observer used by Mac mini mode to persist the shared
+    /// live reading without creating a second polling loop.
+    var onReading: (@Sendable (LivePowerReading) async -> Void)?
 
     private let source: LivePowerSource
     private let loadToday: () async -> EnergySourceSelector.TopAppsResult
@@ -116,6 +121,9 @@ final class LivePowerCoordinator: ObservableObject {
     /// Sampling runs while non-empty; history refreshes while any value is true.
     private var attached: [Consumer: Bool] = [:]
     private var readingObservation: Task<Void, Never>?
+    /// Serializes optional persistence delivery in source order. A new live
+    /// tick never races an older tick into the sampler actor.
+    private var readingDelivery: Task<Void, Never>?
     private var statusObservation: Task<Void, Never>?
     private var todayRefresh: Task<Void, Never>?
     /// The manual (retry) refresh task, tracked so it is cancelled and replaced
@@ -312,7 +320,26 @@ final class LivePowerCoordinator: ObservableObject {
     func apply(reading: LivePowerReading?) {
         self.reading = reading
         systemLoadWatts = reading == nil ? nil : loadSystemLoad()
+        if let reading, let onReading {
+            let previousDelivery = readingDelivery
+            readingDelivery = Task {
+                await previousDelivery?.value
+                await onReading(reading)
+            }
+        }
         recomputeHybrid()
+    }
+
+    /// Stops accepting source updates and waits for every already-enqueued
+    /// persistence callback to finish. App termination uses this before asking
+    /// the sampler to flush its in-memory minute tail.
+    func prepareForTermination() async {
+        if !attached.isEmpty {
+            stopSampling()
+        }
+        let pendingDelivery = readingDelivery
+        await pendingDelivery?.value
+        readingDelivery = nil
     }
 
     /// Replaces today's result and re-folds. Used by tests to inject a

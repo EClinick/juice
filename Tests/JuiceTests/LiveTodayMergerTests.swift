@@ -23,6 +23,16 @@ import JuiceCore
 
     private let t0 = Date(timeIntervalSinceReferenceDate: 0)
 
+    @Test func sharedLiveFilterRemovesZeroLookingRows() {
+        let live = reading([
+            liveApp("visible", watts: 0.05),
+            liveApp("decaying", watts: 0.049),
+            liveApp("zero", watts: 0),
+        ])
+
+        #expect(visibleLiveApps(in: live).map(\.appKey) == ["visible"])
+    }
+
     @Test func splitsActiveFromEarlierByThreshold() {
         var merger = LiveTodayMerger(activeThresholdWatts: 0.05)
         let live = reading([liveApp("a", watts: 4.1), liveApp("b", watts: 0.01)])

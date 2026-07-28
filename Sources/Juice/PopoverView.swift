@@ -36,6 +36,7 @@ struct PopoverView: View {
     @State private var insights: [Insight] = []
     @State private var historyCoverageDayCount: Int?
     @State private var loadTask: Task<Void, Never>?
+    @State private var serverRefreshGeneration = 0
 
     private var replacementAnimation: Animation {
         .timingCurve(0.23, 1, 0.32, 1, duration: 0.18)
@@ -87,7 +88,18 @@ struct PopoverView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let r = model.reading, r.hasBattery {
+            if model.isMacMini {
+                ScrollView {
+                    MacMiniPowerView(
+                        store: JuiceApp.sampler?.store,
+                        refreshGeneration: serverRefreshGeneration)
+                }
+                .scrollIndicators(.never)
+                // A ScrollView has no useful intrinsic height inside
+                // MenuBarExtra. Without an explicit viewport the popover can
+                // collapse to the action footer and hide the dashboard.
+                .frame(height: 600)
+            } else if let r = model.reading, r.hasBattery {
                 HStack {
                     Text("Battery - \(r.percent)%")
                         .font(.headline)
@@ -247,15 +259,24 @@ struct PopoverView: View {
                 Button("Refresh") {
                     model.refresh()
                     helper.refresh()
-                    loadTask?.cancel()
-                    loadTask = Task { await loadEnergy() }
+                    if model.isMacMini {
+                        serverRefreshGeneration += 1
+                    } else {
+                        loadTask?.cancel()
+                        loadTask = Task { await loadEnergy() }
+                    }
                 }
                 Button("Stats") {
-                    StatsWindowPresenter.shared.show(
-                        selector: selector,
-                        timelineSource: timelineSource,
-                        model: model
-                    )
+                    if model.isMacMini {
+                        StatsWindowPresenter.shared.showServer(
+                            store: JuiceApp.sampler?.store)
+                    } else {
+                        StatsWindowPresenter.shared.show(
+                            selector: selector,
+                            timelineSource: timelineSource,
+                            model: model
+                        )
+                    }
                 }
                 Spacer()
                 Button("Quit Juice") { NSApp.terminate(nil) }
@@ -263,14 +284,18 @@ struct PopoverView: View {
             .controlSize(.small)
         }
         .padding(14)
-        .frame(width: 320)
+        .frame(width: model.isMacMini ? 360 : 320)
         .onAppear {
             model.refresh()
             helper.refresh()
             applyInitialRange()
             syncDataAttachments()
         }
-        .task { await loadEnergy() }
+        .task {
+            if !model.isMacMini {
+                await loadEnergy()
+            }
+        }
         .onChange(of: range) {
             loadTask?.cancel()
             syncDataAttachments()
@@ -298,10 +323,12 @@ struct PopoverView: View {
     /// unplugged. Idempotent: repeated calls with the same state are absorbed.
     private func syncDataAttachments() {
         live.setAttached(
-            showsLivePower,
-            includesTodayHistory: range == .today,
+            model.isMacMini || showsLivePower,
+            includesTodayHistory: !model.isMacMini && range == .today,
             for: .popover(consumerID))
-        batterySession.setAttached(range == .session, for: .popover(consumerID))
+        batterySession.setAttached(
+            !model.isMacMini && range == .session,
+            for: .popover(consumerID))
     }
 
     private func applyInitialRange() {

@@ -50,8 +50,8 @@ public struct StoredAppEnergyTotal: Sendable, Equatable {
     }
 }
 
-/// The app's local SQLite store: raw battery samples, daily per-app energy
-/// rollups, and a small key/value meta table.
+/// The app's local SQLite store: raw battery and system-power samples, daily
+/// per-app energy rollups, and a small key/value meta table.
 ///
 /// `@unchecked Sendable`: the only stored property is a GRDB `DatabaseQueue`,
 /// which serializes all database access and is safe to share across threads.
@@ -117,6 +117,79 @@ public final class JuiceStore: @unchecked Sendable {
                 index: "energy_rollup_on_app_key_day",
                 on: "energy_rollup",
                 columns: ["app_key", "day"])
+        }
+        migrator.registerMigration("v4") { db in
+            try db.create(table: "system_power_sample") { t in
+                t.primaryKey("ts", .double)
+                t.column("watts", .double).notNull()
+            }
+        }
+        migrator.registerMigration("v5") { db in
+            try db.create(table: "system_app_energy_hour") { t in
+                t.column("bucket_start", .double).notNull()
+                t.column("app_key", .text).notNull()
+                t.column("display_name", .text).notNull()
+                t.column("wh", .double).notNull()
+                t.column("active_seconds", .double).notNull()
+                t.column("peak_watts", .double).notNull()
+                t.primaryKey(["bucket_start", "app_key"])
+            }
+            try db.create(
+                index: "system_app_energy_hour_on_app_key_bucket",
+                on: "system_app_energy_hour",
+                columns: ["app_key", "bucket_start"])
+        }
+        migrator.registerMigration("v6") { db in
+            // New Mac mini recordings store exact minute energy, coverage,
+            // and peak values. Null columns identify legacy point samples.
+            try db.alter(table: "system_power_sample") { t in
+                t.add(column: "covered_seconds", .double)
+                t.add(column: "energy_wh", .double)
+                t.add(column: "peak_watts", .double)
+                t.add(column: "coverage_start", .double)
+                t.add(column: "coverage_end", .double)
+            }
+        }
+        migrator.registerMigration("v7") { db in
+            // Wall-clock corrections can make the same civil minute occur
+            // twice. Keep each recorded interval as its own row rather than
+            // forcing both passes through a timestamp primary key.
+            try db.execute(sql: """
+                CREATE TABLE system_power_sample_v7 (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts REAL NOT NULL,
+                    watts REAL NOT NULL,
+                    covered_seconds REAL,
+                    energy_wh REAL,
+                    peak_watts REAL,
+                    coverage_start REAL,
+                    coverage_end REAL
+                );
+                INSERT INTO system_power_sample_v7 (
+                    ts, watts, covered_seconds, energy_wh, peak_watts,
+                    coverage_start, coverage_end
+                )
+                SELECT
+                    ts, watts, covered_seconds, energy_wh, peak_watts,
+                    coverage_start, coverage_end
+                FROM system_power_sample;
+                DROP TABLE system_power_sample;
+                ALTER TABLE system_power_sample_v7
+                    RENAME TO system_power_sample;
+                CREATE INDEX system_power_sample_on_ts
+                    ON system_power_sample(ts);
+                """)
+        }
+        migrator.registerMigration("v8") { db in
+            // Recent-range queries can seek directly to aggregates whose
+            // coverage overlaps the requested window. The expression index
+            // also makes the permanent recording-start lookup constant-time.
+            try db.execute(sql: """
+                CREATE INDEX system_power_sample_on_coverage_end
+                    ON system_power_sample(coverage_end);
+                CREATE INDEX system_power_sample_on_recording_start
+                    ON system_power_sample(COALESCE(coverage_start, ts));
+                """)
         }
         return migrator
     }
@@ -202,6 +275,551 @@ public final class JuiceStore: @unchecked Sendable {
             try db.execute(
                 sql: "DELETE FROM battery_sample WHERE ts < ?",
                 arguments: [cutoff.timeIntervalSince1970])
+        }
+    }
+
+    // MARK: - System power samples
+
+    public func insertSystemPowerSample(ts: Date, watts: Double) throws {
+        try dbQueue.write { db in
+            // Legacy point samples retain update-at-the-same-time behavior,
+            // while aggregate rows at the same timestamp remain independent.
+            try db.execute(
+                sql: """
+                    DELETE FROM system_power_sample
+                    WHERE ts = ? AND covered_seconds IS NULL
+                    """,
+                arguments: [ts.timeIntervalSince1970])
+            try db.execute(
+                sql: """
+                    INSERT INTO system_power_sample (ts, watts)
+                    VALUES (?, ?)
+                    """,
+                arguments: [ts.timeIntervalSince1970, watts])
+        }
+    }
+
+    /// Atomically adds one portion of a live reading interval to its
+    /// minute-aligned aggregate. This preserves short spikes and exact energy
+    /// while retaining the compact one-row-per-minute history footprint.
+    public func addSystemPowerAggregate(
+        bucketStart: Date,
+        energyWh: Double,
+        coveredDuration: TimeInterval,
+        peakWatts: Double,
+        coverageStart: Date,
+        coverageEnd: Date
+    ) throws {
+        guard coveredDuration.isFinite,
+              coveredDuration > 0,
+              coverageEnd > coverageStart else {
+            return
+        }
+        try addSystemPowerAggregates([
+            StoredSystemPowerSample(
+                date: bucketStart,
+                watts: energyWh * 3600 / coveredDuration,
+                coveredDuration: coveredDuration,
+                energyWh: energyWh,
+                peakWatts: peakWatts,
+                coverageStart: coverageStart,
+                coverageEnd: coverageEnd),
+        ])
+    }
+
+    public func addSystemPowerAggregates(
+        _ aggregates: [StoredSystemPowerSample]
+    ) throws {
+        let valid = aggregates.filter {
+            guard let coveredDuration = $0.coveredDuration,
+                  let energyWh = $0.energyWh,
+                  let peakWatts = $0.peakWatts,
+                  let coverageStart = $0.coverageStart,
+                  let coverageEnd = $0.coverageEnd else {
+                return false
+            }
+            return energyWh.isFinite
+                && energyWh >= 0
+                && coveredDuration.isFinite
+                && coveredDuration > 0
+                && peakWatts.isFinite
+                && peakWatts >= 0
+                && coverageEnd > coverageStart
+        }
+        guard !valid.isEmpty else { return }
+        try dbQueue.write { db in
+            try Self.insertSystemPower(valid, in: db)
+        }
+    }
+
+    /// Commits whole-system and per-app live increments in one SQLite
+    /// transaction so the two server totals can never diverge on a partial
+    /// write.
+    public func addServerPowerHistory(
+        system: [StoredSystemPowerSample],
+        apps: [StoredSystemAppEnergyBucket]
+    ) throws {
+        guard !system.isEmpty || !apps.isEmpty else { return }
+        try dbQueue.write { db in
+            try Self.insertSystemPower(system, in: db)
+            try Self.upsertSystemAppEnergy(apps, in: db)
+        }
+    }
+
+    private static func insertSystemPower(
+        _ aggregates: [StoredSystemPowerSample],
+        in db: Database
+    ) throws {
+        for aggregate in aggregates {
+            try db.execute(
+                sql: """
+                    INSERT INTO system_power_sample (
+                        ts, watts, covered_seconds, energy_wh, peak_watts,
+                        coverage_start, coverage_end
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                arguments: [
+                    aggregate.date.timeIntervalSince1970,
+                    aggregate.watts,
+                    aggregate.coveredDuration,
+                    aggregate.energyWh,
+                    aggregate.peakWatts,
+                    aggregate.coverageStart?.timeIntervalSince1970,
+                    aggregate.coverageEnd?.timeIntervalSince1970,
+                ])
+        }
+    }
+
+    public func systemPowerSamples(
+        since: Date,
+        until: Date
+    ) throws -> [StoredSystemPowerSample] {
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT id, ts, watts, covered_seconds, energy_wh, peak_watts,
+                           coverage_start, coverage_end
+                    FROM system_power_sample
+                    INDEXED BY system_power_sample_on_coverage_end
+                    WHERE covered_seconds IS NOT NULL
+                      AND coverage_end > ?
+                      AND coverage_start < ?
+                    UNION ALL
+                    SELECT id, ts, watts, covered_seconds, energy_wh, peak_watts,
+                           coverage_start, coverage_end
+                    FROM system_power_sample
+                    INDEXED BY system_power_sample_on_ts
+                    WHERE covered_seconds IS NULL
+                      AND ts >= ?
+                      AND ts <= ?
+                    ORDER BY ts, id
+                    """,
+                arguments: [
+                    since.timeIntervalSince1970,
+                    until.timeIntervalSince1970,
+                    since.timeIntervalSince1970,
+                    until.timeIntervalSince1970,
+                ])
+            return rows.map { row in
+                StoredSystemPowerSample(
+                    date: Date(timeIntervalSince1970: row["ts"]),
+                    watts: row["watts"],
+                    coveredDuration: row["covered_seconds"],
+                    energyWh: row["energy_wh"],
+                    peakWatts: row["peak_watts"],
+                    coverageStart: (row["coverage_start"] as Double?)
+                        .map(Date.init(timeIntervalSince1970:)),
+                    coverageEnd: (row["coverage_end"] as Double?)
+                        .map(Date.init(timeIntervalSince1970:)))
+            }
+        }
+    }
+
+    /// Builds a long-range report without materializing every minute aggregate.
+    /// Exact aggregate rows are summarized and bucketed by SQLite; only legacy
+    /// point rows are loaded for trapezoid integration.
+    public func systemPowerReport(
+        since: Date,
+        until: Date,
+        bucketDuration: TimeInterval,
+        maximumGap: TimeInterval = 5 * 60
+    ) throws -> (summary: SystemPowerSummary, buckets: [SystemPowerBucket]) {
+        guard until > since, bucketDuration > 0 else {
+            return (
+                SystemPowerSummary(
+                    windowStart: since,
+                    windowEnd: until,
+                    averageWatts: nil,
+                    peakWatts: nil,
+                    energyWh: 0,
+                    coveredDuration: 0,
+                    sampleCount: 0),
+                [])
+        }
+
+        let fetched = try dbQueue.read { db in
+            let summaryRow = try Row.fetchOne(
+                db,
+                sql: """
+                    WITH clipped AS (
+                        SELECT
+                            energy_wh * (
+                                (MIN(coverage_end, ?) - MAX(coverage_start, ?))
+                                / (coverage_end - coverage_start)
+                            ) AS energy_wh,
+                            covered_seconds * (
+                                (MIN(coverage_end, ?) - MAX(coverage_start, ?))
+                                / (coverage_end - coverage_start)
+                            ) AS covered_seconds,
+                            peak_watts
+                        FROM system_power_sample
+                        INDEXED BY system_power_sample_on_coverage_end
+                        WHERE covered_seconds IS NOT NULL
+                          AND coverage_end > ?
+                          AND coverage_start < ?
+                    )
+                    SELECT
+                        COALESCE(SUM(energy_wh), 0) AS energy_wh,
+                        COALESCE(SUM(covered_seconds), 0) AS covered_seconds,
+                        MAX(peak_watts) AS peak_watts,
+                        COUNT(*) AS sample_count
+                    FROM clipped
+                    """,
+                arguments: [
+                    until.timeIntervalSince1970,
+                    since.timeIntervalSince1970,
+                    until.timeIntervalSince1970,
+                    since.timeIntervalSince1970,
+                    since.timeIntervalSince1970,
+                    until.timeIntervalSince1970,
+                ])
+
+            let bucketRows = try Row.fetchAll(
+                db,
+                sql: """
+                    WITH overlapping AS (
+                        SELECT *,
+                            MAX(coverage_end) OVER (
+                                ORDER BY coverage_start, id
+                                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                            ) AS prior_end
+                        FROM system_power_sample
+                        INDEXED BY system_power_sample_on_coverage_end
+                        WHERE covered_seconds IS NOT NULL
+                          AND coverage_end > ?
+                          AND coverage_start < ?
+                    ),
+                    tagged AS (
+                        SELECT *,
+                            SUM(
+                                CASE
+                                    WHEN prior_end IS NULL
+                                      OR coverage_start - prior_end > ?
+                                    THEN 1 ELSE 0
+                                END
+                            ) OVER (
+                                ORDER BY coverage_start, id
+                                ROWS UNBOUNDED PRECEDING
+                            ) - 1 AS continuity
+                        FROM overlapping
+                    ),
+                    clipped AS (
+                        SELECT *,
+                            MAX(coverage_start, ?) AS clipped_start,
+                            MIN(coverage_end, ?) AS clipped_end
+                        FROM tagged
+                    ),
+                    bucketed AS (
+                        SELECT *,
+                            CAST((clipped_start - ?) / ? AS INTEGER)
+                                AS bucket_index
+                        FROM clipped
+                        WHERE clipped_end > clipped_start
+                    ),
+                    pieces AS (
+                        SELECT *,
+                            bucket_index AS piece_bucket_index,
+                            clipped_start AS piece_start,
+                            MIN(
+                                clipped_end,
+                                ? + (bucket_index + 1) * ?
+                            ) AS piece_end
+                        FROM bucketed
+                        UNION ALL
+                        SELECT *,
+                            bucket_index + 1 AS piece_bucket_index,
+                            ? + (bucket_index + 1) * ? AS piece_start,
+                            clipped_end AS piece_end
+                        FROM bucketed
+                        WHERE clipped_end
+                            > ? + (bucket_index + 1) * ?
+                    )
+                    SELECT
+                        piece_bucket_index AS bucket_index,
+                        continuity,
+                        SUM(
+                            energy_wh * (piece_end - piece_start)
+                                / (coverage_end - coverage_start)
+                        ) AS energy_wh,
+                        SUM(
+                            covered_seconds * (piece_end - piece_start)
+                                / (coverage_end - coverage_start)
+                        ) AS covered_seconds,
+                        MAX(peak_watts) AS peak_watts,
+                        COUNT(*) AS sample_count
+                    FROM pieces
+                    GROUP BY piece_bucket_index, continuity
+                    ORDER BY piece_bucket_index, continuity
+                    """,
+                arguments: [
+                    since.timeIntervalSince1970,
+                    until.timeIntervalSince1970,
+                    maximumGap,
+                    since.timeIntervalSince1970,
+                    until.timeIntervalSince1970,
+                    since.timeIntervalSince1970,
+                    bucketDuration,
+                    since.timeIntervalSince1970,
+                    bucketDuration,
+                    since.timeIntervalSince1970,
+                    bucketDuration,
+                    since.timeIntervalSince1970,
+                    bucketDuration,
+                ])
+
+            let exactBuckets: [SystemPowerBucket] = bucketRows.compactMap { row in
+                let coveredDuration: Double = row["covered_seconds"]
+                guard coveredDuration > 0 else { return nil }
+                let energyWh: Double = row["energy_wh"]
+                let bucketIndex: Int = row["bucket_index"]
+                return SystemPowerBucket(
+                    start: since.addingTimeInterval(
+                        Double(bucketIndex) * bucketDuration),
+                    averageWatts: energyWh * 3600 / coveredDuration,
+                    peakWatts: row["peak_watts"],
+                    sampleCount: row["sample_count"],
+                    continuity: row["continuity"])
+            }
+
+            let legacyRows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT ts, watts
+                    FROM system_power_sample
+                    INDEXED BY system_power_sample_on_ts
+                    WHERE covered_seconds IS NULL
+                      AND ts >= ?
+                      AND ts <= ?
+                    ORDER BY ts, id
+                    """,
+                arguments: [
+                    since.timeIntervalSince1970,
+                    until.timeIntervalSince1970,
+                ])
+            let legacy = legacyRows.map {
+                StoredSystemPowerSample(
+                    date: Date(timeIntervalSince1970: $0["ts"]),
+                    watts: $0["watts"])
+            }
+
+            let exactEnergy: Double = summaryRow?["energy_wh"] ?? 0
+            let exactCovered: Double = summaryRow?["covered_seconds"] ?? 0
+            let exactPeak: Double? = summaryRow?["peak_watts"]
+            let exactCount: Int = summaryRow?["sample_count"] ?? 0
+            return (
+                exactEnergy,
+                exactCovered,
+                exactPeak,
+                exactCount,
+                exactBuckets,
+                legacy)
+        }
+
+        let legacySummary = SystemPowerAnalytics.summary(
+            samples: fetched.5,
+            windowStart: since,
+            windowEnd: until,
+            maximumGap: maximumGap)
+        var legacyBuckets = SystemPowerAnalytics.buckets(
+            samples: fetched.5,
+            windowStart: since,
+            windowEnd: until,
+            bucketDuration: bucketDuration,
+            maximumGap: maximumGap)
+        if !fetched.4.isEmpty {
+            let continuityOffset = (fetched.4.map(\.continuity).max() ?? -1) + 1
+            for index in legacyBuckets.indices {
+                legacyBuckets[index].continuity += continuityOffset
+            }
+        }
+
+        let energyWh = fetched.0 + legacySummary.energyWh
+        let coveredDuration = fetched.1 + legacySummary.coveredDuration
+        let peakWatts = [fetched.2, legacySummary.peakWatts]
+            .compactMap { $0 }
+            .max()
+        let buckets = (fetched.4 + legacyBuckets).sorted {
+            if $0.start != $1.start { return $0.start < $1.start }
+            return $0.continuity < $1.continuity
+        }
+        return (
+            SystemPowerSummary(
+                windowStart: since,
+                windowEnd: until,
+                averageWatts: coveredDuration > 0
+                    ? energyWh * 3600 / coveredDuration
+                    : nil,
+                peakWatts: peakWatts,
+                energyWh: energyWh,
+                coveredDuration: coveredDuration,
+                sampleCount: fetched.3 + legacySummary.sampleCount),
+            buckets)
+    }
+
+    public func earliestSystemPowerSampleDate() throws -> Date? {
+        try dbQueue.read { db in
+            try Double.fetchOne(
+                db,
+                sql: """
+                    SELECT COALESCE(coverage_start, ts) AS recording_start
+                    FROM system_power_sample
+                    INDEXED BY system_power_sample_on_recording_start
+                    ORDER BY recording_start
+                    LIMIT 1
+                    """)
+                .map(Date.init(timeIntervalSince1970:))
+        }
+    }
+
+    public func pruneSystemPowerSamples(olderThan cutoff: Date) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: """
+                    DELETE FROM system_power_sample
+                    WHERE COALESCE(coverage_end, ts) < ?
+                    """,
+                arguments: [cutoff.timeIntervalSince1970])
+        }
+    }
+
+    // MARK: - Mac mini per-app energy
+
+    /// Adds live app-energy increments to permanent hour-aligned buckets.
+    /// Repeated minutes in the same hour accumulate atomically.
+    public func addSystemAppEnergy(
+        _ increments: [StoredSystemAppEnergyBucket]
+    ) throws {
+        guard !increments.isEmpty else { return }
+        try dbQueue.write { db in
+            try Self.upsertSystemAppEnergy(increments, in: db)
+        }
+    }
+
+    private static func upsertSystemAppEnergy(
+        _ increments: [StoredSystemAppEnergyBucket],
+        in db: Database
+    ) throws {
+        for increment in increments {
+            try db.execute(
+                sql: """
+                    INSERT INTO system_app_energy_hour
+                        (bucket_start, app_key, display_name, wh,
+                         active_seconds, peak_watts)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(bucket_start, app_key) DO UPDATE SET
+                        display_name = excluded.display_name,
+                        wh = system_app_energy_hour.wh + excluded.wh,
+                        active_seconds = system_app_energy_hour.active_seconds
+                            + excluded.active_seconds,
+                        peak_watts = MAX(
+                            system_app_energy_hour.peak_watts,
+                            excluded.peak_watts)
+                    """,
+                arguments: [
+                    increment.bucketStart.timeIntervalSince1970,
+                    increment.appKey,
+                    increment.displayName,
+                    increment.energyWh,
+                    increment.activeDuration,
+                    increment.peakWatts,
+                ])
+        }
+    }
+
+    /// App totals over hour-aligned server history, ranked by watt-hours.
+    public func systemAppEnergyTotals(
+        since: Date,
+        until: Date
+    ) throws -> [StoredSystemAppEnergyTotal] {
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT app_key, MAX(display_name) AS display_name,
+                           SUM(wh) AS wh,
+                           SUM(active_seconds) AS active_seconds,
+                           MAX(peak_watts) AS peak_watts
+                    FROM system_app_energy_hour
+                    WHERE bucket_start >= ? AND bucket_start <= ?
+                    GROUP BY app_key
+                    ORDER BY wh DESC, app_key
+                    """,
+                arguments: [
+                    since.timeIntervalSince1970,
+                    until.timeIntervalSince1970,
+                ])
+            return rows.map { row in
+                StoredSystemAppEnergyTotal(
+                    appKey: row["app_key"],
+                    displayName: row["display_name"],
+                    energyWh: row["wh"],
+                    activeDuration: row["active_seconds"],
+                    peakWatts: row["peak_watts"])
+            }
+        }
+    }
+
+    /// Hourly server history for one app, used by the clickable detail view.
+    public func systemAppEnergyBuckets(
+        appKey: String,
+        since: Date,
+        until: Date
+    ) throws -> [StoredSystemAppEnergyBucket] {
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT bucket_start, app_key, display_name, wh,
+                           active_seconds, peak_watts
+                    FROM system_app_energy_hour
+                    WHERE app_key = ? AND bucket_start >= ? AND bucket_start <= ?
+                    ORDER BY bucket_start
+                    """,
+                arguments: [
+                    appKey,
+                    since.timeIntervalSince1970,
+                    until.timeIntervalSince1970,
+                ])
+            return rows.map { row in
+                StoredSystemAppEnergyBucket(
+                    bucketStart: Date(timeIntervalSince1970: row["bucket_start"]),
+                    appKey: row["app_key"],
+                    displayName: row["display_name"],
+                    energyWh: row["wh"],
+                    activeDuration: row["active_seconds"],
+                    peakWatts: row["peak_watts"])
+            }
+        }
+    }
+
+    public func earliestSystemAppEnergyDate() throws -> Date? {
+        try dbQueue.read { db in
+            try Double.fetchOne(
+                db,
+                sql: "SELECT MIN(bucket_start) FROM system_app_energy_hour")
+                .map(Date.init(timeIntervalSince1970:))
         }
     }
 

@@ -86,6 +86,24 @@ enum StatusItemVisibilityGuard {
         }
     }
 
+    #if DEV_HELPER || DEBUG
+    /// Deterministically opens the MenuBarExtra in development builds so the
+    /// rendered popover can be verified without guessing a menu bar position.
+    static func showPopoverForTesting(attemptsLeft: Int = 60) {
+        guard let item = menuBarExtraStatusItem(), let button = item.button else {
+            guard attemptsLeft > 0 else {
+                NSLog("Juice: menu bar item unavailable for popover verification")
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + locateInterval) {
+                showPopoverForTesting(attemptsLeft: attemptsLeft - 1)
+            }
+            return
+        }
+        button.performClick(nil)
+    }
+    #endif
+
     /// MenuBarExtra offers no public handle to its NSStatusItem, so find it
     /// through the status bar window. Every check degrades gracefully: if
     /// AppKit renames the window class or property, the guard simply stays

@@ -9,7 +9,14 @@ struct TopAppsView: View {
     let apps: [AppEnergy]
     @Binding var range: EnergyRange
     let origin: DataOrigin
+    /// Lets a surface retain its loading/error presentation while ensuring
+    /// row taps use the correct underlying detail provider.
+    var detailOrigin: DataOrigin? = nil
     var ranges = EnergyRange.allCases
+    var showsRangePicker = true
+    /// Server mode keeps current watts visible while the selected range only
+    /// changes the accumulated energy context.
+    var showsLiveAcrossRanges = false
     @State private var isSessionLiveExpanded = true
     @State private var isTodayLiveExpanded = true
     /// The shared live/history result. Session reads its active rows and joins
@@ -48,8 +55,32 @@ struct TopAppsView: View {
         return (visible, max(0, appCount - visible))
     }
 
+    static func shouldShowLiveSection(
+        range: EnergyRange,
+        showsLiveAcrossRanges: Bool,
+        activeCount: Int
+    ) -> Bool {
+        guard activeCount > 0 else { return false }
+        return showsLiveAcrossRanges || range == .today || range == .session
+    }
+
     private var maxEnergy: Double {
         max(apps.map(\.energyWh).max() ?? 0, 0.001)
+    }
+
+    private func energyValueText(_ wattHours: Double) -> String {
+        origin == .server
+            ? serverEnergyText(wattHours)
+            : String(format: "%.1f Wh", wattHours)
+    }
+
+    private func liveEnergyValueText(_ wattHours: Double?) -> String? {
+        guard let wattHours, wattHours > 0 else { return nil }
+        if origin == .server {
+            return serverEnergyText(wattHours)
+        }
+        guard wattHours >= 0.05 else { return nil }
+        return String(format: "%.1f Wh", wattHours)
     }
 
     private var historicalAppsIdentity: String {
@@ -57,6 +88,7 @@ struct TopAppsView: View {
         switch origin {
         case .loading: originID = "loading"
         case .store: originID = "store"
+        case .server: originID = "server"
         case .live: originID = "live"
         case .unavailable: originID = "unavailable"
         }
@@ -65,13 +97,15 @@ struct TopAppsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Picker("Range", selection: $range) {
-                ForEach(ranges, id: \.self) { range in
-                    Text(range.pickerLabel).tag(range)
+            if showsRangePicker {
+                Picker("Range", selection: $range) {
+                    ForEach(ranges, id: \.self) { range in
+                        Text(range.pickerLabel).tag(range)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
 
             if range == .session, let session {
                 VStack(alignment: .leading, spacing: 1) {
@@ -86,10 +120,18 @@ struct TopAppsView: View {
                 .accessibilityElement(children: .combine)
             }
 
-            if range == .session, let hybrid, !hybrid.active.isEmpty {
-                liveSession(hybrid)
-            } else if range == .today, let hybrid, !hybrid.active.isEmpty {
-                hybridToday(hybrid)
+            if let hybrid,
+               Self.shouldShowLiveSection(
+                   range: range,
+                   showsLiveAcrossRanges: showsLiveAcrossRanges,
+                   activeCount: hybrid.active.count) {
+                if showsLiveAcrossRanges {
+                    hybridRange(hybrid)
+                } else if range == .session {
+                    liveSession(hybrid)
+                } else {
+                    hybridToday(hybrid)
+                }
             } else {
                 historyList
             }
@@ -111,6 +153,7 @@ struct TopAppsView: View {
                 AppEnergyRow(
                     app: app,
                     fraction: app.energyWh / maxEnergy,
+                    valueText: energyValueText(app.energyWh),
                     onTap: { showDetail(appKey: app.bundleId, displayName: app.displayName) })
             }
         }
@@ -119,6 +162,88 @@ struct TopAppsView: View {
     }
 
     // MARK: - Hybrid Today
+
+    private var rangeEnergyLabel: String {
+        switch range {
+        case .today: return "TODAY ENERGY"
+        case .week: return "1W ENERGY"
+        case .allTime: return "ALL ENERGY"
+        default: return "\(range.rawValue.uppercased()) ENERGY"
+        }
+    }
+
+    private var rangeEnergyContext: String {
+        switch range {
+        case .today: return "today"
+        case .week: return "this week"
+        case .allTime: return "all time"
+        default: return range.rawValue.lowercased()
+        }
+    }
+
+    /// Server variant of the original hybrid pattern. Live watts remain at the
+    /// top for every range; changing tabs only changes the Wh value and the
+    /// historical rows below.
+    @ViewBuilder
+    private func hybridRange(_ hybrid: HybridTodayList) -> some View {
+        let historyRows = Self.cumulativeRowCounts(
+            activeCount: hybrid.active.count,
+            appCount: hybrid.earlier.count,
+            liveExpanded: isTodayLiveExpanded)
+        let visibleHistory = Array(hybrid.earlier.prefix(historyRows.visible))
+        let foldedHistory = hybrid.earlier.dropFirst(visibleHistory.count)
+        let maxWatts = max(hybrid.active.map(\.watts).max() ?? 0, 0.001)
+        let historyMax = max(visibleHistory.map(\.energyWh).max() ?? 0, 0.001)
+        let totalLiveWatts = hybrid.active.reduce(0) { $0 + $1.watts }
+
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 6) {
+                CollapsibleLiveHeader(
+                    isExpanded: $isTodayLiveExpanded,
+                    appCount: hybrid.active.count,
+                    totalWatts: totalLiveWatts)
+
+                if isTodayLiveExpanded {
+                    ForEach(hybrid.active) { app in
+                        LiveActiveRow(
+                            app: app,
+                            energyText: liveEnergyValueText(app.todayWh),
+                            energyContext: rangeEnergyContext,
+                            fraction: app.watts / maxWatts,
+                            onTap: {
+                                showDetail(appKey: app.appKey, displayName: app.displayName)
+                            })
+                    }
+                }
+            }
+
+            if !visibleHistory.isEmpty || !foldedHistory.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(rangeEnergyLabel)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    ForEach(visibleHistory) { app in
+                        AppEnergyRow(
+                            app: app,
+                            fraction: app.energyWh / historyMax,
+                            valueText: energyValueText(app.energyWh),
+                            onTap: {
+                                showDetail(
+                                    appKey: app.bundleId,
+                                    displayName: app.displayName)
+                            })
+                    }
+                    if !foldedHistory.isEmpty {
+                        FoldedAppsRow(
+                            count: foldedHistory.count,
+                            valueText: energyValueText(
+                                foldedHistory.reduce(0) { $0 + $1.energyWh }))
+                    }
+                }
+            }
+        }
+        .transition(.opacity)
+    }
 
     @ViewBuilder
     private func hybridToday(_ hybrid: HybridTodayList) -> some View {
@@ -143,7 +268,7 @@ struct TopAppsView: View {
                     ForEach(hybrid.active) { app in
                         LiveActiveRow(
                             app: app,
-                            energyWh: app.todayWh,
+                            energyText: liveEnergyValueText(app.todayWh),
                             energyContext: "today",
                             fraction: app.watts / maxWatts,
                             onTap: {
@@ -162,13 +287,13 @@ struct TopAppsView: View {
                         AppEnergyRow(
                             app: app,
                             fraction: app.energyWh / historyMax,
+                            valueText: energyValueText(app.energyWh),
                             onTap: { showDetail(appKey: app.bundleId, displayName: app.displayName) })
                     }
                     if !foldedHistory.isEmpty {
                         FoldedAppsRow(
                             count: foldedHistory.count,
-                            valueText: String(
-                                format: "%.1f Wh",
+                            valueText: energyValueText(
                                 foldedHistory.reduce(0) { $0 + $1.energyWh }))
                     }
                 }
@@ -209,7 +334,8 @@ struct TopAppsView: View {
                     ForEach(hybrid.active) { app in
                         LiveActiveRow(
                             app: app,
-                            energyWh: sessionByKey[app.appKey]?.energyWh,
+                            energyText: liveEnergyValueText(
+                                sessionByKey[app.appKey]?.energyWh),
                             energyContext: "session",
                             fraction: app.watts / maxWatts,
                             onTap: {
@@ -228,6 +354,7 @@ struct TopAppsView: View {
                         AppEnergyRow(
                             app: app,
                             fraction: app.energyWh / historyMax,
+                            valueText: energyValueText(app.energyWh),
                             onTap: {
                                 showDetail(appKey: app.bundleId, displayName: app.displayName)
                             })
@@ -235,8 +362,7 @@ struct TopAppsView: View {
                     if !foldedHistory.isEmpty {
                         FoldedAppsRow(
                             count: foldedHistory.count,
-                            valueText: String(
-                                format: "%.1f Wh",
+                            valueText: energyValueText(
                                 foldedHistory.reduce(0) { $0 + $1.energyWh }))
                     }
                 }
@@ -250,7 +376,7 @@ struct TopAppsView: View {
             appKey: appKey,
             displayName: displayName,
             range: range,
-            origin: origin,
+            origin: detailOrigin ?? origin,
             session: range == .session ? session : nil)
     }
 
@@ -278,12 +404,31 @@ struct TopAppsView: View {
     }
 }
 
-/// Watts formatting: one decimal from 0.1 W up, two decimals below.
+/// Watts formatting: one decimal from 0.1 W up, two decimals below. A
+/// positive sub-centiwatt value is described as such instead of rounded to
+/// the false reading "0.00 W".
 func liveWattsText(_ watts: Double) -> String {
     if watts >= 0.1 {
         return String(format: "%.1f W", watts)
     }
+    if watts > 0 && watts < 0.005 {
+        return "<0.01 W"
+    }
     return String(format: "%.2f W", watts)
+}
+
+/// Chart axes need distinct labels even when every tick is below the live
+/// readout's centiwatt display threshold.
+func chartWattsText(_ watts: Double) -> String {
+    guard watts > 0, watts < 0.01 else { return liveWattsText(watts) }
+    let milliwatts = watts * 1000
+    if milliwatts >= 1 {
+        return String(format: "%.1f mW", milliwatts)
+    }
+    if milliwatts >= 0.01 {
+        return String(format: "%.2f mW", milliwatts)
+    }
+    return "<0.01 mW"
 }
 
 /// Shared disclosure control for the popover's Session and Today live layers.
@@ -327,7 +472,7 @@ private struct CollapsibleLiveHeader: View {
 /// green watts value. Tapping opens the per-app detail window.
 private struct LiveActiveRow: View {
     let app: HybridTodayList.ActiveApp
-    let energyWh: Double?
+    let energyText: String?
     let energyContext: String
     let fraction: Double
     let onTap: () -> Void
@@ -379,9 +524,8 @@ private struct LiveActiveRow: View {
     }
 
     private var energySubtext: Text {
-        // Below 0.05 Wh the value renders as "0.0" - noise, not information.
-        guard let energyWh, energyWh >= 0.05 else { return Text("") }
-        return Text(String(format: " · %.1f Wh %@", energyWh, energyContext))
+        guard let energyText else { return Text("") }
+        return Text(" · \(energyText) \(energyContext)")
             .font(.caption)
             .foregroundStyle(.tertiary)
     }
@@ -453,6 +597,7 @@ private struct LiveAttributionFooter: View {
 private struct AppEnergyRow: View {
     let app: AppEnergy
     let fraction: Double
+    let valueText: String
     let onTap: () -> Void
 
     @State private var hovering = false
@@ -480,7 +625,7 @@ private struct AppEnergyRow: View {
                     .frame(height: 5)
                 }
 
-                Text(String(format: "%.1f Wh", app.energyWh))
+                Text(valueText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
@@ -496,13 +641,13 @@ private struct AppEnergyRow: View {
         .onHover { hovering = $0 }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(app.displayName)
-        .accessibilityValue(String(format: "%.1f watt-hours", app.energyWh))
+        .accessibilityValue(valueText)
         .accessibilityHint("Opens energy details")
     }
 }
 
 /// The app's real icon when the bundle id resolves, otherwise a lettered placeholder.
-private struct AppIconView: View {
+struct AppIconView: View {
     let bundleId: String
     let displayName: String
 

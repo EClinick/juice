@@ -637,6 +637,7 @@ struct StatsView: View {
         }
         switch origin {
         case .store, .live: return "App energy from macOS powerlog"
+        case .server: return "App energy recorded from live macOS energy accounting"
         case .loading, .unavailable:
             return timelineAvailability == .available
                 ? "Battery history collected locally"

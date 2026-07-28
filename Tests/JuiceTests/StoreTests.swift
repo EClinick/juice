@@ -220,4 +220,268 @@ private func makeStore() throws -> JuiceStore {
         #expect(remaining.count == 1)
         #expect(remaining[0].percent == 60)
     }
+
+    @Test func systemPowerSamplesRoundTripInTimestampOrder() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+
+        try store.insertSystemPowerSample(
+            ts: now.addingTimeInterval(60), watts: 14)
+        try store.insertSystemPowerSample(
+            ts: now, watts: 12)
+
+        let samples = try store.systemPowerSamples(
+            since: now.addingTimeInterval(-60),
+            until: now.addingTimeInterval(120))
+        #expect(samples == [
+            StoredSystemPowerSample(date: now, watts: 12),
+            StoredSystemPowerSample(date: now.addingTimeInterval(60), watts: 14),
+        ])
+        #expect(try store.earliestSystemPowerSampleDate() == now)
+    }
+
+    @Test func systemPowerSampleAtSameTimestampIsUpdated() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+
+        try store.insertSystemPowerSample(ts: now, watts: 10)
+        try store.insertSystemPowerSample(ts: now, watts: 15)
+
+        let samples = try store.systemPowerSamples(
+            since: now.addingTimeInterval(-1),
+            until: now.addingTimeInterval(1))
+        #expect(samples == [StoredSystemPowerSample(date: now, watts: 15)])
+    }
+
+    @Test func systemPowerAggregatesAccumulateWithinMinute() throws {
+        let store = try makeStore()
+        let minute = Date(timeIntervalSince1970: 1_700_000_040)
+
+        try store.addSystemPowerAggregate(
+            bucketStart: minute,
+            energyWh: 0.05,
+            coveredDuration: 30,
+            peakWatts: 12,
+            coverageStart: minute,
+            coverageEnd: minute.addingTimeInterval(30))
+        try store.addSystemPowerAggregate(
+            bucketStart: minute,
+            energyWh: 0.10,
+            coveredDuration: 30,
+            peakWatts: 20,
+            coverageStart: minute.addingTimeInterval(30),
+            coverageEnd: minute.addingTimeInterval(60))
+
+        let samples = try store.systemPowerSamples(
+            since: minute,
+            until: minute.addingTimeInterval(60))
+        let summary = SystemPowerAnalytics.summary(
+            samples: samples,
+            windowStart: minute,
+            windowEnd: minute.addingTimeInterval(60))
+
+        #expect(samples.count == 2)
+        #expect(abs((summary.averageWatts ?? 0) - 9) < 1e-9)
+        #expect(summary.coveredDuration == 60)
+        #expect(abs(summary.energyWh - 0.15) < 1e-9)
+        #expect(summary.peakWatts == 20)
+    }
+
+    @Test func longRangeSystemPowerReportAggregatesInStorage() throws {
+        let store = try makeStore()
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let samples = (0..<180).map { index in
+            let coverageStart = start.addingTimeInterval(Double(index) * 60)
+            return StoredSystemPowerSample(
+                date: coverageStart,
+                watts: 12,
+                coveredDuration: 60,
+                energyWh: 0.2,
+                peakWatts: 12,
+                coverageStart: coverageStart,
+                coverageEnd: coverageStart.addingTimeInterval(60))
+        }
+        try store.addSystemPowerAggregates(samples)
+
+        let report = try store.systemPowerReport(
+            since: start,
+            until: start.addingTimeInterval(180 * 60),
+            bucketDuration: 60 * 60)
+
+        #expect(report.summary.sampleCount == 180)
+        #expect(abs(report.summary.energyWh - 36) < 1e-9)
+        #expect(report.summary.coveredDuration == 180 * 60)
+        #expect(report.summary.averageWatts == 12)
+        #expect(report.summary.peakWatts == 12)
+        #expect(report.buckets.count == 3)
+        #expect(report.buckets.map(\.sampleCount) == [60, 60, 60])
+        #expect(report.buckets.allSatisfy { $0.averageWatts == 12 })
+    }
+
+    @Test func longRangeSystemPowerReportPreservesRecordingGaps() throws {
+        let store = try makeStore()
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        try store.addSystemPowerAggregates([
+            StoredSystemPowerSample(
+                date: start,
+                watts: 6,
+                coveredDuration: 60,
+                energyWh: 0.1,
+                peakWatts: 6,
+                coverageStart: start,
+                coverageEnd: start.addingTimeInterval(60)),
+            StoredSystemPowerSample(
+                date: start.addingTimeInterval(20 * 60),
+                watts: 12,
+                coveredDuration: 60,
+                energyWh: 0.2,
+                peakWatts: 12,
+                coverageStart: start.addingTimeInterval(20 * 60),
+                coverageEnd: start.addingTimeInterval(21 * 60)),
+        ])
+
+        let report = try store.systemPowerReport(
+            since: start,
+            until: start.addingTimeInterval(60 * 60),
+            bucketDuration: 60 * 60)
+
+        #expect(report.buckets.count == 2)
+        #expect(report.buckets.map(\.start) == [start, start])
+        #expect(report.buckets.map(\.continuity) == [0, 1])
+        #expect(report.buckets.map(\.averageWatts) == [6, 12])
+    }
+
+    @Test func longRangeSystemPowerReportSplitsBucketBoundaries() throws {
+        let store = try makeStore()
+        let windowStart = Date(timeIntervalSince1970: 1_700_000_000)
+        let coverageStart = windowStart.addingTimeInterval(58)
+        try store.addSystemPowerAggregates([
+            StoredSystemPowerSample(
+                date: coverageStart,
+                watts: 6,
+                coveredDuration: 60,
+                energyWh: 0.1,
+                peakWatts: 6,
+                coverageStart: coverageStart,
+                coverageEnd: coverageStart.addingTimeInterval(60)),
+        ])
+
+        let report = try store.systemPowerReport(
+            since: windowStart,
+            until: windowStart.addingTimeInterval(120),
+            bucketDuration: 60)
+
+        #expect(report.buckets.map(\.start) == [
+            windowStart,
+            windowStart.addingTimeInterval(60),
+        ])
+        #expect(report.buckets.allSatisfy { abs($0.averageWatts - 6) < 1e-9 })
+        #expect(abs(report.summary.energyWh - 0.1) < 1e-9)
+    }
+
+    @Test func pruneSystemPowerSamplesKeepsRecentHistory() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+
+        try store.insertSystemPowerSample(
+            ts: now.addingTimeInterval(-400 * 24 * 3600), watts: 8)
+        try store.insertSystemPowerSample(ts: now, watts: 9)
+        try store.pruneSystemPowerSamples(
+            olderThan: now.addingTimeInterval(-370 * 24 * 3600))
+
+        let remaining = try store.systemPowerSamples(
+            since: .distantPast,
+            until: .distantFuture)
+        #expect(remaining == [StoredSystemPowerSample(date: now, watts: 9)])
+    }
+
+    @Test func systemAppEnergyAccumulatesAndRanksByRange() throws {
+        let store = try makeStore()
+        let hour = Date(timeIntervalSince1970: 1_700_000_000)
+        try store.addSystemAppEnergy([
+            StoredSystemAppEnergyBucket(
+                bucketStart: hour,
+                appKey: "com.apple.Safari",
+                displayName: "Safari",
+                energyWh: 0.2,
+                activeDuration: 60,
+                peakWatts: 12),
+            StoredSystemAppEnergyBucket(
+                bucketStart: hour,
+                appKey: "com.apple.Safari",
+                displayName: "Safari",
+                energyWh: 0.3,
+                activeDuration: 120,
+                peakWatts: 8),
+            StoredSystemAppEnergyBucket(
+                bucketStart: hour,
+                appKey: "com.apple.Terminal",
+                displayName: "Terminal",
+                energyWh: 0.1,
+                activeDuration: 60,
+                peakWatts: 4),
+        ])
+
+        let totals = try store.systemAppEnergyTotals(
+            since: hour.addingTimeInterval(-1),
+            until: hour.addingTimeInterval(3600))
+        #expect(totals == [
+            StoredSystemAppEnergyTotal(
+                appKey: "com.apple.Safari",
+                displayName: "Safari",
+                energyWh: 0.5,
+                activeDuration: 180,
+                peakWatts: 12),
+            StoredSystemAppEnergyTotal(
+                appKey: "com.apple.Terminal",
+                displayName: "Terminal",
+                energyWh: 0.1,
+                activeDuration: 60,
+                peakWatts: 4),
+        ])
+        #expect(try store.earliestSystemAppEnergyDate() == hour)
+    }
+
+    @Test func systemAppDetailBucketsFilterByAppAndTime() throws {
+        let store = try makeStore()
+        let first = Date(timeIntervalSince1970: 1_700_000_000)
+        let second = first.addingTimeInterval(3600)
+        try store.addSystemAppEnergy([
+            StoredSystemAppEnergyBucket(
+                bucketStart: first,
+                appKey: "app",
+                displayName: "App",
+                energyWh: 1,
+                activeDuration: 600,
+                peakWatts: 6),
+            StoredSystemAppEnergyBucket(
+                bucketStart: second,
+                appKey: "app",
+                displayName: "App",
+                energyWh: 2,
+                activeDuration: 1200,
+                peakWatts: 8),
+            StoredSystemAppEnergyBucket(
+                bucketStart: second,
+                appKey: "other",
+                displayName: "Other",
+                energyWh: 9,
+                activeDuration: 1800,
+                peakWatts: 20),
+        ])
+
+        let buckets = try store.systemAppEnergyBuckets(
+            appKey: "app",
+            since: second,
+            until: second.addingTimeInterval(1))
+        #expect(buckets == [
+            StoredSystemAppEnergyBucket(
+                bucketStart: second,
+                appKey: "app",
+                displayName: "App",
+                energyWh: 2,
+                activeDuration: 1200,
+                peakWatts: 8),
+        ])
+    }
 }

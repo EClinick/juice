@@ -8,6 +8,14 @@ import JuiceXPCShared
 /// Mirrors ``StatsWindowPresenter``: a single window is reused across
 /// invocations, with its content (and title) swapped to the requested app.
 final class AppDetailPresenter {
+    private enum ServerHistoryError: LocalizedError {
+        case storeUnavailable
+
+        var errorDescription: String? {
+            "Server app history is unavailable because the local Juice store could not be opened."
+        }
+    }
+
     static let shared = AppDetailPresenter()
 
     private var window: NSWindow?
@@ -26,15 +34,25 @@ final class AppDetailPresenter {
         // One captured window end anchors the interval query, the chart's
         // x-domain, and the explanation's hour count.
         let windowEnd = session?.end ?? Date()
-        let store = Self.usesStoredHistory(range: range, origin: origin)
+        let isServerHistory = origin == .server
+        let store = (isServerHistory
+            || Self.usesStoredHistory(range: range, origin: origin))
             ? JuiceApp.sampler?.store : nil
         let formatter = RollupBuilder.dayFormatter()
-        let earliestStoredStart = store
-            .flatMap { try? $0.earliestRollupDay() }
-            .flatMap { formatter.date(from: $0) }
+        let earliestStoredStart: Date?
+        if isServerHistory {
+            earliestStoredStart = store.flatMap { try? $0.earliestSystemAppEnergyDate() }
+        } else {
+            earliestStoredStart = store
+                .flatMap { try? $0.earliestRollupDay() }
+                .flatMap { formatter.date(from: $0) }
+        }
         let windowStart = session?.start ?? Self.windowStart(
-            range: range, usesStoredHistory: store != nil,
-            earliestStoredStart: earliestStoredStart, now: windowEnd)
+            range: range,
+            usesStoredHistory: store != nil,
+            isServerHistory: isServerHistory,
+            earliestStoredStart: earliestStoredStart,
+            now: windowEnd)
         let windowHours = max(1, Int((windowEnd.timeIntervalSince(windowStart) / 3600)
             .rounded(.up)))
         let storedSinceDay = store.map { _ in
@@ -46,13 +64,40 @@ final class AppDetailPresenter {
             displayName: displayName,
             bundleId: appKey,
             rangeLabel: session.map(BatterySessionFormatting.title)
-                ?? ((range == .week || range == .allTime) && store == nil
-                    ? "Available PowerLog history" : range.rawValue),
+                ?? (isServerHistory
+                    ? range.rawValue
+                    : ((range == .week || range == .allTime) && store == nil
+                        ? "Available PowerLog history" : range.rawValue)),
             windowStart: windowStart,
             windowEnd: windowEnd,
             windowHours: windowHours,
-            resolution: store == nil ? .hourlyComponents : .dailyTotals,
+            resolution: isServerHistory
+                ? .serverHourly
+                : (store == nil ? .hourlyComponents : .dailyTotals),
             provider: {
+                if isServerHistory {
+                    guard let store else {
+                        throw ServerHistoryError.storeUnavailable
+                    }
+                    return try await Task.detached {
+                        let buckets = try store.systemAppEnergyBuckets(
+                            appKey: appKey,
+                            since: windowStart,
+                            until: windowEnd)
+                        return AppEnergyBreakdown(
+                            totalWh: buckets.reduce(0) { $0 + $1.energyWh },
+                            cpuWh: 0,
+                            gpuWh: 0,
+                            aneWh: 0,
+                            cpuHours: 0,
+                            activeHours: buckets.reduce(0) {
+                                $0 + $1.activeDuration / 3600
+                            },
+                            hourlyWh: buckets.map {
+                                (bucketStart: $0.bucketStart, wh: $0.energyWh)
+                            })
+                    }.value
+                }
                 if let store {
                     return try await Task.detached {
                         let formatter = RollupBuilder.dayFormatter()
@@ -117,10 +162,17 @@ final class AppDetailPresenter {
     static func windowStart(
         range: EnergyRange,
         usesStoredHistory: Bool,
+        isServerHistory: Bool = false,
         earliestStoredStart: Date?,
         now: Date,
         calendar: Calendar = .current
     ) -> Date {
+        if isServerHistory {
+            return range.macMiniWindowStart(
+                now: now,
+                recordingSince: earliestStoredStart,
+                calendar: calendar)
+        }
         if usesStoredHistory {
             if range == .allTime {
                 return earliestStoredStart ?? now

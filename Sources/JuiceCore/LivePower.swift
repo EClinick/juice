@@ -24,9 +24,16 @@ public struct AppPowerReading: Identifiable, Equatable, Sendable {
 
 /// The model's per-tick output.
 public struct LivePowerReading: Equatable, Sendable {
+    /// Timestamp captured by the privileged helper with the cumulative energy
+    /// snapshot that produced this reading. Synthetic callers may omit it.
+    public let sampledAt: Date?
     /// Ranked apps above the idle threshold, in display order (hysteresis
     /// applied).
     public let apps: [AppPowerReading]
+    /// Every attributed app above the model's pruning floor, including apps
+    /// below the display threshold. Persistence uses this complete collection
+    /// so the idle bucket does not hide app energy from history.
+    public let attributedApps: [AppPowerReading]
     /// Apps folded below the idle threshold.
     public let idleAppCount: Int
     public let idleWatts: Double
@@ -35,15 +42,22 @@ public struct LivePowerReading: Equatable, Sendable {
     public let totalAppWatts: Double
     /// Smoothed watts for processes that could not be attributed to any .app.
     public let systemWatts: Double
+    /// Current metered SoC power across attributed apps and system processes.
+    /// The underlying counters cover CPU, GPU, and Neural Engine energy.
+    public var totalMeteredWatts: Double { totalAppWatts + systemWatts }
 
     public init(
+        sampledAt: Date? = nil,
         apps: [AppPowerReading],
+        attributedApps: [AppPowerReading]? = nil,
         idleAppCount: Int,
         idleWatts: Double,
         totalAppWatts: Double,
         systemWatts: Double
     ) {
+        self.sampledAt = sampledAt
         self.apps = apps
+        self.attributedApps = attributedApps ?? apps
         self.idleAppCount = idleAppCount
         self.idleWatts = idleWatts
         self.totalAppWatts = totalAppWatts
@@ -190,7 +204,7 @@ public final class LivePowerModel {
         }
 
         // 4. Build ranked apps with hysteresis, idle fold, and system bucket.
-        return buildReading()
+        return buildReading(timestampEpoch: snapshot.timestampEpoch)
     }
 
     /// Cumulative counters only increase; a decrease means the coalition id was
@@ -291,7 +305,7 @@ public final class LivePowerModel {
     /// entries this small are dropped rather than smoothed forever.
     private static let pruneFloorWatts = 0.0001
 
-    private func buildReading() -> LivePowerReading {
+    private func buildReading(timestampEpoch: Double) -> LivePowerReading {
         let systemWatts = max(0, smoothedWatts[Self.systemKey] ?? 0)
 
         // Candidate app entries (everything except the system bucket).
@@ -321,9 +335,23 @@ public final class LivePowerModel {
                 watts: watts
             )
         }
+        let attributedApps = entries.sorted {
+            if $0.watts != $1.watts { return $0.watts > $1.watts }
+            return $0.key < $1.key
+        }.map { entry in
+            let meta = appMeta[entry.key]
+            return AppPowerReading(
+                appKey: entry.key,
+                bundlePath: meta?.bundlePath,
+                displayName: meta?.displayName ?? entry.key,
+                watts: entry.watts
+            )
+        }
 
         return LivePowerReading(
+            sampledAt: Date(timeIntervalSince1970: timestampEpoch),
             apps: apps,
+            attributedApps: attributedApps,
             idleAppCount: idle.count,
             idleWatts: idleWatts,
             totalAppWatts: totalAppWatts,
