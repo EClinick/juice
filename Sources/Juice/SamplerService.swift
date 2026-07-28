@@ -128,9 +128,22 @@ actor SamplerService {
     func recordServerReading(_ reading: LivePowerReading, at now: Date = Date()) async {
         if let previousDate = lastServerReadingDate,
            let lastServerReading {
-            // Source timestamps must advance monotonically. Rejecting a stale
-            // delivery prevents a delayed task from creating a negative or
-            // overlapping integration interval.
+            // A wall-clock correction can move helper timestamps backward.
+            // Persist the completed tail and rebase every cadence timestamp;
+            // otherwise all recording would stall until the clock caught up.
+            if now < previousDate {
+                do {
+                    try persistPendingServerHistory()
+                } catch {
+                    NSLog("Juice: failed to persist server history before clock rebase: \(error)")
+                }
+                self.lastServerReading = reading
+                lastServerReadingDate = now
+                lastSystemPowerAggregateFlush = now
+                lastServerRollupCheck = now
+                return
+            }
+            // Duplicate source timestamps have no duration to integrate.
             guard now > previousDate else { return }
             accumulateSystemPower(
                 previousWatts: lastServerReading.totalMeteredWatts,

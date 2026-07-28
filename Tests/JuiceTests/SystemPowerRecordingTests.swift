@@ -99,8 +99,8 @@ struct SystemPowerRecordingTests {
         #expect(summary.coveredDuration == 60)
     }
 
-    @Test("Non-monotonic server readings are ignored")
-    func ignoresNonMonotonicReadings() async throws {
+    @Test("Backward clock changes rebase server recording")
+    func rebasesAfterBackwardClockChange() async throws {
         let path = FileManager.default.temporaryDirectory
             .appendingPathComponent("juice-power-test-\(UUID().uuidString).sqlite").path
         let store = try JuiceStore(path: path)
@@ -112,16 +112,17 @@ struct SystemPowerRecordingTests {
             reading(appWatts: 20),
             at: t0.addingTimeInterval(2))
         await recorder.recordServerReading(
-            reading(appWatts: 100),
+            reading(appWatts: 30),
             at: t0.addingTimeInterval(1))
         await recorder.recordServerReading(
-            reading(appWatts: 20),
-            at: t0.addingTimeInterval(60))
+            reading(appWatts: 30),
+            at: t0.addingTimeInterval(3))
+        await recorder.flushServerHistory()
 
         let totals = try store.systemAppEnergyTotals(
             since: t0,
             until: t0.addingTimeInterval(120))
-        let expectedJoules: Double = 30 + 1_160
+        let expectedJoules: Double = 30 + 60
         let expectedWh = expectedJoules / 3_600
 
         #expect(abs((totals.first?.energyWh ?? 0) - expectedWh) < 1e-9)
