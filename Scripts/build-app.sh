@@ -116,7 +116,7 @@ fi
 # Verify the link-time framework path survived the optional universal merge
 # before applying one fresh signature to the completed executable.
 if ! otool -l "$APP_PATH/Contents/MacOS/Juice" \
-    | grep -Fq "path @executable_path/../Frameworks"; then
+    | grep -F "path @executable_path/../Frameworks" >/dev/null; then
     echo "Juice executable is missing its app-bundle framework rpath." >&2
     exit 1
 fi
