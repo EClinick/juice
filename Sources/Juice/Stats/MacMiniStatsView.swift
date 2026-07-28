@@ -14,6 +14,7 @@ struct MacMiniStatsView: View {
     @State private var consumerID = UUID()
     @State private var range: EnergyRange = .today
     @State private var data: MacMiniPowerDashboardData?
+    @State private var loadedRange: EnergyRange?
     @State private var loadError: String?
     @State private var refreshedAt = Date()
 
@@ -441,14 +442,16 @@ struct MacMiniStatsView: View {
     }
 
     private func load() async {
-        data = nil
-        loadError = nil
+        let requestedRange = range
+        if loadedRange != requestedRange {
+            data = nil
+            loadError = nil
+        }
         guard let store else {
             data = nil
             loadError = "The local server history store is unavailable."
             return
         }
-        let requestedRange = range
         let now = Date()
         do {
             let loaded = try await Task.detached {
@@ -459,11 +462,14 @@ struct MacMiniStatsView: View {
             }.value
             guard !Task.isCancelled, requestedRange == range else { return }
             data = loaded
+            loadedRange = requestedRange
             loadError = nil
             refreshedAt = now
         } catch {
             guard !Task.isCancelled, requestedRange == range else { return }
-            data = nil
+            if loadedRange != requestedRange {
+                data = nil
+            }
             loadError = error.localizedDescription
         }
     }

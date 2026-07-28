@@ -287,6 +287,98 @@ private func makeStore() throws -> JuiceStore {
         #expect(summary.peakWatts == 20)
     }
 
+    @Test func longRangeSystemPowerReportAggregatesInStorage() throws {
+        let store = try makeStore()
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let samples = (0..<180).map { index in
+            let coverageStart = start.addingTimeInterval(Double(index) * 60)
+            return StoredSystemPowerSample(
+                date: coverageStart,
+                watts: 12,
+                coveredDuration: 60,
+                energyWh: 0.2,
+                peakWatts: 12,
+                coverageStart: coverageStart,
+                coverageEnd: coverageStart.addingTimeInterval(60))
+        }
+        try store.addSystemPowerAggregates(samples)
+
+        let report = try store.systemPowerReport(
+            since: start,
+            until: start.addingTimeInterval(180 * 60),
+            bucketDuration: 60 * 60)
+
+        #expect(report.summary.sampleCount == 180)
+        #expect(abs(report.summary.energyWh - 36) < 1e-9)
+        #expect(report.summary.coveredDuration == 180 * 60)
+        #expect(report.summary.averageWatts == 12)
+        #expect(report.summary.peakWatts == 12)
+        #expect(report.buckets.count == 3)
+        #expect(report.buckets.map(\.sampleCount) == [60, 60, 60])
+        #expect(report.buckets.allSatisfy { $0.averageWatts == 12 })
+    }
+
+    @Test func longRangeSystemPowerReportPreservesRecordingGaps() throws {
+        let store = try makeStore()
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        try store.addSystemPowerAggregates([
+            StoredSystemPowerSample(
+                date: start,
+                watts: 6,
+                coveredDuration: 60,
+                energyWh: 0.1,
+                peakWatts: 6,
+                coverageStart: start,
+                coverageEnd: start.addingTimeInterval(60)),
+            StoredSystemPowerSample(
+                date: start.addingTimeInterval(20 * 60),
+                watts: 12,
+                coveredDuration: 60,
+                energyWh: 0.2,
+                peakWatts: 12,
+                coverageStart: start.addingTimeInterval(20 * 60),
+                coverageEnd: start.addingTimeInterval(21 * 60)),
+        ])
+
+        let report = try store.systemPowerReport(
+            since: start,
+            until: start.addingTimeInterval(60 * 60),
+            bucketDuration: 60 * 60)
+
+        #expect(report.buckets.count == 2)
+        #expect(report.buckets.map(\.start) == [start, start])
+        #expect(report.buckets.map(\.continuity) == [0, 1])
+        #expect(report.buckets.map(\.averageWatts) == [6, 12])
+    }
+
+    @Test func longRangeSystemPowerReportSplitsBucketBoundaries() throws {
+        let store = try makeStore()
+        let windowStart = Date(timeIntervalSince1970: 1_700_000_000)
+        let coverageStart = windowStart.addingTimeInterval(58)
+        try store.addSystemPowerAggregates([
+            StoredSystemPowerSample(
+                date: coverageStart,
+                watts: 6,
+                coveredDuration: 60,
+                energyWh: 0.1,
+                peakWatts: 6,
+                coverageStart: coverageStart,
+                coverageEnd: coverageStart.addingTimeInterval(60)),
+        ])
+
+        let report = try store.systemPowerReport(
+            since: windowStart,
+            until: windowStart.addingTimeInterval(120),
+            bucketDuration: 60)
+
+        #expect(report.buckets.map(\.start) == [
+            windowStart,
+            windowStart.addingTimeInterval(60),
+        ])
+        #expect(report.buckets.allSatisfy { abs($0.averageWatts - 6) < 1e-9 })
+        #expect(abs(report.summary.energyWh - 0.1) < 1e-9)
+    }
+
     @Test func pruneSystemPowerSamplesKeepsRecentHistory() throws {
         let store = try makeStore()
         let now = Date(timeIntervalSince1970: 1_700_000_000)

@@ -86,21 +86,32 @@ enum MacMiniPowerDataLoader {
         let bucketDuration = range.macMiniBucketDuration(
             windowStart: start,
             now: now)
-        let samples = try store.systemPowerSamples(since: start, until: now)
+        let report: (summary: SystemPowerSummary, buckets: [SystemPowerBucket])
+        if range == .allTime {
+            report = try store.systemPowerReport(
+                since: start,
+                until: now,
+                bucketDuration: bucketDuration)
+        } else {
+            let samples = try store.systemPowerSamples(since: start, until: now)
+            report = (
+                SystemPowerAnalytics.summary(
+                    samples: samples,
+                    windowStart: start,
+                    windowEnd: now),
+                SystemPowerAnalytics.buckets(
+                    samples: samples,
+                    windowStart: start,
+                    windowEnd: now,
+                    bucketDuration: bucketDuration))
+        }
         // App energy is persisted in hour-aligned buckets. All Time can begin
         // at an arbitrary minute, so include the bucket containing that first
         // sample; it contains no energy from before Juice started recording.
         let appStart = calendar.dateInterval(of: .hour, for: start)?.start ?? start
         return MacMiniPowerDashboardData(
-            summary: SystemPowerAnalytics.summary(
-                samples: samples,
-                windowStart: start,
-                windowEnd: now),
-            buckets: SystemPowerAnalytics.buckets(
-                samples: samples,
-                windowStart: start,
-                windowEnd: now,
-                bucketDuration: bucketDuration),
+            summary: report.summary,
+            buckets: report.buckets,
             recordingSince: recordingSince,
             bucketDuration: bucketDuration,
             appTotals: try store.systemAppEnergyTotals(since: appStart, until: now))
