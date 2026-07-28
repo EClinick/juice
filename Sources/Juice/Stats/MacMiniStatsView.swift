@@ -168,7 +168,7 @@ struct MacMiniStatsView: View {
                     .frame(width: 72, alignment: .trailing)
                 Text("PEAK W")
                     .frame(width: 64, alignment: .trailing)
-                Color.clear.frame(width: 10)
+                Color.clear.frame(width: 10, height: 1)
             }
             .font(.system(size: 9, weight: .semibold))
             .foregroundStyle(.tertiary)
@@ -379,7 +379,19 @@ struct MacMiniStatsView: View {
                         .foregroundStyle(.green)
                         .lineStyle(StrokeStyle(lineWidth: 2))
                 }
-                .chartXScale(domain: data.summary.windowStart...data.summary.windowEnd)
+                .chartXScale(
+                    domain: data.summary.windowStart...data.summary.windowEnd,
+                    range: .plotDimension(padding: 10))
+                .chartXAxis {
+                    AxisMarks(values: .automatic(desiredCount: 4)) { value in
+                        AxisGridLine().foregroundStyle(.quaternary)
+                        AxisValueLabel {
+                            if let date = value.as(Date.self) {
+                                Text(range.macMiniAxisLabel(date))
+                            }
+                        }
+                    }
+                }
                 .chartYAxis {
                     AxisMarks(position: .leading) { value in
                         AxisGridLine().foregroundStyle(.quaternary)

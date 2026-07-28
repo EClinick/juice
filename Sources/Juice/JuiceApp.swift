@@ -61,7 +61,7 @@ struct JuiceApp: App {
                 for: .menuBar(Self.menuBarConsumerID))
         }
 
-        #if DEV_HELPER
+        #if DEV_HELPER || DEBUG
         // Deterministic native-window entry point for development UI
         // verification. It is absent from production builds and does nothing
         // unless explicitly requested on the command line.

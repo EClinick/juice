@@ -86,7 +86,7 @@ enum StatusItemVisibilityGuard {
         }
     }
 
-    #if DEV_HELPER
+    #if DEV_HELPER || DEBUG
     /// Deterministically opens the MenuBarExtra in development builds so the
     /// rendered popover can be verified without guessing a menu bar position.
     static func showPopoverForTesting(attemptsLeft: Int = 60) {

@@ -95,7 +95,10 @@ struct PopoverView: View {
                         refreshGeneration: serverRefreshGeneration)
                 }
                 .scrollIndicators(.never)
-                .frame(maxHeight: 680)
+                // A ScrollView has no useful intrinsic height inside
+                // MenuBarExtra. Without an explicit viewport the popover can
+                // collapse to the action footer and hide the dashboard.
+                .frame(height: 600)
             } else if let r = model.reading, r.hasBattery {
                 HStack {
                     Text("Battery - \(r.percent)%")

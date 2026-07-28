@@ -378,7 +378,8 @@ struct MacMiniPowerView: View {
                 }
                 .chartYScale(domain: 0...upperBound)
                 .chartXScale(
-                    domain: dashboard.summary.windowStart...dashboard.summary.windowEnd)
+                    domain: dashboard.summary.windowStart...dashboard.summary.windowEnd,
+                    range: .plotDimension(padding: 8))
                 .chartYAxis {
                     AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
                         AxisGridLine()
