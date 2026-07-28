@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 import JuiceXPCShared
 @testable import JuiceCore
 
@@ -48,6 +49,7 @@ import JuiceXPCShared
         #expect(app != nil)
         #expect(app?.appKey == appAKey)
         #expect(abs((app?.watts ?? 0) - 1.0) < 1e-6)
+        #expect(reading?.sampledAt == Date(timeIntervalSince1970: 2))
     }
 
     @Test func wattsSumCPUGPUAndANE() {

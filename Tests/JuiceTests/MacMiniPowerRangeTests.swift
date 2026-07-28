@@ -133,4 +133,73 @@ struct MacMiniPowerRangeTests {
         #expect(all.summary.sampleCount == 4)
         #expect(Set(all.appTotals.map(\.appKey)) == ["today", "week", "old"])
     }
+
+    @Test("All includes the first partial app-energy hour")
+    func allIncludesFirstPartialAppHour() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("juice-server-partial-hour-\(UUID().uuidString).sqlite").path
+        let store = try JuiceStore(path: path)
+        let hourStart = utcCalendar.date(
+            from: DateComponents(
+                calendar: utcCalendar,
+                timeZone: utcCalendar.timeZone,
+                year: 2027,
+                month: 1,
+                day: 10,
+                hour: 10))!
+        let firstSample = hourStart.addingTimeInterval(35 * 60)
+        let now = hourStart.addingTimeInterval(2 * 3600)
+
+        try store.insertSystemPowerSample(ts: firstSample, watts: 8)
+        try store.insertSystemPowerSample(
+            ts: firstSample.addingTimeInterval(60),
+            watts: 10)
+        try store.addSystemAppEnergy([
+            StoredSystemAppEnergyBucket(
+                bucketStart: hourStart,
+                appKey: "first-hour",
+                displayName: "First Hour",
+                energyWh: 0.25,
+                activeDuration: 25 * 60,
+                peakWatts: 10),
+        ])
+
+        let all = try MacMiniPowerDataLoader.load(
+            store: store,
+            range: .allTime,
+            now: now,
+            calendar: utcCalendar)
+
+        #expect(all.recordingSince == firstSample)
+        #expect(all.appTotals.map(\.appKey) == ["first-hour"])
+        #expect(all.appTotals.first?.energyWh == 0.25)
+    }
+
+    @Test("Both server charts split recording gaps into separate segments")
+    func chartSegmentsPreserveGaps() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let buckets = [
+            SystemPowerBucket(
+                start: start,
+                averageWatts: 4,
+                peakWatts: 5,
+                sampleCount: 1),
+            SystemPowerBucket(
+                start: start.addingTimeInterval(60),
+                averageWatts: 5,
+                peakWatts: 6,
+                sampleCount: 1),
+            SystemPowerBucket(
+                start: start.addingTimeInterval(10 * 60),
+                averageWatts: 7,
+                peakWatts: 8,
+                sampleCount: 1),
+        ]
+
+        let points = MacMiniPowerChartSegments.points(
+            buckets,
+            bucketDuration: 60)
+
+        #expect(points.map(\.segment) == [0, 0, 1])
+    }
 }

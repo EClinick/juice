@@ -351,18 +351,23 @@ struct MacMiniStatsView: View {
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, minHeight: 150)
             } else {
-                Chart(data.buckets) { bucket in
+                let points = MacMiniPowerChartSegments.points(
+                    data.buckets,
+                    bucketDuration: data.bucketDuration)
+                Chart(points) { point in
                     AreaMark(
-                        x: .value("Time", bucket.start),
-                        y: .value("Average watts", bucket.averageWatts))
+                        x: .value("Time", point.bucket.start),
+                        y: .value("Average watts", point.bucket.averageWatts),
+                        series: .value("Continuous recording", point.segment))
                         .foregroundStyle(
                             .linearGradient(
                                 colors: [.green.opacity(0.25), .green.opacity(0.02)],
                                 startPoint: .top,
                                 endPoint: .bottom))
                     LineMark(
-                        x: .value("Time", bucket.start),
-                        y: .value("Average watts", bucket.averageWatts))
+                        x: .value("Time", point.bucket.start),
+                        y: .value("Average watts", point.bucket.averageWatts),
+                        series: .value("Continuous recording", point.segment))
                         .foregroundStyle(.green)
                         .lineStyle(StrokeStyle(lineWidth: 2))
                 }

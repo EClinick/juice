@@ -24,6 +24,9 @@ public struct AppPowerReading: Identifiable, Equatable, Sendable {
 
 /// The model's per-tick output.
 public struct LivePowerReading: Equatable, Sendable {
+    /// Timestamp captured by the privileged helper with the cumulative energy
+    /// snapshot that produced this reading. Synthetic callers may omit it.
+    public let sampledAt: Date?
     /// Ranked apps above the idle threshold, in display order (hysteresis
     /// applied).
     public let apps: [AppPowerReading]
@@ -40,12 +43,14 @@ public struct LivePowerReading: Equatable, Sendable {
     public var totalMeteredWatts: Double { totalAppWatts + systemWatts }
 
     public init(
+        sampledAt: Date? = nil,
         apps: [AppPowerReading],
         idleAppCount: Int,
         idleWatts: Double,
         totalAppWatts: Double,
         systemWatts: Double
     ) {
+        self.sampledAt = sampledAt
         self.apps = apps
         self.idleAppCount = idleAppCount
         self.idleWatts = idleWatts
@@ -193,7 +198,7 @@ public final class LivePowerModel {
         }
 
         // 4. Build ranked apps with hysteresis, idle fold, and system bucket.
-        return buildReading()
+        return buildReading(timestampEpoch: snapshot.timestampEpoch)
     }
 
     /// Cumulative counters only increase; a decrease means the coalition id was
@@ -294,7 +299,7 @@ public final class LivePowerModel {
     /// entries this small are dropped rather than smoothed forever.
     private static let pruneFloorWatts = 0.0001
 
-    private func buildReading() -> LivePowerReading {
+    private func buildReading(timestampEpoch: Double) -> LivePowerReading {
         let systemWatts = max(0, smoothedWatts[Self.systemKey] ?? 0)
 
         // Candidate app entries (everything except the system bucket).
@@ -326,6 +331,7 @@ public final class LivePowerModel {
         }
 
         return LivePowerReading(
+            sampledAt: Date(timeIntervalSince1970: timestampEpoch),
             apps: apps,
             idleAppCount: idle.count,
             idleWatts: idleWatts,

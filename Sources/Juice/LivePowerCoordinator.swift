@@ -108,7 +108,7 @@ final class LivePowerCoordinator: ObservableObject {
     @Published private(set) var todayResult: EnergySourceSelector.TopAppsResult?
     /// Optional app-level observer used by Mac mini mode to persist the shared
     /// live reading without creating a second polling loop.
-    var onReading: ((LivePowerReading) -> Void)?
+    var onReading: (@Sendable (LivePowerReading) async -> Void)?
 
     private let source: LivePowerSource
     private let loadToday: () async -> EnergySourceSelector.TopAppsResult
@@ -121,6 +121,9 @@ final class LivePowerCoordinator: ObservableObject {
     /// Sampling runs while non-empty; history refreshes while any value is true.
     private var attached: [Consumer: Bool] = [:]
     private var readingObservation: Task<Void, Never>?
+    /// Serializes optional persistence delivery in source order. A new live
+    /// tick never races an older tick into the sampler actor.
+    private var readingDelivery: Task<Void, Never>?
     private var statusObservation: Task<Void, Never>?
     private var todayRefresh: Task<Void, Never>?
     /// The manual (retry) refresh task, tracked so it is cancelled and replaced
@@ -317,8 +320,12 @@ final class LivePowerCoordinator: ObservableObject {
     func apply(reading: LivePowerReading?) {
         self.reading = reading
         systemLoadWatts = reading == nil ? nil : loadSystemLoad()
-        if let reading {
-            onReading?(reading)
+        if let reading, let onReading {
+            let previousDelivery = readingDelivery
+            readingDelivery = Task {
+                await previousDelivery?.value
+                await onReading(reading)
+            }
         }
         recomputeHybrid()
     }

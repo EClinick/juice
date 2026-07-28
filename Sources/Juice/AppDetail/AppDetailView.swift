@@ -221,7 +221,7 @@ struct AppDetailView: View {
                 Text(displayName)
                     .font(.title3.weight(.semibold))
                     .lineLimit(1)
-                Text("\(String(format: "%.1f Wh", breakdown.totalWh)) · \(rangeLabel)")
+                Text("\(detailEnergyText(breakdown.totalWh)) · \(rangeLabel)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -315,7 +315,7 @@ struct AppDetailView: View {
                     AxisGridLine().foregroundStyle(Color.secondary.opacity(0.15))
                     AxisValueLabel {
                         if let wh = value.as(Double.self) {
-                            Text(String(format: "%.1f Wh", wh))
+                            Text(detailEnergyText(wh))
                                 .font(.system(size: 8))
                                 .foregroundStyle(.secondary)
                         }
@@ -505,21 +505,25 @@ struct AppDetailView: View {
     }
 
     private func serverSummary(_ breakdown: AppEnergyBreakdown) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        let activeHoursText = String(format: "%.1f", breakdown.activeHours)
+        let averageWattsText = liveWattsText(
+            breakdown.activeHours > 0
+                ? breakdown.totalWh / breakdown.activeHours
+                : 0)
+        return VStack(alignment: .leading, spacing: 4) {
             Text("Server activity")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if breakdown.activeHours > 0 {
-                Text(String(
-                    format: "Active for %.1f hours, averaging %.1f W while active.",
-                    breakdown.activeHours,
-                    breakdown.totalWh / breakdown.activeHours))
+                Text(
+                    "Active for \(activeHoursText) hours, "
+                    + "averaging \(averageWattsText) while active.")
                     .font(.callout)
             } else {
                 Text("No measurable app energy was recorded in this range.")
                     .font(.callout)
             }
-            Text("Recorded directly from the Mac's live app energy accounting every minute.")
+            Text("Integrated from live app energy readings and saved every minute.")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
@@ -544,7 +548,10 @@ struct AppDetailView: View {
     }
 
     private func statLine(_ breakdown: AppEnergyBreakdown) -> some View {
-        HStack(spacing: 6) {
+        let averageWatts = breakdown.activeHours > 0
+            ? breakdown.totalWh / breakdown.activeHours
+            : 0
+        return HStack(spacing: 6) {
             if resolution != .serverHourly {
                 Text(String(format: "%.1f CPU-hours", breakdown.cpuHours))
             }
@@ -552,14 +559,24 @@ struct AppDetailView: View {
                 if resolution != .serverHourly {
                     Text("·")
                 }
-                Text(String(format: "%.1f W average while active",
-                            breakdown.totalWh / breakdown.activeHours))
+                if resolution == .serverHourly {
+                    Text("\(liveWattsText(averageWatts)) average while active")
+                } else {
+                    Text(String(format: "%.1f W average while active",
+                                averageWatts))
+                }
             }
             Spacer()
         }
         .font(.caption)
         .foregroundStyle(.secondary)
         .monospacedDigit()
+    }
+
+    private func detailEnergyText(_ wattHours: Double) -> String {
+        resolution == .serverHourly
+            ? serverEnergyText(wattHours)
+            : String(format: "%.1f Wh", wattHours)
     }
 }
 

@@ -8,6 +8,14 @@ import JuiceXPCShared
 /// Mirrors ``StatsWindowPresenter``: a single window is reused across
 /// invocations, with its content (and title) swapped to the requested app.
 final class AppDetailPresenter {
+    private enum ServerHistoryError: LocalizedError {
+        case storeUnavailable
+
+        var errorDescription: String? {
+            "Server app history is unavailable because the local Juice store could not be opened."
+        }
+    }
+
     static let shared = AppDetailPresenter()
 
     private var window: NSWindow?
@@ -55,8 +63,10 @@ final class AppDetailPresenter {
             displayName: displayName,
             bundleId: appKey,
             rangeLabel: session.map(BatterySessionFormatting.title)
-                ?? ((range == .week || range == .allTime) && store == nil
-                    ? "Available PowerLog history" : range.rawValue),
+                ?? (isServerHistory
+                    ? range.rawValue
+                    : ((range == .week || range == .allTime) && store == nil
+                        ? "Available PowerLog history" : range.rawValue)),
             windowStart: windowStart,
             windowEnd: windowEnd,
             windowHours: windowHours,
@@ -64,7 +74,10 @@ final class AppDetailPresenter {
                 ? .serverHourly
                 : (store == nil ? .hourlyComponents : .dailyTotals),
             provider: {
-                if isServerHistory, let store {
+                if isServerHistory {
+                    guard let store else {
+                        throw ServerHistoryError.storeUnavailable
+                    }
                     return try await Task.detached {
                         let buckets = try store.systemAppEnergyBuckets(
                             appKey: appKey,

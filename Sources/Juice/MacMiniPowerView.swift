@@ -87,6 +87,10 @@ enum MacMiniPowerDataLoader {
             windowStart: start,
             now: now)
         let samples = try store.systemPowerSamples(since: start, until: now)
+        // App energy is persisted in hour-aligned buckets. All Time can begin
+        // at an arbitrary minute, so include the bucket containing that first
+        // sample; it contains no energy from before Juice started recording.
+        let appStart = calendar.dateInterval(of: .hour, for: start)?.start ?? start
         return MacMiniPowerDashboardData(
             summary: SystemPowerAnalytics.summary(
                 samples: samples,
@@ -99,14 +103,32 @@ enum MacMiniPowerDataLoader {
                 bucketDuration: bucketDuration),
             recordingSince: recordingSince,
             bucketDuration: bucketDuration,
-            appTotals: try store.systemAppEnergyTotals(since: start, until: now))
+            appTotals: try store.systemAppEnergyTotals(since: appStart, until: now))
     }
 }
 
-private struct MacMiniPowerChartPoint: Identifiable {
+struct MacMiniPowerChartPoint: Identifiable {
     var id: Date { bucket.start }
     var bucket: SystemPowerBucket
     var segment: Int
+}
+
+enum MacMiniPowerChartSegments {
+    static func points(
+        _ buckets: [SystemPowerBucket],
+        bucketDuration: TimeInterval
+    ) -> [MacMiniPowerChartPoint] {
+        var segment = 0
+        var previous: Date?
+        return buckets.map { bucket in
+            if let previous,
+               bucket.start.timeIntervalSince(previous) > bucketDuration * 1.5 {
+                segment += 1
+            }
+            previous = bucket.start
+            return MacMiniPowerChartPoint(bucket: bucket, segment: segment)
+        }
+    }
 }
 
 /// Server-oriented Mac mini dashboard: a live reading plus persisted,
@@ -116,6 +138,7 @@ struct MacMiniPowerView: View {
     @ObservedObject private var helper = HelperRegistrationController.shared
 
     let store: JuiceStore?
+    let refreshGeneration: Int
 
     @State private var consumerID = UUID()
     @State private var range: EnergyRange = .today
@@ -210,7 +233,7 @@ struct MacMiniPowerView: View {
                     .controlSize(.small)
             }
         }
-        .task(id: range) {
+        .task(id: LoadRequest(range: range, generation: refreshGeneration)) {
             syncLiveAttachment()
             await loadDashboard()
         }
@@ -227,6 +250,11 @@ struct MacMiniPowerView: View {
         .onDisappear {
             live.setAttached(false, for: .popover(consumerID))
         }
+    }
+
+    private struct LoadRequest: Hashable {
+        var range: EnergyRange
+        var generation: Int
     }
 
     @ViewBuilder
@@ -323,7 +351,9 @@ struct MacMiniPowerView: View {
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, minHeight: 92, alignment: .center)
             } else {
-                let points = chartPoints(buckets)
+                let points = MacMiniPowerChartSegments.points(
+                    buckets,
+                    bucketDuration: dashboard.bucketDuration)
                 let upperBound = max(1, (buckets.map(\.peakWatts).max() ?? 1) * 1.15)
                 Chart(points) { point in
                     AreaMark(
@@ -398,20 +428,6 @@ struct MacMiniPowerView: View {
         .foregroundStyle(.secondary)
     }
 
-    private func chartPoints(_ buckets: [SystemPowerBucket]) -> [MacMiniPowerChartPoint] {
-        var segment = 0
-        var previous: Date?
-        let bucketDuration = dashboard?.bucketDuration ?? 60
-        return buckets.map { bucket in
-            if let previous,
-               bucket.start.timeIntervalSince(previous) > bucketDuration * 1.5 {
-                segment += 1
-            }
-            previous = bucket.start
-            return MacMiniPowerChartPoint(bucket: bucket, segment: segment)
-        }
-    }
-
     private func loadDashboard() async {
         guard let store else {
             dashboard = nil
@@ -447,7 +463,7 @@ struct MacMiniPowerView: View {
             historyError = nil
             loadedAppRange = requestedRange
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, requestedRange == range else { return }
             dashboard = nil
             loadError = "Could not load power history: \(error.localizedDescription)"
             historyApps = []

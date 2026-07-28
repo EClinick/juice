@@ -37,9 +37,9 @@ struct JuiceApp: App {
         // current even while the popover is closed.
         if isMacMini {
             LivePowerCoordinator.shared.onReading = { reading in
-                Task {
-                    await Self.sampler?.recordServerReading(reading)
-                }
+                await Self.sampler?.recordServerReading(
+                    reading,
+                    at: reading.sampledAt ?? Date())
             }
             LivePowerCoordinator.shared.setAttached(
                 true,

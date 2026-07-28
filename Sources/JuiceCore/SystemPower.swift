@@ -161,9 +161,8 @@ public struct SystemPowerSummary: Sendable, Equatable {
     }
 }
 
-/// One chart bucket. Samples are stored at a one-minute cadence, so an
-/// arithmetic mean accurately represents normal buckets without inventing
-/// values across periods when Juice was not running.
+/// One chart bucket derived from the same gap-aware, time-weighted segments as
+/// the summary, so uneven scheduling cannot bias its average.
 public struct SystemPowerBucket: Identifiable, Sendable, Equatable {
     public var id: Date { start }
     public var start: Date
@@ -185,6 +184,13 @@ public struct SystemPowerBucket: Identifiable, Sendable, Equatable {
 }
 
 public enum SystemPowerAnalytics {
+    private struct BucketAccumulator {
+        var energyWh = 0.0
+        var coveredDuration = 0.0
+        var peakWatts = 0.0
+        var segmentCount = 0
+    }
+
     /// Integrates consecutive samples using a trapezoid. Segments separated by
     /// more than `maximumGap` are omitted so app downtime is reported as
     /// missing coverage rather than fabricated server energy.
@@ -238,28 +244,64 @@ public enum SystemPowerAnalytics {
         samples: [StoredSystemPowerSample],
         windowStart: Date,
         windowEnd: Date,
-        bucketDuration: TimeInterval
+        bucketDuration: TimeInterval,
+        maximumGap: TimeInterval = 5 * 60
     ) -> [SystemPowerBucket] {
         guard windowEnd > windowStart, bucketDuration > 0 else { return [] }
 
-        var valuesByBucket: [Int: [Double]] = [:]
-        for sample in samples
-            where sample.date >= windowStart
-                && sample.date <= windowEnd
-                && sample.watts.isFinite
-                && sample.watts >= 0 {
-            let offset = sample.date.timeIntervalSince(windowStart)
-            let index = Int(floor(offset / bucketDuration))
-            valuesByBucket[index, default: []].append(sample.watts)
+        let ordered = samples
+            .filter { $0.date >= windowStart && $0.date <= windowEnd }
+            .filter { $0.watts.isFinite && $0.watts >= 0 }
+            .sorted { $0.date < $1.date }
+        var accumulators: [Int: BucketAccumulator] = [:]
+
+        for (previous, current) in zip(ordered, ordered.dropFirst()) {
+            let fullDuration = current.date.timeIntervalSince(previous.date)
+            guard fullDuration > 0, fullDuration <= maximumGap else { continue }
+
+            var segmentStart = previous.date
+            while segmentStart < current.date {
+                let offset = segmentStart.timeIntervalSince(windowStart)
+                let index = max(0, Int(floor(offset / bucketDuration)))
+                let bucketEnd = min(
+                    current.date,
+                    windowStart.addingTimeInterval(Double(index + 1) * bucketDuration))
+                let segmentDuration = bucketEnd.timeIntervalSince(segmentStart)
+                guard segmentDuration > 0 else { break }
+
+                let startFraction = segmentStart.timeIntervalSince(previous.date)
+                    / fullDuration
+                let endFraction = bucketEnd.timeIntervalSince(previous.date)
+                    / fullDuration
+                let startWatts = previous.watts
+                    + (current.watts - previous.watts) * startFraction
+                let endWatts = previous.watts
+                    + (current.watts - previous.watts) * endFraction
+
+                var accumulator = accumulators[index] ?? BucketAccumulator()
+                accumulator.energyWh += (startWatts + endWatts) / 2
+                    * segmentDuration / 3600
+                accumulator.coveredDuration += segmentDuration
+                accumulator.peakWatts = max(
+                    accumulator.peakWatts,
+                    max(startWatts, endWatts))
+                accumulator.segmentCount += 1
+                accumulators[index] = accumulator
+                segmentStart = bucketEnd
+            }
         }
 
-        return valuesByBucket.keys.sorted().compactMap { index in
-            guard let values = valuesByBucket[index], !values.isEmpty else { return nil }
+        return accumulators.keys.sorted().compactMap { index in
+            guard let accumulator = accumulators[index],
+                  accumulator.coveredDuration > 0 else {
+                return nil
+            }
             return SystemPowerBucket(
                 start: windowStart.addingTimeInterval(Double(index) * bucketDuration),
-                averageWatts: values.reduce(0, +) / Double(values.count),
-                peakWatts: values.max() ?? 0,
-                sampleCount: values.count)
+                averageWatts: accumulator.energyWh * 3600
+                    / accumulator.coveredDuration,
+                peakWatts: accumulator.peakWatts,
+                sampleCount: accumulator.segmentCount)
         }
     }
 }

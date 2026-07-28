@@ -60,7 +60,7 @@ struct SystemPowerAnalyticsTests {
         #expect(abs(summary.coverageFraction - (120.0 / 660.0)) < 1e-9)
     }
 
-    @Test("Buckets preserve empty gaps and average recorded values")
+    @Test("Buckets preserve empty gaps")
     func buckets() {
         let buckets = SystemPowerAnalytics.buckets(
             samples: [
@@ -73,14 +73,48 @@ struct SystemPowerAnalyticsTests {
             windowEnd: t0.addingTimeInterval(60 * 60),
             bucketDuration: 15 * 60)
 
+        #expect(buckets.map(\.start) == [t0])
+        #expect(buckets.map(\.averageWatts) == [15])
+        #expect(buckets.map(\.peakWatts) == [20])
+        #expect(buckets.map(\.sampleCount) == [1])
+    }
+
+    @Test("Bucket averages are time weighted under uneven scheduling")
+    func timeWeightedBuckets() throws {
+        let buckets = SystemPowerAnalytics.buckets(
+            samples: [
+                sample(0, watts: 0),
+                sample(60, watts: 60),
+                sample(240, watts: 60),
+            ],
+            windowStart: t0,
+            windowEnd: t0.addingTimeInterval(5 * 60),
+            bucketDuration: 5 * 60)
+
+        let bucket = try #require(buckets.first)
+        #expect(buckets.count == 1)
+        #expect(abs(bucket.averageWatts - 52.5) < 1e-9)
+        #expect(bucket.peakWatts == 60)
+        #expect(bucket.sampleCount == 2)
+    }
+
+    @Test("Segments are split and interpolated at bucket boundaries")
+    func splitsBucketBoundaries() {
+        let buckets = SystemPowerAnalytics.buckets(
+            samples: [
+                sample(4 * 60, watts: 0),
+                sample(6 * 60, watts: 60),
+            ],
+            windowStart: t0,
+            windowEnd: t0.addingTimeInterval(10 * 60),
+            bucketDuration: 5 * 60)
+
         #expect(buckets.map(\.start) == [
             t0,
-            t0.addingTimeInterval(15 * 60),
-            t0.addingTimeInterval(45 * 60),
+            t0.addingTimeInterval(5 * 60),
         ])
-        #expect(buckets.map(\.averageWatts) == [15, 40, 80])
-        #expect(buckets.map(\.peakWatts) == [20, 40, 80])
-        #expect(buckets.map(\.sampleCount) == [2, 1, 1])
+        #expect(buckets.map(\.averageWatts) == [15, 45])
+        #expect(buckets.map(\.peakWatts) == [30, 60])
     }
 }
 

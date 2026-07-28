@@ -36,6 +36,7 @@ struct PopoverView: View {
     @State private var insights: [Insight] = []
     @State private var historyCoverageDayCount: Int?
     @State private var loadTask: Task<Void, Never>?
+    @State private var serverRefreshGeneration = 0
 
     private var replacementAnimation: Animation {
         .timingCurve(0.23, 1, 0.32, 1, duration: 0.18)
@@ -89,7 +90,9 @@ struct PopoverView: View {
         VStack(alignment: .leading, spacing: 10) {
             if model.isMacMini {
                 ScrollView {
-                    MacMiniPowerView(store: JuiceApp.sampler?.store)
+                    MacMiniPowerView(
+                        store: JuiceApp.sampler?.store,
+                        refreshGeneration: serverRefreshGeneration)
                 }
                 .scrollIndicators(.never)
                 .frame(maxHeight: 680)
@@ -253,7 +256,9 @@ struct PopoverView: View {
                 Button("Refresh") {
                     model.refresh()
                     helper.refresh()
-                    if !model.isMacMini {
+                    if model.isMacMini {
+                        serverRefreshGeneration += 1
+                    } else {
                         loadTask?.cancel()
                         loadTask = Task { await loadEnergy() }
                     }

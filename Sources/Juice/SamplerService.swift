@@ -10,6 +10,11 @@ import JuiceXPCShared
 /// double-fetch or interleave store writes. Store I/O therefore also runs on
 /// the cooperative pool, never on the main actor.
 actor SamplerService {
+    private struct ServerAppBucketKey: Hashable {
+        var bucketStart: Date
+        var appKey: String
+    }
+
     /// The underlying store is thread-safe (GRDB serializes access), so it is
     /// safe to hand out to non-actor readers like the stats timeline.
     nonisolated let store: JuiceStore
@@ -47,6 +52,10 @@ actor SamplerService {
     private var lastPrune: Date = .distantPast
     private var lastSystemPowerSample: Date?
     private var lastServerReading: LivePowerReading?
+    private var lastServerReadingDate: Date?
+    /// Two-second app-energy increments accumulated between the one-minute
+    /// SQLite flushes used for permanent server history.
+    private var pendingServerAppEnergy: [ServerAppBucketKey: StoredSystemAppEnergyBucket] = [:]
     private var lastServerRollupCheck: Date = .distantPast
     private var isRefreshing = false
     private(set) var lastRollupError: String?
@@ -107,28 +116,56 @@ actor SamplerService {
     /// Without this path, a battery-less Mac only refreshed app history once
     /// at launch and Week / All could remain permanently empty.
     func recordServerReading(_ reading: LivePowerReading, at now: Date = Date()) async {
-        let previousDate = lastSystemPowerSample
-        guard recordSystemPower(reading.totalMeteredWatts, at: now) else { return }
-
-        if let previousDate, let lastServerReading {
-            let increments = SystemAppEnergyAnalytics.increments(
+        if let previousDate = lastServerReadingDate,
+           let lastServerReading {
+            // Source timestamps must advance monotonically. Rejecting a stale
+            // delivery prevents a delayed task from creating a negative or
+            // overlapping integration interval.
+            guard now > previousDate else { return }
+            accumulateServerAppEnergy(SystemAppEnergyAnalytics.increments(
                 previous: lastServerReading,
                 current: reading,
                 start: previousDate,
-                end: now)
+                end: now))
+        }
+        lastServerReading = reading
+        lastServerReadingDate = now
+
+        guard recordSystemPower(reading.totalMeteredWatts, at: now) else { return }
+
+        if !pendingServerAppEnergy.isEmpty {
             do {
-                try store.addSystemAppEnergy(increments)
+                try store.addSystemAppEnergy(Array(pendingServerAppEnergy.values))
+                pendingServerAppEnergy.removeAll(keepingCapacity: true)
             } catch {
                 NSLog("Juice: failed to persist server app energy: \(error)")
             }
         }
-        lastServerReading = reading
 
         guard now.timeIntervalSince(lastServerRollupCheck)
                 >= Self.serverRollupCheckInterval
         else { return }
         lastServerRollupCheck = now
         await updateRollupsIfStale()
+    }
+
+    private func accumulateServerAppEnergy(
+        _ increments: [StoredSystemAppEnergyBucket]
+    ) {
+        for increment in increments {
+            let key = ServerAppBucketKey(
+                bucketStart: increment.bucketStart,
+                appKey: increment.appKey)
+            if var pending = pendingServerAppEnergy[key] {
+                pending.displayName = increment.displayName
+                pending.energyWh += increment.energyWh
+                pending.activeDuration += increment.activeDuration
+                pending.peakWatts = max(pending.peakWatts, increment.peakWatts)
+                pendingServerAppEnergy[key] = pending
+            } else {
+                pendingServerAppEnergy[key] = increment
+            }
+        }
     }
 
     /// Rebuilds the daily rollups from the helper if the last successful
