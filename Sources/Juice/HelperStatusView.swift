@@ -5,6 +5,9 @@ struct HelperStatusView: View {
     @ObservedObject var controller = HelperRegistrationController.shared
     var queryError: String?
     var onRetryQuery: (() -> Void)?
+    /// User-facing capability supplied by the helper. The default preserves
+    /// the historical per-app messages; Mac mini mode calls it current power.
+    var purpose = "per-app energy"
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -25,22 +28,26 @@ struct HelperStatusView: View {
 
     private var message: String {
         switch controller.state {
-        case .checking: return "Checking per-app energy access…"
-        case .registering: return "Preparing the per-app energy helper…"
+        case .checking: return "Checking \(purpose) access…"
+        case .registering: return "Preparing the \(purpose) helper…"
         case .enabled:
-            return queryError.map { "Per-app energy could not be read: \($0)" }
-                ?? "Per-app energy is temporarily unavailable."
+            return queryError.map { "\(capitalizedPurpose) could not be read: \($0)" }
+                ?? "\(capitalizedPurpose) is temporarily unavailable."
         case .requiresApproval:
-            return "Approve Juice in Login Items to read per-app energy from macOS."
+            return "Approve Juice in Login Items to read \(purpose) from macOS."
         case .needsApplicationInstall:
-            return "Move Juice to Applications and reopen it to enable per-app energy."
+            return "Move Juice to Applications and reopen it to enable \(purpose)."
         case .notRegistered:
-            return "Enable Juice's read-only helper to show per-app energy."
+            return "Enable Juice's read-only helper to show \(purpose)."
         case .bundleMissing(let detail):
-            return "This copy of Juice is missing its per-app energy helper: \(detail)"
+            return "This copy of Juice is missing its \(purpose) helper: \(detail)"
         case .failed(let detail):
-            return "The per-app energy helper could not be prepared: \(detail)"
+            return "The \(purpose) helper could not be prepared: \(detail)"
         }
+    }
+
+    private var capitalizedPurpose: String {
+        purpose.prefix(1).uppercased() + purpose.dropFirst()
     }
 
     private var actionTitle: String? {

@@ -1,6 +1,7 @@
 # Juice
 
-A macOS menu bar app that shows what is eating your battery.
+A macOS menu bar app that shows what is eating your battery and the current
+compute power draw of a Mac mini.
 
 ![Swift 6](https://img.shields.io/badge/Swift-6-orange)
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-blue)
@@ -24,11 +25,12 @@ Juice surfaces that data: which apps used how many watt-hours today, over the la
 ## Features
 
 - **Menu bar live readout**: battery percent and live watts drawn (or charging wattage), updated continuously.
+- **Mac mini server mode**: detects both legacy and current Mac mini models, then records combined and per-app CPU, GPU, and Neural Engine power every minute. Today, 1-week, and All views lead with the original battery-style app ranking, including live watts, accumulated Wh, real app icons, and clickable details. Server-wide average/peak watts, Wh/kWh, coverage, history, and projected 30-day energy remain underneath.
 - **Top energy users**: per-app watt-hours for the current or last battery session, Today, 3 Days, Week, or All Time, with real app icons.
 - **Per-app detail**: click any app to see where its energy went (CPU vs GPU vs Neural Engine), an hour-by-hour usage chart, and a plain-English explanation of the usage pattern.
 - **Charge timeline**: battery level over the last 24 hours, sampled locally every minute, with on-AC periods highlighted.
 - **Insights**: drain-rate anomalies measured against your own 7-day baseline, apps using far more than their typical energy, the energy hog of the week, and charging-habit observations.
-- **Stats window**: the full app table (not just the top 8) plus a 7-day charge chart and battery health.
+- **Stats window**: laptops get the full app table, 7-day charge chart, and battery health; Mac minis get a dedicated server dashboard with live app watts kept visible across Today, 1W, and All, permanent app energy totals, and system power history.
 - **In-app updates**: choose automatic downloads and get notified when an update is ready to install, or keep updates manual and use “Check for Updates…” whenever you want. Homebrew installs update directly from Juice's signed release feed.
 - **Honest charts**: axes are pinned to the real time window, recording gaps show as gaps, and partial data is labeled as such - the charts never stretch or interpolate data to look fuller than it is.
 - **Private by default**: no telemetry, system profile, or accounts. Juice only contacts its release feed when you ask it to check for updates or enable automatic updates.
@@ -174,6 +176,8 @@ helper and app to share the same Team ID.
 ## How the numbers work
 
 - Energy figures come from macOS's own per-coalition accounting in the powerlog database: CPU, GPU, and Neural Engine energy in nanojoules, converted to watt-hours (`Wh = nJ / 3.6e12`).
+- On a Mac mini, Juice persists the combined live CPU/GPU/Neural Engine reading once per minute and integrates consecutive samples into Wh/kWh. Gaps longer than five minutes are excluded and shown as missing monitoring coverage instead of being estimated.
+- Mac mini app rankings are integrated directly from the same live per-app energy accounting that drives the current-watts rows. Juice stores permanent hour-aligned app energy in the background, so Today, Week, All, and clickable app details do not depend on battery callbacks or PowerLog retention.
 - A "coalition" is an app plus all its helper processes, which is why the numbers map to apps the way you would expect.
 - macOS retains only about 3 days of this data; Juice's local store accumulates daily rollups indefinitely and keeps battery samples for 90 days, so your history grows beyond what the OS keeps.
 - Rollup rebuilds only replace days the source data fully covers, so macOS purging its own retention window can never erase Juice's stored history.

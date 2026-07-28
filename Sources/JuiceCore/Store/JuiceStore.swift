@@ -50,8 +50,8 @@ public struct StoredAppEnergyTotal: Sendable, Equatable {
     }
 }
 
-/// The app's local SQLite store: raw battery samples, daily per-app energy
-/// rollups, and a small key/value meta table.
+/// The app's local SQLite store: raw battery and system-power samples, daily
+/// per-app energy rollups, and a small key/value meta table.
 ///
 /// `@unchecked Sendable`: the only stored property is a GRDB `DatabaseQueue`,
 /// which serializes all database access and is safe to share across threads.
@@ -117,6 +117,27 @@ public final class JuiceStore: @unchecked Sendable {
                 index: "energy_rollup_on_app_key_day",
                 on: "energy_rollup",
                 columns: ["app_key", "day"])
+        }
+        migrator.registerMigration("v4") { db in
+            try db.create(table: "system_power_sample") { t in
+                t.primaryKey("ts", .double)
+                t.column("watts", .double).notNull()
+            }
+        }
+        migrator.registerMigration("v5") { db in
+            try db.create(table: "system_app_energy_hour") { t in
+                t.column("bucket_start", .double).notNull()
+                t.column("app_key", .text).notNull()
+                t.column("display_name", .text).notNull()
+                t.column("wh", .double).notNull()
+                t.column("active_seconds", .double).notNull()
+                t.column("peak_watts", .double).notNull()
+                t.primaryKey(["bucket_start", "app_key"])
+            }
+            try db.create(
+                index: "system_app_energy_hour_on_app_key_bucket",
+                on: "system_app_energy_hour",
+                columns: ["app_key", "bucket_start"])
         }
         return migrator
     }
@@ -202,6 +223,169 @@ public final class JuiceStore: @unchecked Sendable {
             try db.execute(
                 sql: "DELETE FROM battery_sample WHERE ts < ?",
                 arguments: [cutoff.timeIntervalSince1970])
+        }
+    }
+
+    // MARK: - System power samples
+
+    public func insertSystemPowerSample(ts: Date, watts: Double) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO system_power_sample (ts, watts)
+                    VALUES (?, ?)
+                    ON CONFLICT(ts) DO UPDATE SET watts = excluded.watts
+                    """,
+                arguments: [ts.timeIntervalSince1970, watts])
+        }
+    }
+
+    public func systemPowerSamples(
+        since: Date,
+        until: Date
+    ) throws -> [StoredSystemPowerSample] {
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT ts, watts FROM system_power_sample
+                    WHERE ts >= ? AND ts <= ? ORDER BY ts
+                    """,
+                arguments: [since.timeIntervalSince1970, until.timeIntervalSince1970])
+            return rows.map { row in
+                StoredSystemPowerSample(
+                    date: Date(timeIntervalSince1970: row["ts"]),
+                    watts: row["watts"])
+            }
+        }
+    }
+
+    public func earliestSystemPowerSampleDate() throws -> Date? {
+        try dbQueue.read { db in
+            try Double.fetchOne(
+                db,
+                sql: "SELECT MIN(ts) FROM system_power_sample")
+                .map(Date.init(timeIntervalSince1970:))
+        }
+    }
+
+    public func pruneSystemPowerSamples(olderThan cutoff: Date) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "DELETE FROM system_power_sample WHERE ts < ?",
+                arguments: [cutoff.timeIntervalSince1970])
+        }
+    }
+
+    // MARK: - Mac mini per-app energy
+
+    /// Adds live app-energy increments to permanent hour-aligned buckets.
+    /// Repeated minutes in the same hour accumulate atomically.
+    public func addSystemAppEnergy(
+        _ increments: [StoredSystemAppEnergyBucket]
+    ) throws {
+        guard !increments.isEmpty else { return }
+        try dbQueue.write { db in
+            for increment in increments {
+                try db.execute(
+                    sql: """
+                        INSERT INTO system_app_energy_hour
+                            (bucket_start, app_key, display_name, wh,
+                             active_seconds, peak_watts)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(bucket_start, app_key) DO UPDATE SET
+                            display_name = excluded.display_name,
+                            wh = system_app_energy_hour.wh + excluded.wh,
+                            active_seconds = system_app_energy_hour.active_seconds
+                                + excluded.active_seconds,
+                            peak_watts = MAX(
+                                system_app_energy_hour.peak_watts,
+                                excluded.peak_watts)
+                        """,
+                    arguments: [
+                        increment.bucketStart.timeIntervalSince1970,
+                        increment.appKey,
+                        increment.displayName,
+                        increment.energyWh,
+                        increment.activeDuration,
+                        increment.peakWatts,
+                    ])
+            }
+        }
+    }
+
+    /// App totals over hour-aligned server history, ranked by watt-hours.
+    public func systemAppEnergyTotals(
+        since: Date,
+        until: Date
+    ) throws -> [StoredSystemAppEnergyTotal] {
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT app_key, MAX(display_name) AS display_name,
+                           SUM(wh) AS wh,
+                           SUM(active_seconds) AS active_seconds,
+                           MAX(peak_watts) AS peak_watts
+                    FROM system_app_energy_hour
+                    WHERE bucket_start >= ? AND bucket_start <= ?
+                    GROUP BY app_key
+                    ORDER BY wh DESC, app_key
+                    """,
+                arguments: [
+                    since.timeIntervalSince1970,
+                    until.timeIntervalSince1970,
+                ])
+            return rows.map { row in
+                StoredSystemAppEnergyTotal(
+                    appKey: row["app_key"],
+                    displayName: row["display_name"],
+                    energyWh: row["wh"],
+                    activeDuration: row["active_seconds"],
+                    peakWatts: row["peak_watts"])
+            }
+        }
+    }
+
+    /// Hourly server history for one app, used by the clickable detail view.
+    public func systemAppEnergyBuckets(
+        appKey: String,
+        since: Date,
+        until: Date
+    ) throws -> [StoredSystemAppEnergyBucket] {
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT bucket_start, app_key, display_name, wh,
+                           active_seconds, peak_watts
+                    FROM system_app_energy_hour
+                    WHERE app_key = ? AND bucket_start >= ? AND bucket_start <= ?
+                    ORDER BY bucket_start
+                    """,
+                arguments: [
+                    appKey,
+                    since.timeIntervalSince1970,
+                    until.timeIntervalSince1970,
+                ])
+            return rows.map { row in
+                StoredSystemAppEnergyBucket(
+                    bucketStart: Date(timeIntervalSince1970: row["bucket_start"]),
+                    appKey: row["app_key"],
+                    displayName: row["display_name"],
+                    energyWh: row["wh"],
+                    activeDuration: row["active_seconds"],
+                    peakWatts: row["peak_watts"])
+            }
+        }
+    }
+
+    public func earliestSystemAppEnergyDate() throws -> Date? {
+        try dbQueue.read { db in
+            try Double.fetchOne(
+                db,
+                sql: "SELECT MIN(bucket_start) FROM system_app_energy_hour")
+                .map(Date.init(timeIntervalSince1970:))
         }
     }
 

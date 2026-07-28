@@ -14,17 +14,64 @@ struct JuiceApp: App {
         }
     }()
 
-    @StateObject private var model = BatteryViewModel(onReading: JuiceApp.handleReading)
+    private static let menuBarConsumerID = UUID()
+
+    @StateObject private var model: BatteryViewModel
+    @ObservedObject private var live = LivePowerCoordinator.shared
     // Create the updater with the app so Sparkle can schedule opted-in checks
     // even while the menu bar popover is closed.
     private let updater = UpdateController.shared
 
     init() {
+        let isMacMini = MacHardware.isCurrentMacMini
+        _model = StateObject(wrappedValue: BatteryViewModel(
+            onReading: JuiceApp.handleReading,
+            isMacMini: isMacMini))
+
         // Menu bar only: no Dock icon, no main window.
         NSApplication.shared.setActivationPolicy(.accessory)
         StatusItemVisibilityGuard.engage()
+
+        // A Mac mini has no battery event that can drive the status item.
+        // Keep the lightweight live sampler attached so its wattage remains
+        // current even while the popover is closed.
+        if isMacMini {
+            LivePowerCoordinator.shared.onReading = { reading in
+                Task {
+                    await Self.sampler?.recordServerReading(reading)
+                }
+            }
+            LivePowerCoordinator.shared.setAttached(
+                true,
+                includesTodayHistory: false,
+                for: .menuBar(Self.menuBarConsumerID))
+        }
+
+        #if DEV_HELPER
+        // Deterministic native-window entry point for development UI
+        // verification. It is absent from production builds and does nothing
+        // unless explicitly requested on the command line.
+        if isMacMini, CommandLine.arguments.contains("--show-server-stats") {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(500))
+                StatsWindowPresenter.shared.showServer(store: Self.sampler?.store)
+            }
+        }
+        if isMacMini, CommandLine.arguments.contains("--show-popover") {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(500))
+                StatusItemVisibilityGuard.showPopoverForTesting()
+            }
+        }
+        #endif
+
         Task {
+            // DEV_HELPER pairs with the explicitly installed legacy launchd
+            // daemon. Do not let SMAppService reconcile the same development
+            // label or it will unregister that daemon out from under the app.
+            #if !DEV_HELPER
             await HelperRegistrationController.shared.prepare()
+            #endif
             await Self.sampler?.updateRollupsIfStale()
             await Self.sampler?.backfillIfNeeded()
         }
@@ -46,11 +93,19 @@ struct JuiceApp: App {
         MenuBarExtra {
             PopoverView(model: model)
         } label: {
-            // Icon only, like the system battery item; recomputed from the
-            // observed model so it tracks battery and Low Power Mode changes.
-            Image(nsImage: BatteryStatusIcon.image(
-                for: model.reading,
-                isLowPowerModeEnabled: model.isLowPowerModeEnabled))
+            if model.isMacMini {
+                if let watts = live.reading?.totalMeteredWatts {
+                    Text(liveWattsText(watts))
+                } else {
+                    Image(systemName: "bolt")
+                }
+            } else {
+                // Icon only, like the system battery item; recomputed from the
+                // observed model so it tracks battery and Low Power Mode changes.
+                Image(nsImage: BatteryStatusIcon.image(
+                    for: model.reading,
+                    isLowPowerModeEnabled: model.isLowPowerModeEnabled))
+            }
         }
         .menuBarExtraStyle(.window)
     }

@@ -13,6 +13,7 @@ struct AppDetailView: View {
     enum Resolution {
         case hourlyComponents
         case dailyTotals
+        case serverHourly
     }
 
     let displayName: String
@@ -196,6 +197,8 @@ struct AppDetailView: View {
                 energyChart(breakdown)
                 if resolution == .dailyTotals {
                     historicalSummary(breakdown)
+                } else if resolution == .serverHourly {
+                    serverSummary(breakdown)
                 } else {
                     explanation(breakdown)
                 }
@@ -501,6 +504,27 @@ struct AppDetailView: View {
         }
     }
 
+    private func serverSummary(_ breakdown: AppEnergyBreakdown) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Server activity")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if breakdown.activeHours > 0 {
+                Text(String(
+                    format: "Active for %.1f hours, averaging %.1f W while active.",
+                    breakdown.activeHours,
+                    breakdown.totalWh / breakdown.activeHours))
+                    .font(.callout)
+            } else {
+                Text("No measurable app energy was recorded in this range.")
+                    .font(.callout)
+            }
+            Text("Recorded directly from the Mac's live app energy accounting every minute.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
     private func explanation(_ breakdown: AppEnergyBreakdown) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Why it used this much")
@@ -521,9 +545,13 @@ struct AppDetailView: View {
 
     private func statLine(_ breakdown: AppEnergyBreakdown) -> some View {
         HStack(spacing: 6) {
-            Text(String(format: "%.1f CPU-hours", breakdown.cpuHours))
+            if resolution != .serverHourly {
+                Text(String(format: "%.1f CPU-hours", breakdown.cpuHours))
+            }
             if breakdown.activeHours > 0 {
-                Text("·")
+                if resolution != .serverHourly {
+                    Text("·")
+                }
                 Text(String(format: "%.1f W average while active",
                             breakdown.totalWh / breakdown.activeHours))
             }

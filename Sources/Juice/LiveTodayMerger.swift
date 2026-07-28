@@ -1,6 +1,14 @@
 import Foundation
 import JuiceCore
 
+/// The live model retains sub-threshold decay values for honest smoothing;
+/// every UI surface applies this shared threshold before calling an app live.
+let liveAppDisplayThresholdWatts = 0.05
+
+func visibleLiveApps(in reading: LivePowerReading?) -> [AppPowerReading] {
+    (reading?.apps ?? []).filter { $0.watts >= liveAppDisplayThresholdWatts }
+}
+
 /// The hybrid Today list: apps drawing power right now, plus the rest of today's
 /// history with the live apps removed.
 struct HybridTodayList: Equatable {
@@ -50,7 +58,10 @@ struct LiveTodayMerger {
     /// relative position after the still-live apps.
     private var previousActiveOrder: [String] = []
 
-    init(activeThresholdWatts: Double = 0.05, idleGraceSeconds: Double = 30) {
+    init(
+        activeThresholdWatts: Double = liveAppDisplayThresholdWatts,
+        idleGraceSeconds: Double = 30
+    ) {
         self.activeThresholdWatts = activeThresholdWatts
         self.idleGraceSeconds = idleGraceSeconds
     }

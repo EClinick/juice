@@ -17,6 +17,13 @@ actor SamplerService {
 
     /// Keep raw samples for 90 days.
     private static let sampleRetention: TimeInterval = 90 * 24 * 3600
+    /// A one-minute cadence keeps permanent server power history compact
+    /// enough for the All range without downsampling away short load changes.
+    private static let systemPowerSampleInterval: TimeInterval = 60
+    /// A Mac mini has no battery callbacks to drive rollup maintenance. Check
+    /// at most once per minute from its always-on live-power stream; the
+    /// existing 15-minute watermark still controls actual PowerLog fetches.
+    private static let serverRollupCheckInterval: TimeInterval = 60
     /// Refresh rollups when the last successful refresh is older than this.
     private static let rollupStaleness: TimeInterval = 15 * 60
     /// Each refresh rebuilds full days starting this many days back, so a
@@ -38,6 +45,9 @@ actor SamplerService {
     private let dayFormatter = RollupBuilder.dayFormatter()
 
     private var lastPrune: Date = .distantPast
+    private var lastSystemPowerSample: Date?
+    private var lastServerReading: LivePowerReading?
+    private var lastServerRollupCheck: Date = .distantPast
     private var isRefreshing = false
     private(set) var lastRollupError: String?
 
@@ -70,6 +80,55 @@ actor SamplerService {
                 NSLog("Juice: failed to prune battery samples: \(error)")
             }
         }
+    }
+
+    /// Records the Mac mini's combined CPU/GPU/ANE power at most once per
+    /// minute. Energy analytics integrate these points and expose any gaps.
+    @discardableResult
+    func recordSystemPower(_ watts: Double, at now: Date = Date()) -> Bool {
+        guard watts.isFinite, watts >= 0 else { return false }
+        if let lastSystemPowerSample,
+           now.timeIntervalSince(lastSystemPowerSample) < Self.systemPowerSampleInterval {
+            return false
+        }
+
+        do {
+            try store.insertSystemPowerSample(ts: now, watts: watts)
+            lastSystemPowerSample = now
+            return true
+        } catch {
+            NSLog("Juice: failed to insert system power sample: \(error)")
+            return false
+        }
+    }
+
+    /// Records the Mac mini's total power and keeps the same per-app daily
+    /// rollup pipeline used by the battery UI advancing while the server runs.
+    /// Without this path, a battery-less Mac only refreshed app history once
+    /// at launch and Week / All could remain permanently empty.
+    func recordServerReading(_ reading: LivePowerReading, at now: Date = Date()) async {
+        let previousDate = lastSystemPowerSample
+        guard recordSystemPower(reading.totalMeteredWatts, at: now) else { return }
+
+        if let previousDate, let lastServerReading {
+            let increments = SystemAppEnergyAnalytics.increments(
+                previous: lastServerReading,
+                current: reading,
+                start: previousDate,
+                end: now)
+            do {
+                try store.addSystemAppEnergy(increments)
+            } catch {
+                NSLog("Juice: failed to persist server app energy: \(error)")
+            }
+        }
+        lastServerReading = reading
+
+        guard now.timeIntervalSince(lastServerRollupCheck)
+                >= Self.serverRollupCheckInterval
+        else { return }
+        lastServerRollupCheck = now
+        await updateRollupsIfStale()
     }
 
     /// Rebuilds the daily rollups from the helper if the last successful

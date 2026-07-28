@@ -32,7 +32,11 @@ extension SMAppService: HelperServiceManaging {}
 final class HelperRegistrationController: NSObject, ObservableObject {
     static let shared = HelperRegistrationController()
 
+    #if DEV_HELPER
+    @Published private(set) var state: HelperRegistrationState = .enabled
+    #else
     @Published private(set) var state: HelperRegistrationState = .checking
+    #endif
     /// Advances only when a user/recovery transition makes the helper newly
     /// usable, so views can retry data without looping on ordinary error checks.
     @Published private(set) var readyGeneration = 0
@@ -72,16 +76,22 @@ final class HelperRegistrationController: NSObject, ObservableObject {
         self.sleep = sleep ?? { duration in try? await Task.sleep(for: duration) }
         self.unregisterTimeout = unregisterTimeout
         super.init()
+        #if !DEV_HELPER
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(appDidBecomeActive),
             name: NSApplication.didBecomeActiveNotification,
             object: nil)
+        #endif
     }
 
     /// Called at app launch. First installs the service registration, then on
     /// later app builds refreshes it as required by SMAppService.
     func prepare() async {
+        #if DEV_HELPER
+        state = .enabled
+        return
+        #else
         guard !isPreparing else { return }
         let stateBeforePreparation = state
         isPreparing = true
@@ -132,11 +142,16 @@ final class HelperRegistrationController: NSObject, ObservableObject {
         @unknown default:
             state = .failed("Unknown helper service status")
         }
+        #endif
     }
 
     /// Re-read approval state after returning from System Settings.
     func refresh() {
+        #if DEV_HELPER
+        state = .enabled
+        #else
         Task { await refreshStatus() }
+        #endif
     }
 
     /// Async implementation exposed internally so lifecycle transitions can

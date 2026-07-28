@@ -26,15 +26,24 @@ final class AppDetailPresenter {
         // One captured window end anchors the interval query, the chart's
         // x-domain, and the explanation's hour count.
         let windowEnd = session?.end ?? Date()
-        let store = Self.usesStoredHistory(range: range, origin: origin)
+        let isServerHistory = origin == .server
+        let store = (isServerHistory
+            || Self.usesStoredHistory(range: range, origin: origin))
             ? JuiceApp.sampler?.store : nil
         let formatter = RollupBuilder.dayFormatter()
-        let earliestStoredStart = store
-            .flatMap { try? $0.earliestRollupDay() }
-            .flatMap { formatter.date(from: $0) }
+        let earliestStoredStart: Date?
+        if isServerHistory {
+            earliestStoredStart = store.flatMap { try? $0.earliestSystemAppEnergyDate() }
+        } else {
+            earliestStoredStart = store
+                .flatMap { try? $0.earliestRollupDay() }
+                .flatMap { formatter.date(from: $0) }
+        }
         let windowStart = session?.start ?? Self.windowStart(
-            range: range, usesStoredHistory: store != nil,
-            earliestStoredStart: earliestStoredStart, now: windowEnd)
+            range: range,
+            usesStoredHistory: store != nil,
+            earliestStoredStart: earliestStoredStart,
+            now: windowEnd)
         let windowHours = max(1, Int((windowEnd.timeIntervalSince(windowStart) / 3600)
             .rounded(.up)))
         let storedSinceDay = store.map { _ in
@@ -51,8 +60,30 @@ final class AppDetailPresenter {
             windowStart: windowStart,
             windowEnd: windowEnd,
             windowHours: windowHours,
-            resolution: store == nil ? .hourlyComponents : .dailyTotals,
+            resolution: isServerHistory
+                ? .serverHourly
+                : (store == nil ? .hourlyComponents : .dailyTotals),
             provider: {
+                if isServerHistory, let store {
+                    return try await Task.detached {
+                        let buckets = try store.systemAppEnergyBuckets(
+                            appKey: appKey,
+                            since: windowStart,
+                            until: windowEnd)
+                        return AppEnergyBreakdown(
+                            totalWh: buckets.reduce(0) { $0 + $1.energyWh },
+                            cpuWh: 0,
+                            gpuWh: 0,
+                            aneWh: 0,
+                            cpuHours: 0,
+                            activeHours: buckets.reduce(0) {
+                                $0 + $1.activeDuration / 3600
+                            },
+                            hourlyWh: buckets.map {
+                                (bucketStart: $0.bucketStart, wh: $0.energyWh)
+                            })
+                    }.value
+                }
                 if let store {
                     return try await Task.detached {
                         let formatter = RollupBuilder.dayFormatter()

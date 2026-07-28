@@ -8,6 +8,8 @@ enum DataOrigin {
     case loading
     /// The app's own rollup store, which accumulates history indefinitely.
     case store
+    /// Direct one-minute app attribution recorded on a Mac mini.
+    case server
     /// The live powerlog database, which macOS only retains for about 3 days.
     case live
     /// The live source failed, so no per-app data is available.

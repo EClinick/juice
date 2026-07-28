@@ -35,6 +35,9 @@ public struct LivePowerReading: Equatable, Sendable {
     public let totalAppWatts: Double
     /// Smoothed watts for processes that could not be attributed to any .app.
     public let systemWatts: Double
+    /// Current metered SoC power across attributed apps and system processes.
+    /// The underlying counters cover CPU, GPU, and Neural Engine energy.
+    public var totalMeteredWatts: Double { totalAppWatts + systemWatts }
 
     public init(
         apps: [AppPowerReading],

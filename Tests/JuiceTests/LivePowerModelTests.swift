@@ -63,6 +63,22 @@ import JuiceXPCShared
         #expect(abs((reading?.apps.first?.watts ?? 0) - 6.0) < 1e-6)
     }
 
+    @Test func totalMeteredWattsIncludesAppsAndSystemProcesses() {
+        let app = AppPowerReading(
+            appKey: "app",
+            bundlePath: nil,
+            displayName: "App",
+            watts: 2.5)
+        let reading = LivePowerReading(
+            apps: [app],
+            idleAppCount: 0,
+            idleWatts: 0,
+            totalAppWatts: 2.5,
+            systemWatts: 1.25)
+
+        #expect(reading.totalMeteredWatts == 3.75)
+    }
+
     @Test func negativeDeltaClampsToZero() {
         let model = LivePowerModel(halfLifeSeconds: 0.0001)
         _ = model.ingest(snapshot(at: 0, [sample(coalition: 10, path: appAPath, cpuNJ: 5_000_000_000)]))
