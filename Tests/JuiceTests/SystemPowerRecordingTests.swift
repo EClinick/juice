@@ -109,23 +109,35 @@ struct SystemPowerRecordingTests {
 
         await recorder.recordServerReading(reading(appWatts: 10), at: t0)
         await recorder.recordServerReading(
-            reading(appWatts: 20),
-            at: t0.addingTimeInterval(2))
+            reading(appWatts: 10),
+            at: t0.addingTimeInterval(60))
         await recorder.recordServerReading(
-            reading(appWatts: 30),
-            at: t0.addingTimeInterval(1))
+            reading(appWatts: 10),
+            at: t0)
         await recorder.recordServerReading(
-            reading(appWatts: 30),
-            at: t0.addingTimeInterval(3))
+            reading(appWatts: 10),
+            at: t0.addingTimeInterval(60))
         await recorder.flushServerHistory()
 
         let totals = try store.systemAppEnergyTotals(
             since: t0,
             until: t0.addingTimeInterval(120))
-        let expectedJoules: Double = 30 + 60
-        let expectedWh = expectedJoules / 3_600
+        let expectedWh = 10.0 * 120 / 3_600
 
         #expect(abs((totals.first?.energyWh ?? 0) - expectedWh) < 1e-9)
+
+        let samples = try store.systemPowerSamples(
+            since: t0,
+            until: t0.addingTimeInterval(60))
+        let summary = SystemPowerAnalytics.summary(
+            samples: samples,
+            windowStart: t0,
+            windowEnd: t0.addingTimeInterval(60))
+        #expect(samples.count == 2)
+        #expect(abs(summary.energyWh - expectedWh) < 1e-9)
+        #expect(summary.averageWatts == 10)
+        #expect(summary.coveredDuration == 120)
+        #expect(summary.coverageFraction == 1)
     }
 
     @Test("Termination flush persists the pending system and app tail")

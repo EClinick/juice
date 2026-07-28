@@ -150,6 +150,36 @@ public final class JuiceStore: @unchecked Sendable {
                 t.add(column: "coverage_end", .double)
             }
         }
+        migrator.registerMigration("v7") { db in
+            // Wall-clock corrections can make the same civil minute occur
+            // twice. Keep each recorded interval as its own row rather than
+            // forcing both passes through a timestamp primary key.
+            try db.execute(sql: """
+                CREATE TABLE system_power_sample_v7 (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts REAL NOT NULL,
+                    watts REAL NOT NULL,
+                    covered_seconds REAL,
+                    energy_wh REAL,
+                    peak_watts REAL,
+                    coverage_start REAL,
+                    coverage_end REAL
+                );
+                INSERT INTO system_power_sample_v7 (
+                    ts, watts, covered_seconds, energy_wh, peak_watts,
+                    coverage_start, coverage_end
+                )
+                SELECT
+                    ts, watts, covered_seconds, energy_wh, peak_watts,
+                    coverage_start, coverage_end
+                FROM system_power_sample;
+                DROP TABLE system_power_sample;
+                ALTER TABLE system_power_sample_v7
+                    RENAME TO system_power_sample;
+                CREATE INDEX system_power_sample_on_ts
+                    ON system_power_sample(ts);
+                """)
+        }
         return migrator
     }
 
@@ -241,11 +271,18 @@ public final class JuiceStore: @unchecked Sendable {
 
     public func insertSystemPowerSample(ts: Date, watts: Double) throws {
         try dbQueue.write { db in
+            // Legacy point samples retain update-at-the-same-time behavior,
+            // while aggregate rows at the same timestamp remain independent.
+            try db.execute(
+                sql: """
+                    DELETE FROM system_power_sample
+                    WHERE ts = ? AND covered_seconds IS NULL
+                    """,
+                arguments: [ts.timeIntervalSince1970])
             try db.execute(
                 sql: """
                     INSERT INTO system_power_sample (ts, watts)
                     VALUES (?, ?)
-                    ON CONFLICT(ts) DO UPDATE SET watts = excluded.watts
                     """,
                 arguments: [ts.timeIntervalSince1970, watts])
         }
@@ -300,7 +337,7 @@ public final class JuiceStore: @unchecked Sendable {
         }
         guard !valid.isEmpty else { return }
         try dbQueue.write { db in
-            try Self.upsertSystemPower(valid, in: db)
+            try Self.insertSystemPower(valid, in: db)
         }
     }
 
@@ -313,12 +350,12 @@ public final class JuiceStore: @unchecked Sendable {
     ) throws {
         guard !system.isEmpty || !apps.isEmpty else { return }
         try dbQueue.write { db in
-            try Self.upsertSystemPower(system, in: db)
+            try Self.insertSystemPower(system, in: db)
             try Self.upsertSystemAppEnergy(apps, in: db)
         }
     }
 
-    private static func upsertSystemPower(
+    private static func insertSystemPower(
         _ aggregates: [StoredSystemPowerSample],
         in db: Database
     ) throws {
@@ -330,33 +367,6 @@ public final class JuiceStore: @unchecked Sendable {
                         coverage_start, coverage_end
                     )
                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(ts) DO UPDATE SET
-                        covered_seconds =
-                            COALESCE(system_power_sample.covered_seconds, 0)
-                            + excluded.covered_seconds,
-                        energy_wh =
-                            COALESCE(system_power_sample.energy_wh, 0)
-                            + excluded.energy_wh,
-                        peak_watts = MAX(
-                            COALESCE(system_power_sample.peak_watts, 0),
-                            excluded.peak_watts),
-                        coverage_start = MIN(
-                            COALESCE(
-                                system_power_sample.coverage_start,
-                                excluded.coverage_start),
-                            excluded.coverage_start),
-                        coverage_end = MAX(
-                            COALESCE(
-                                system_power_sample.coverage_end,
-                                excluded.coverage_end),
-                            excluded.coverage_end),
-                        watts = (
-                            COALESCE(system_power_sample.energy_wh, 0)
-                            + excluded.energy_wh
-                        ) * 3600 / (
-                            COALESCE(system_power_sample.covered_seconds, 0)
-                            + excluded.covered_seconds
-                        )
                     """,
                 arguments: [
                     aggregate.date.timeIntervalSince1970,
@@ -390,7 +400,7 @@ public final class JuiceStore: @unchecked Sendable {
                         AND ts >= ?
                         AND ts <= ?
                     )
-                    ORDER BY ts
+                    ORDER BY ts, id
                     """,
                 arguments: [
                     since.timeIntervalSince1970,

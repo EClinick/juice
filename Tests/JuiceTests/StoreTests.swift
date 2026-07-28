@@ -272,13 +272,19 @@ private func makeStore() throws -> JuiceStore {
             coverageStart: minute.addingTimeInterval(30),
             coverageEnd: minute.addingTimeInterval(60))
 
-        let sample = try #require(try store.systemPowerSamples(
+        let samples = try store.systemPowerSamples(
             since: minute,
-            until: minute.addingTimeInterval(60)).first)
-        #expect(abs(sample.watts - 9) < 1e-9)
-        #expect(sample.coveredDuration == 60)
-        #expect(abs((sample.energyWh ?? 0) - 0.15) < 1e-9)
-        #expect(sample.peakWatts == 20)
+            until: minute.addingTimeInterval(60))
+        let summary = SystemPowerAnalytics.summary(
+            samples: samples,
+            windowStart: minute,
+            windowEnd: minute.addingTimeInterval(60))
+
+        #expect(samples.count == 2)
+        #expect(abs((summary.averageWatts ?? 0) - 9) < 1e-9)
+        #expect(summary.coveredDuration == 60)
+        #expect(abs(summary.energyWh - 0.15) < 1e-9)
+        #expect(summary.peakWatts == 20)
     }
 
     @Test func pruneSystemPowerSamplesKeepsRecentHistory() throws {
