@@ -148,6 +148,9 @@ struct EnergySourceSelectorTests {
         let liveWeek = AppDetailPresenter.windowStart(
             range: .week, usesStoredHistory: false,
             earliestStoredStart: nil, now: now, calendar: calendar)
+        let serverToday = AppDetailPresenter.windowStart(
+            range: .today, usesStoredHistory: true, isServerHistory: true,
+            earliestStoredStart: earliest, now: now, calendar: calendar)
         let storedWeekDay = AppDetailPresenter.storedQueryStartDay(
             range: .week, now: now, calendar: calendar)
         let storedTodayDay = AppDetailPresenter.storedQueryStartDay(
@@ -162,6 +165,7 @@ struct EnergySourceSelectorTests {
             for: .week, now: now, calendar: calendar) == liveWeek)
         #expect(PowerlogEnergySource.rangeStart(
             for: .allTime, now: now, calendar: calendar) == liveAllTime)
+        #expect(serverToday == calendar.startOfDay(for: now))
         #expect(storedWeekDay == StoreEnergySource.sinceDay(
             for: .week, now: now, calendar: calendar))
         #expect(storedTodayDay == StoreEnergySource.sinceDay(

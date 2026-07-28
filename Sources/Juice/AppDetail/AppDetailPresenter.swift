@@ -50,6 +50,7 @@ final class AppDetailPresenter {
         let windowStart = session?.start ?? Self.windowStart(
             range: range,
             usesStoredHistory: store != nil,
+            isServerHistory: isServerHistory,
             earliestStoredStart: earliestStoredStart,
             now: windowEnd)
         let windowHours = max(1, Int((windowEnd.timeIntervalSince(windowStart) / 3600)
@@ -161,10 +162,17 @@ final class AppDetailPresenter {
     static func windowStart(
         range: EnergyRange,
         usesStoredHistory: Bool,
+        isServerHistory: Bool = false,
         earliestStoredStart: Date?,
         now: Date,
         calendar: Calendar = .current
     ) -> Date {
+        if isServerHistory {
+            return range.macMiniWindowStart(
+                now: now,
+                recordingSince: earliestStoredStart,
+                calendar: calendar)
+        }
         if usesStoredHistory {
             if range == .allTime {
                 return earliestStoredStart ?? now
