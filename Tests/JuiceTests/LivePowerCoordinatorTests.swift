@@ -167,6 +167,46 @@ import JuiceCore
         #expect(coordinator.systemLoadWatts == nil)
     }
 
+    @Test("Termination drains queued reading deliveries in source order")
+    func terminationDrainsReadingDeliveries() async {
+        actor Recorder {
+            var watts: [Double] = []
+
+            func append(_ value: Double) async {
+                if watts.isEmpty {
+                    try? await Task.sleep(for: .milliseconds(20))
+                }
+                watts.append(value)
+            }
+        }
+
+        let recorder = Recorder()
+        let coordinator = LivePowerCoordinator(
+            source: FakeSource(),
+            loadToday: { self.todayResult([]) },
+            loadSystemLoad: { nil })
+        coordinator.onReading = { reading in
+            await recorder.append(reading.totalMeteredWatts)
+        }
+
+        coordinator.apply(reading: LivePowerReading(
+            apps: [],
+            idleAppCount: 0,
+            idleWatts: 0,
+            totalAppWatts: 3,
+            systemWatts: 4))
+        coordinator.apply(reading: LivePowerReading(
+            apps: [],
+            idleAppCount: 0,
+            idleWatts: 0,
+            totalAppWatts: 5,
+            systemWatts: 6))
+
+        await coordinator.prepareForTermination()
+
+        #expect(await recorder.watts == [7, 11])
+    }
+
     @Test("Reference counting: the loop starts once and stops only on the last detach")
     func referenceCountedStartStop() {
         let now = t0

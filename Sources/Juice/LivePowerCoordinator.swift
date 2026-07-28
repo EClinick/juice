@@ -330,6 +330,18 @@ final class LivePowerCoordinator: ObservableObject {
         recomputeHybrid()
     }
 
+    /// Stops accepting source updates and waits for every already-enqueued
+    /// persistence callback to finish. App termination uses this before asking
+    /// the sampler to flush its in-memory minute tail.
+    func prepareForTermination() async {
+        if !attached.isEmpty {
+            stopSampling()
+        }
+        let pendingDelivery = readingDelivery
+        await pendingDelivery?.value
+        readingDelivery = nil
+    }
+
     /// Replaces today's result and re-folds. Used by tests to inject a
     /// deterministic history without a store query.
     func setToday(_ result: EnergySourceSelector.TopAppsResult) {

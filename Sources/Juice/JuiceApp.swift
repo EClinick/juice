@@ -2,14 +2,24 @@ import SwiftUI
 import JuiceCore
 
 private final class JuiceApplicationDelegate: NSObject, NSApplicationDelegate {
-    func applicationWillTerminate(_ notification: Notification) {
-        guard let sampler = JuiceApp.sampler else { return }
-        let completed = DispatchSemaphore(value: 0)
-        Task.detached {
+    private var terminationInProgress = false
+
+    func applicationShouldTerminate(
+        _ sender: NSApplication
+    ) -> NSApplication.TerminateReply {
+        guard let sampler = JuiceApp.sampler else { return .terminateNow }
+        guard !terminationInProgress else { return .terminateLater }
+        terminationInProgress = true
+
+        // Return control to AppKit while the MainActor drains the coordinator.
+        // Blocking the main thread here would prevent queued reading-delivery
+        // tasks from ever reaching the sampler before the final flush.
+        Task { @MainActor in
+            await LivePowerCoordinator.shared.prepareForTermination()
             await sampler.flushServerHistory()
-            completed.signal()
+            sender.reply(toApplicationShouldTerminate: true)
         }
-        _ = completed.wait(timeout: .now() + 2)
+        return .terminateLater
     }
 }
 

@@ -180,6 +180,17 @@ public final class JuiceStore: @unchecked Sendable {
                     ON system_power_sample(ts);
                 """)
         }
+        migrator.registerMigration("v8") { db in
+            // Recent-range queries can seek directly to aggregates whose
+            // coverage overlaps the requested window. The expression index
+            // also makes the permanent recording-start lookup constant-time.
+            try db.execute(sql: """
+                CREATE INDEX system_power_sample_on_coverage_end
+                    ON system_power_sample(coverage_end);
+                CREATE INDEX system_power_sample_on_recording_start
+                    ON system_power_sample(COALESCE(coverage_start, ts));
+                """)
+        }
         return migrator
     }
 
@@ -388,18 +399,21 @@ public final class JuiceStore: @unchecked Sendable {
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT ts, watts, covered_seconds, energy_wh, peak_watts,
+                    SELECT id, ts, watts, covered_seconds, energy_wh, peak_watts,
                            coverage_start, coverage_end
                     FROM system_power_sample
-                    WHERE (
-                        covered_seconds IS NOT NULL
-                        AND coverage_end > ?
-                        AND coverage_start < ?
-                    ) OR (
-                        covered_seconds IS NULL
-                        AND ts >= ?
-                        AND ts <= ?
-                    )
+                    INDEXED BY system_power_sample_on_coverage_end
+                    WHERE covered_seconds IS NOT NULL
+                      AND coverage_end > ?
+                      AND coverage_start < ?
+                    UNION ALL
+                    SELECT id, ts, watts, covered_seconds, energy_wh, peak_watts,
+                           coverage_start, coverage_end
+                    FROM system_power_sample
+                    INDEXED BY system_power_sample_on_ts
+                    WHERE covered_seconds IS NULL
+                      AND ts >= ?
+                      AND ts <= ?
                     ORDER BY ts, id
                     """,
                 arguments: [
@@ -427,7 +441,13 @@ public final class JuiceStore: @unchecked Sendable {
         try dbQueue.read { db in
             try Double.fetchOne(
                 db,
-                sql: "SELECT MIN(COALESCE(coverage_start, ts)) FROM system_power_sample")
+                sql: """
+                    SELECT COALESCE(coverage_start, ts) AS recording_start
+                    FROM system_power_sample
+                    INDEXED BY system_power_sample_on_recording_start
+                    ORDER BY recording_start
+                    LIMIT 1
+                    """)
                 .map(Date.init(timeIntervalSince1970:))
         }
     }
