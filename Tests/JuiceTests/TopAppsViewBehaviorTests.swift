@@ -38,6 +38,30 @@ struct TopAppsViewBehaviorTests {
         #expect(plan.folded == 19)
     }
 
+    @Test("live attribution uses whole-system load while charging")
+    func chargingAttributionUsesSystemLoad() {
+        let attribution = TopAppsView.attribution(
+            appWatts: 5,
+            batteryWatts: 14,
+            systemLoadWatts: 24,
+            onAC: true)
+
+        #expect(attribution?.appWatts == 5)
+        #expect(attribution?.systemWatts == 19)
+    }
+
+    @Test("live attribution continues using battery draw while unplugged")
+    func batteryAttributionUsesBatteryDraw() {
+        let attribution = TopAppsView.attribution(
+            appWatts: 5,
+            batteryWatts: 20,
+            systemLoadWatts: 100,
+            onAC: false)
+
+        #expect(attribution?.appWatts == 5)
+        #expect(attribution?.systemWatts == 15)
+    }
+
     @MainActor
     @Test("range picker renders only the configured tabs")
     func rangePickerUsesConfiguredTabs() {
@@ -49,6 +73,7 @@ struct TopAppsViewBehaviorTests {
                 ranges: [.session, .today, .week, .allTime],
                 hybrid: nil,
                 batteryWatts: nil,
+                systemLoadWatts: nil,
                 totalAppWatts: nil,
                 session: nil)
                 .frame(width: 320, height: 100)

@@ -21,7 +21,7 @@ enum BatteryMonitorError: Error {
 /// Reads battery state from the AppleSmartBattery IORegistry service.
 /// No special permissions required.
 struct BatteryMonitor {
-    static func read() throws -> BatteryReading {
+    private static func properties() throws -> [String: Any] {
         let service = IOServiceGetMatchingService(
             kIOMainPortDefault,
             IOServiceMatching("AppleSmartBattery")
@@ -30,10 +30,43 @@ struct BatteryMonitor {
         defer { IOObjectRelease(service) }
 
         var propsRef: Unmanaged<CFMutableDictionary>?
-        guard IORegistryEntryCreateCFProperties(service, &propsRef, kCFAllocatorDefault, 0) == KERN_SUCCESS,
-              let props = propsRef?.takeRetainedValue() as? [String: Any] else {
+        guard IORegistryEntryCreateCFProperties(
+            service,
+            &propsRef,
+            kCFAllocatorDefault,
+            0
+        ) == KERN_SUCCESS,
+        let properties = propsRef?.takeRetainedValue() as? [String: Any] else {
             throw BatteryMonitorError.propertiesUnreadable
         }
+        return properties
+    }
+
+    /// `PowerTelemetryData.SystemLoad` is reported in milliwatts. It is a
+    /// whole-system load rather than the battery's signed charge/discharge
+    /// rate, so it can back live attribution while connected to AC power.
+    static func systemLoadWatts(from properties: [String: Any]) -> Double? {
+        guard
+            let telemetry = properties["PowerTelemetryData"] as? [String: Any],
+            let milliwatts = telemetry["SystemLoad"] as? NSNumber
+        else {
+            return nil
+        }
+
+        let watts = milliwatts.doubleValue / 1_000
+        return watts.isFinite && watts >= 0 ? watts : nil
+    }
+
+    /// Reads only the current whole-system load for the live attribution loop.
+    /// Failures leave the optional footer unavailable rather than disturbing
+    /// the primary battery reading.
+    static func currentSystemLoadWatts() -> Double? {
+        guard let properties = try? properties() else { return nil }
+        return systemLoadWatts(from: properties)
+    }
+
+    static func read() throws -> BatteryReading {
+        let props = try properties()
 
         func int(_ key: String) -> Int? { props[key] as? Int }
         func signedInt64(_ key: String) -> Int64? { (props[key] as? NSNumber)?.int64Value }

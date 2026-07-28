@@ -90,6 +90,10 @@ final class LivePowerCoordinator: ObservableObject {
     /// The latest per-tick live reading (nil until two snapshots establish a
     /// delta, or while stopped). Drives the attribution footers.
     @Published private(set) var reading: LivePowerReading?
+    /// Whole-system load captured with the latest live app reading so the
+    /// attribution subtraction never mixes the 2-second app cadence with the
+    /// battery model's slower background refresh.
+    @Published private(set) var systemLoadWatts: Double?
     /// The controller's sampling status, driving the "Live" hints and the
     /// outdated-helper notice.
     @Published private(set) var status: LivePowerController.Status = .warmingUp
@@ -103,6 +107,7 @@ final class LivePowerCoordinator: ObservableObject {
 
     private let source: LivePowerSource
     private let loadToday: () async -> EnergySourceSelector.TopAppsResult
+    private let loadSystemLoad: () -> Double?
     private let now: () -> Date
     private let todayRefreshInterval: Duration
     private var merger = LiveTodayMerger()
@@ -131,11 +136,15 @@ final class LivePowerCoordinator: ObservableObject {
             result.apps.sort { $0.energyWh > $1.energyWh }
             return result
         },
+        loadSystemLoad: @escaping () -> Double? = {
+            BatteryMonitor.currentSystemLoadWatts()
+        },
         now: @escaping () -> Date = { Date() },
         todayRefreshInterval: Duration = .seconds(30)
     ) {
         self.source = source ?? LivePowerController()
         self.loadToday = loadToday
+        self.loadSystemLoad = loadSystemLoad
         self.now = now
         self.todayRefreshInterval = todayRefreshInterval
     }
@@ -207,6 +216,7 @@ final class LivePowerCoordinator: ObservableObject {
         // Re-age grace immediately so a cached active row from a previous
         // session cannot linger past its window before the first fresh tick.
         reading = nil
+        systemLoadWatts = nil
         recomputeHybrid()
 
         source.start()
@@ -225,6 +235,7 @@ final class LivePowerCoordinator: ObservableObject {
         // back to "warming up" on reattach. The merger is deliberately NOT
         // reset: grace state persists across close/reopen.
         reading = nil
+        systemLoadWatts = nil
         status = source.status
     }
 
@@ -300,6 +311,7 @@ final class LivePowerCoordinator: ObservableObject {
     /// the stream observer and the tests share one deterministic path.
     func apply(reading: LivePowerReading?) {
         self.reading = reading
+        systemLoadWatts = reading == nil ? nil : loadSystemLoad()
         recomputeHybrid()
     }
 

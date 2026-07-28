@@ -17,7 +17,9 @@ struct TopAppsView: View {
     var hybrid: HybridTodayList?
     /// Battery draw in watts for the live attribution footer.
     var batteryWatts: Double?
-    /// The footer is omitted on AC, where battery watts mean charging rate.
+    /// Whole-system consumption in watts, available even while charging.
+    var systemLoadWatts: Double?
+    /// Selects the appropriate total-power source for the attribution footer.
     var onAC: Bool = false
     /// Total smoothed app watts for the live attribution footer.
     var totalAppWatts: Double?
@@ -90,6 +92,12 @@ struct TopAppsView: View {
                 hybridToday(hybrid)
             } else {
                 historyList
+            }
+
+            if let footer = attribution() {
+                LiveAttributionFooter(
+                    appWatts: footer.appWatts,
+                    systemWatts: footer.systemWatts)
             }
         }
     }
@@ -165,10 +173,6 @@ struct TopAppsView: View {
                     }
                 }
             }
-
-            if let footer = attribution() {
-                LiveAttributionFooter(appWatts: footer.appWatts, systemWatts: footer.systemWatts)
-            }
         }
         .transition(.opacity)
     }
@@ -237,10 +241,6 @@ struct TopAppsView: View {
                     }
                 }
             }
-
-            if let footer = attribution() {
-                LiveAttributionFooter(appWatts: footer.appWatts, systemWatts: footer.systemWatts)
-            }
         }
         .transition(.opacity)
     }
@@ -254,12 +254,27 @@ struct TopAppsView: View {
             session: range == .session ? session : nil)
     }
 
-    /// Apps versus system-and-display split for the footer, or nil when the
-    /// battery watts are unavailable or we are on AC (where watts mean charge).
+    /// Apps versus system-and-display split for the footer. Battery draw is the
+    /// total while unplugged; the power controller's system load is the total
+    /// on AC, where battery watts instead describe charging.
     private func attribution() -> (appWatts: Double, systemWatts: Double)? {
-        guard !onAC, let batteryWatts, batteryWatts > 0, let totalAppWatts else { return nil }
-        let systemWatts = max(0, batteryWatts - totalAppWatts)
-        return (totalAppWatts, systemWatts)
+        Self.attribution(
+            appWatts: totalAppWatts,
+            batteryWatts: batteryWatts,
+            systemLoadWatts: systemLoadWatts,
+            onAC: onAC)
+    }
+
+    static func attribution(
+        appWatts: Double?,
+        batteryWatts: Double?,
+        systemLoadWatts: Double?,
+        onAC: Bool
+    ) -> (appWatts: Double, systemWatts: Double)? {
+        let totalWatts = onAC ? systemLoadWatts : batteryWatts
+        guard let totalWatts, totalWatts > 0, let appWatts else { return nil }
+        let systemWatts = max(0, totalWatts - appWatts)
+        return (appWatts, systemWatts)
     }
 }
 

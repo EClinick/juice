@@ -145,6 +145,7 @@ struct PopoverView: View {
                     ranges: visibleRanges,
                     hybrid: showsLivePower ? live.hybrid : nil,
                     batteryWatts: model.reading.map { abs($0.watts) },
+                    systemLoadWatts: live.systemLoadWatts,
                     onAC: model.reading?.onAC ?? false,
                     totalAppWatts: showsLivePower ? live.reading?.totalAppWatts : nil,
                     session: batterySession.result?.session)
