@@ -143,7 +143,8 @@ struct MacMiniStatsView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(maxWidth: 360)
+            .frame(width: 360, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(16)
     }
