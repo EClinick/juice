@@ -17,6 +17,11 @@ struct MacMiniPowerRangeTests {
         #expect(macMiniPowerRanges.map(\.macMiniPickerLabel) == ["Today", "1W", "All"])
     }
 
+    @Test("Server Stats minimum height keeps its footer visible")
+    func statsMinimumHeightIncludesFooter() {
+        #expect(MacMiniStatsView.minimumContentHeight >= 560)
+    }
+
     @Test("All starts at the first recorded power sample")
     func allUsesRecordingStart() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)

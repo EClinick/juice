@@ -6,7 +6,10 @@ import JuiceCore
 /// remain visible for every selected history range.
 struct MacMiniStatsView: View {
     static let minimumContentWidth: CGFloat = 860
-    static let minimumContentHeight: CGFloat = 500
+    // The header, chart's 180-point floor, and footer need this much vertical
+    // space together. Keeping the old 500-point minimum let an autosaved frame
+    // compress the footer below the window's visible content area on reopen.
+    static let minimumContentHeight: CGFloat = 560
 
     let store: JuiceStore?
 
