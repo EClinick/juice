@@ -5,6 +5,9 @@ import IOKit
 struct BatteryReading {
     var percent: Int
     var watts: Double          // positive = discharging, negative = charging
+    /// Current whole-system load reported by the power controller. Unlike
+    /// `watts`, this remains a consumption reading while the battery charges.
+    var systemLoadWatts: Double?
     var isCharging: Bool
     var onAC: Bool
     var timeRemainingMinutes: Int?   // nil while macOS is still estimating
@@ -21,6 +24,21 @@ enum BatteryMonitorError: Error {
 /// Reads battery state from the AppleSmartBattery IORegistry service.
 /// No special permissions required.
 struct BatteryMonitor {
+    /// `PowerTelemetryData.SystemLoad` is reported in milliwatts. It is a
+    /// whole-system load rather than the battery's signed charge/discharge
+    /// rate, so it can back live attribution while connected to AC power.
+    static func systemLoadWatts(from properties: [String: Any]) -> Double? {
+        guard
+            let telemetry = properties["PowerTelemetryData"] as? [String: Any],
+            let milliwatts = telemetry["SystemLoad"] as? NSNumber
+        else {
+            return nil
+        }
+
+        let watts = milliwatts.doubleValue / 1_000
+        return watts.isFinite && watts >= 0 ? watts : nil
+    }
+
     static func read() throws -> BatteryReading {
         let service = IOServiceGetMatchingService(
             kIOMainPortDefault,
@@ -72,6 +90,7 @@ struct BatteryMonitor {
         return BatteryReading(
             percent: percent,
             watts: watts,
+            systemLoadWatts: systemLoadWatts(from: props),
             isCharging: bool("IsCharging"),
             onAC: bool("ExternalConnected"),
             timeRemainingMinutes: timeRemaining,
