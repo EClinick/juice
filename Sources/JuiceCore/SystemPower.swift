@@ -96,10 +96,10 @@ public enum SystemAppEnergyAnalytics {
         guard duration > 0, duration <= maximumGap else { return [] }
 
         let previousApps = Dictionary(
-            previous.apps.map { ($0.appKey, $0) },
+            previous.attributedApps.map { ($0.appKey, $0) },
             uniquingKeysWith: { first, _ in first })
         let currentApps = Dictionary(
-            current.apps.map { ($0.appKey, $0) },
+            current.attributedApps.map { ($0.appKey, $0) },
             uniquingKeysWith: { first, _ in first })
         let keys = Set(previousApps.keys).union(currentApps.keys)
 

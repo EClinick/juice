@@ -30,6 +30,10 @@ public struct LivePowerReading: Equatable, Sendable {
     /// Ranked apps above the idle threshold, in display order (hysteresis
     /// applied).
     public let apps: [AppPowerReading]
+    /// Every attributed app above the model's pruning floor, including apps
+    /// below the display threshold. Persistence uses this complete collection
+    /// so the idle bucket does not hide app energy from history.
+    public let attributedApps: [AppPowerReading]
     /// Apps folded below the idle threshold.
     public let idleAppCount: Int
     public let idleWatts: Double
@@ -45,6 +49,7 @@ public struct LivePowerReading: Equatable, Sendable {
     public init(
         sampledAt: Date? = nil,
         apps: [AppPowerReading],
+        attributedApps: [AppPowerReading]? = nil,
         idleAppCount: Int,
         idleWatts: Double,
         totalAppWatts: Double,
@@ -52,6 +57,7 @@ public struct LivePowerReading: Equatable, Sendable {
     ) {
         self.sampledAt = sampledAt
         self.apps = apps
+        self.attributedApps = attributedApps ?? apps
         self.idleAppCount = idleAppCount
         self.idleWatts = idleWatts
         self.totalAppWatts = totalAppWatts
@@ -329,10 +335,23 @@ public final class LivePowerModel {
                 watts: watts
             )
         }
+        let attributedApps = entries.sorted {
+            if $0.watts != $1.watts { return $0.watts > $1.watts }
+            return $0.key < $1.key
+        }.map { entry in
+            let meta = appMeta[entry.key]
+            return AppPowerReading(
+                appKey: entry.key,
+                bundlePath: meta?.bundlePath,
+                displayName: meta?.displayName ?? entry.key,
+                watts: entry.watts
+            )
+        }
 
         return LivePowerReading(
             sampledAt: Date(timeIntervalSince1970: timestampEpoch),
             apps: apps,
+            attributedApps: attributedApps,
             idleAppCount: idle.count,
             idleWatts: idleWatts,
             totalAppWatts: totalAppWatts,

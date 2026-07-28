@@ -264,4 +264,33 @@ struct SystemAppEnergyAnalyticsTests {
 
         #expect(increments.isEmpty)
     }
+
+    @Test("Apps below the display threshold still persist energy")
+    func includesAttributedIdleApps() throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let idleApp = AppPowerReading(
+            appKey: "quiet.app",
+            bundlePath: nil,
+            displayName: "Quiet App",
+            watts: 0.04)
+        let reading = LivePowerReading(
+            apps: [],
+            attributedApps: [idleApp],
+            idleAppCount: 1,
+            idleWatts: idleApp.watts,
+            totalAppWatts: idleApp.watts,
+            systemWatts: 0)
+
+        let increments = SystemAppEnergyAnalytics.increments(
+            previous: reading,
+            current: reading,
+            start: start,
+            end: start.addingTimeInterval(60),
+            calendar: utcCalendar)
+
+        let persisted = try #require(increments.first)
+        #expect(increments.count == 1)
+        #expect(persisted.appKey == idleApp.appKey)
+        #expect(abs(persisted.energyWh - idleApp.watts / 60) < 1e-9)
+    }
 }
