@@ -21,14 +21,23 @@
     RFC 3161 timestamp URL. Without one, signatures expire when the certificate does,
     so production builds should always pass this.
 
-.PARAMETER FrameworkDependent
-    Builds against the installed Windows App SDK runtime instead of carrying it.
+.PARAMETER CarryWindowsAppSdk
+    Carries the Windows App SDK runtime inside the package instead of depending on its
+    framework package. Off by default, and rarely what you want.
 
-    This is the right choice for Store submission. The Windows App SDK ships as a
-    framework package that the Store resolves and installs automatically, so depending on
-    it costs the user nothing and removes a large payload, including the ONNX and DirectML
-    components that a self-contained Windows App SDK drags in whether or not the
-    application does any machine learning. Juice does none.
+    Depending on the framework package is the right choice for Store submission and for
+    ordinary sideloading. The Windows App SDK ships as a framework package that the Store
+    resolves and installs automatically, so depending on it costs the user nothing and
+    removes a large payload, including the ONNX and DirectML components that a
+    self-contained Windows App SDK drags in whether or not the application does any
+    machine learning. Juice does none. Package.appxmanifest declares the matching
+    PackageDependency, which is what makes this work.
+
+    Carrying it is only useful for offline installs onto machines that cannot reach the
+    Store. Note that winapp cannot currently stage a carried runtime for a current Windows
+    App SDK: it looks for the runtime payload inside the Microsoft.WindowsAppSDK package,
+    which moved to Microsoft.WindowsAppSDK.Runtime in 1.8. This script fails early and
+    explains that rather than letting winapp report a missing Windows SDK.
 
     The .NET runtime is carried regardless. It is not a framework package, the Store will
     not install it, and a framework-dependent .NET build would fail to start on a machine
@@ -50,13 +59,14 @@
     the Store reserves it.
 
 .EXAMPLE
-    .\pack.ps1 -FrameworkDependent
-    Store profile. Bumps the build segment, takes the Windows App SDK from its framework
-    package, carries .NET.
+    .\pack.ps1
+    Store profile, and the default. Bumps the build segment, takes the Windows App SDK
+    from its framework package, carries .NET.
 
 .EXAMPLE
     .\pack.ps1 -CertPath .\prod.pfx -Timestamp http://timestamp.digicert.com
-    Fully self-contained production bundle for sideloading.
+    Production bundle for sideloading, signed with a real certificate and timestamped so
+    the signature outlives the certificate.
 
 .EXAMPLE
     .\pack.ps1 -NoBump
@@ -68,7 +78,7 @@ param(
     [string] $CertPath,
     [string] $CertPassword = 'password',
     [string] $Timestamp,
-    [switch] $FrameworkDependent,
+    [switch] $CarryWindowsAppSdk,
     [switch] $DotNetFrameworkDependent,
     [switch] $NoBump,
     [string[]] $Architectures
@@ -271,10 +281,23 @@ New-Item -ItemType Directory -Force -Path $packagesDir | Out-Null
 
 # A development certificate is generated once and reused across both architectures so
 # that every package in the bundle carries the same publisher.
+#
+# It lives beside this script rather than in the artifacts folder, and is kept rather than
+# regenerated. Installing a package signed by a development certificate requires trusting
+# that certificate, which needs elevation and is done by hand. Regenerating it silently
+# invalidates that trust, so the next install fails with 0x800B0109 for no visible reason.
+# The artifacts folder is deleted at the start of every pack, so a certificate stored there
+# could never survive to be reused. .gitignore covers *.pfx, so it stays out of the repo.
 if (-not $CertPath) {
-    $CertPath = Join-Path $artifacts 'devcert.pfx'
-    Write-Host "Generating development certificate" -ForegroundColor Yellow
-    winapp cert generate --manifest $manifestSource --output $CertPath --password $CertPassword --if-exists overwrite --quiet
+    $CertPath = Join-Path $buildRoot 'devcert.pfx'
+    if (Test-Path $CertPath) {
+        Write-Host "Reusing development certificate" -ForegroundColor DarkGray
+    }
+    else {
+        Write-Host "Generating development certificate" -ForegroundColor Yellow
+    }
+
+    winapp cert generate --manifest $manifestSource --output $CertPath --password $CertPassword --if-exists skip --quiet
     if ($LASTEXITCODE -ne 0) { throw "certificate generation failed" }
 }
 
@@ -283,12 +306,36 @@ if (-not $CertPath) {
 # The Windows App SDK is a framework package the Store resolves and installs, so depending
 # on it costs the user nothing and removes a large payload, including the ONNX and DirectML
 # components a self-contained Windows App SDK carries whether or not the application does
-# any machine learning. Juice does none.
+# any machine learning. Juice does none. That is the default, and Package.appxmanifest
+# declares the matching PackageDependency to make it work.
 #
 # The .NET runtime is not a framework package. The Store will not install it, so it is
 # carried unless the caller explicitly opts out for sideloading onto machines they control.
-$sdkSelfContained = -not $FrameworkDependent
+$sdkSelfContained = [bool] $CarryWindowsAppSdk
 $dotnetSelfContained = -not $DotNetFrameworkDependent
+
+# winapp stages the carried runtime from Microsoft.WindowsAppSDK\<version>\tools\MSIX, but
+# that payload moved to Microsoft.WindowsAppSDK.Runtime in 1.8, so with a current SDK it
+# finds nothing and reports a missing Windows SDK from deep inside packaging. Older SDK
+# versions still sitting in the package cache do have the folder, so this has to check the
+# version this project actually references rather than whichever one it finds first.
+if ($sdkSelfContained) {
+    $referenced = ([xml](Get-Content $appProject)).SelectSingleNode(
+        "//PackageReference[@Include='Microsoft.WindowsAppSDK']/@Version").Value
+
+    if (-not (Test-Path (Join-Path $env:USERPROFILE ".nuget\packages\microsoft.windowsappsdk\$referenced\tools\MSIX"))) {
+        throw @"
+-CarryWindowsAppSdk is not supported with Windows App SDK $referenced.
+
+winapp stages the carried runtime from Microsoft.WindowsAppSDK\<version>\tools\MSIX, but
+that payload moved to Microsoft.WindowsAppSDK.Runtime in 1.8, so winapp finds no runtime
+and fails with "No Windows SDK packages found".
+
+Omit the switch. The framework package is the correct choice for the Store and for any
+machine that can reach it, and Package.appxmanifest already declares the dependency.
+"@
+    }
+}
 
 $sdkFlag = if ($sdkSelfContained) { 'true' } else { 'false' }
 $dotnetFlag = if ($dotnetSelfContained) { 'true' } else { 'false' }

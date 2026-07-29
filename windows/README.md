@@ -163,11 +163,14 @@ ARM64 matters more than usual here: Snapdragon X Copilot+ PCs are among the mach
 
 Packages are framework dependent on the Windows App SDK by default, which the Store resolves and installs, and carry the .NET runtime, which it does not.
 Pass `-DotNetFrameworkDependent` for a smaller package that also requires the matching .NET desktop runtime, which is only appropriate for sideloading onto machines you control.
+`-CarryWindowsAppSdk` carries the Windows App SDK too, for offline installs, but `winapp` cannot currently stage it for a current Windows App SDK and `pack.ps1` says so rather than letting packaging fail obscurely.
 
-`ReadyToRun` is deliberately disabled.
-It roughly doubles every assembly it precompiles, which added around 41 MB per architecture, and measurement showed it also made startup slower: median time to a responsive process was 161 ms without it and 226 ms with it, over five runs each.
-The precompiled code has to be read and mapped before anything runs, and for an application this small that paging cost exceeds the jit work it avoids.
-Disabling it produced a package 60 MB smaller, 1.6 MB less resident memory, and faster startup.
+`ReadyToRun` is enabled.
+It precompiles IL to native code, which costs 12.6 MB on ARM64 and 14.5 MB on x64, and cuts median time to a responsive process from 160.5 ms to 138.5 ms.
+The per-architecture figure is the one that matters, because an MSIX bundle installs only the package matching the machine, whether it came from the Store, a website or a USB key.
+
+That setting was briefly disabled on the strength of a measurement showing it made startup slower.
+The measurement was invalid, and `windows/docs/porting-notes.md` describes why in some detail, because the way it failed is more instructive than the result.
 
 The package declares an `AppExecutionAlias`, so installing it puts `juice` on the PATH for any terminal.
 One bundle therefore serves both the tray application and the command line.

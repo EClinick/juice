@@ -80,7 +80,7 @@ if (-not $Bundle) {
         Select-Object -First 1
 
     if (-not $candidate) {
-        throw "No .msixbundle found in $artifacts. Run pack.ps1 -FrameworkDependent first."
+        throw "No .msixbundle found in $artifacts. Run pack.ps1 first."
     }
 
     $Bundle = $candidate.FullName

@@ -233,38 +233,45 @@ Worth setting only `Kind`.
 Setting `TintOpacity` and `LuminosityOpacity` without also setting `TintColor` and `FallbackColor` opts the controller out of its theme-derived colours, and the result was a light panel on a fully dark system.
 That failure is easy to misread as the theme being wrong somewhere, when the real cause is having partially overridden a set of values that are only coherent together.
 
-## ReadyToRun doubles what it touches
+## ReadyToRun, and how to measure it without fooling yourself
 
 **macOS:** Swift compiles ahead of time by default.
 There is no equivalent decision, and no equivalent surprise.
 
-**Windows:** the WinUI project template enables `PublishReadyToRun` for non-Debug builds, and it roughly doubles every assembly it precompiles.
-The Windows API projection grew from 25 MB to 56 MB and the WinUI assembly from 7 MB to 16 MB, adding around 41 MB per architecture.
+**Windows:** the WinUI project template enables `PublishReadyToRun` for non-Debug builds, which precompiles IL to native code.
+It costs package size and buys startup time, and the interesting part of this section is how hard it turned out to be to measure either honestly.
 
-It is a fair default for many applications and the wrong one here, though not for the reason you would expect.
+The numbers, measured on the packages this repository actually produces.
+Precompiling adds 12.6 MB on arm64 and 14.5 MB on x64.
+That per-architecture figure is the one that matters, because an MSIX bundle installs only the package matching the machine, so nobody downloads the whole bundle.
+This is a property of MSIX itself rather than of the Store, so it holds equally for a bundle handed out on a website or a USB key.
+In exchange, median time to a responsive process falls from 160.5 ms to 138.5 ms, and process cpu time to that point falls from 187.5 ms to 171.9 ms.
+The cpu figure is the jit work being skipped, which is the effect the feature exists to produce.
+It is enabled.
 
-The obvious framing is a trade of size against startup time.
-Measured over five runs each, median time to a responsive process was 161 ms without ReadyToRun and 226 ms with it.
-It made startup slower.
+An earlier version of this section confidently said the opposite: that precompiling made startup slower, and that the trade was therefore not worth taking.
+That was wrong, and the way it was wrong is the part worth keeping.
 
-The precompiled code has to be read from disk and mapped before anything runs, and for an application this small that paging cost exceeds the jit work it avoids.
-Most of the precompiled surface is Windows API projection this application never calls.
-So there was no trade to weigh: disabling it produced a package 60 MB smaller, 1.6 MB less resident memory, and faster startup.
+Precompiled assemblies are not produced by an ordinary `dotnet build`.
+They appear only on `publish`, or on `build` when a runtime identifier is passed, and even then they are written to an `R2R` folder under `obj` and substituted into the package at packaging time.
+The build output keeps the original sizes throughout, so inspecting the folder that was packaged shows 7 MB where the package contains 17.5 MB, which looks impossible until you know where to look.
 
-Two things made this hard to find, and both are worth knowing.
+That indirection is what produced the wrong answer.
+Measuring startup requires a runnable precompiled layout, and no build directory is ever one, so the layout has to be assembled by copying the `R2R` folder over a build output.
+The copy that was measured included a stale `Juice.App.dll` from a differently configured build, which reintroduced a packaged-mode bootstrapper into an unpackaged layout.
+Every "precompiled" run being timed was in fact crashing during startup.
 
-The precompiled copies live in an `R2R` folder under `obj` and are substituted at packaging time, so the build output still shows the original sizes.
-Inspecting the folder that was packaged shows 7 MB while the package contains 16 MB, which looks impossible.
-Reproducing the startup comparison means copying that `R2R` folder over a build output to get a runnable precompiled layout, since no ordinary build directory ever contains one.
+It survived because the timing harness used `WaitForInputIdle`, which returns `true` for a process that has already exited.
+The harness reported a clean, plausible, entirely fictional 226 ms.
+Any startup measurement should assert the process is still alive at the moment it stops the clock, and should discard warm-up runs and interleave the configurations so that machine state cannot be attributed to the variable under test.
 
-The natural explanation is also wrong in a convincing way.
-Comparing against a similar application suggested the Windows App SDK had simply grown between versions, since that application shipped 25 MB where this one shipped 56 MB of the same file.
-Checking the cached packages disproved it: `Microsoft.WinUI.dll` is 7 MB in every version from 1.8 through 2.3.
-The difference was never the SDK.
+A second wrong conclusion came from the same source.
+Comparing against a similar application suggested the Windows App SDK had grown between versions, since that application shipped 25 MB where this one shipped 63 MB of the same file.
+`Microsoft.WinUI.dll` is 7 MB in every cached version from 1.8 through 2.3, so that was never true either.
+The 63 MB file was the command line tool's own precompiled, self-contained output being read as if it belonged to the application.
 
-Turning it off cut the bundle from 153.7 MB to 93.4 MB and reduced the idle working set from 24 MB to 4.5 MB.
-The startup result is not a rounding error either: precompiled native code is faulted in as mapped pages, whereas IL is jitted lazily, so only the code that actually runs is ever materialised.
-
+The lesson is not about ReadyToRun.
+It is that a build feature which quietly writes its output somewhere other than the build output will defeat measurement by inspection, and that a measurement which cannot fail is not a measurement.
 ## Showing an app's icon
 
 **macOS:** `NSWorkspace.icon(forFile:)`.

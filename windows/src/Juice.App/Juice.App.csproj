@@ -69,24 +69,29 @@
 
   <PropertyGroup>
     <!--
-      ReadyToRun is deliberately off, and measurement is the reason rather than a
-      size against speed judgement.
+      ReadyToRun precompiles IL to native code. It costs size and buys startup time, and
+      both sides of that were measured rather than assumed.
 
-      It precompiles IL to native code, which roughly doubles every assembly it touches:
-      the Windows API projection grows from 25 MB to 56 MB and the WinUI assembly from
-      7 MB to 16 MB, adding around 41 MB per architecture.
+      Cost: 12.6 MB on arm64 and 14.5 MB on x64, comparing the packages this script
+      produces. That is what a user downloads, because an MSIX bundle installs only the
+      package matching the machine. The bundle itself grows from 93.4 MB to 120.5 MB, but
+      nobody downloads a whole bundle.
 
-      It also made startup slower. Measured over five runs each, median time to a
-      responsive process was 161 ms without it and 226 ms with it. The precompiled code
-      has to be read from disk and mapped before anything runs, and for an application
-      this small that paging cost exceeds the jit work it avoids. Most of the precompiled
-      surface is Windows API projection this application never calls.
+      Benefit: median time to a responsive process falls from 160.5 ms to 138.5 ms, over
+      fifteen interleaved runs of each configuration with warm-up runs discarded. Process
+      cpu time to that point falls from 187.5 ms to 171.9 ms, which is the jit work being
+      skipped.
 
-      So there is no trade to weigh. Disabling it produced a package 60 MB smaller, 1.6 MB
-      less resident memory, and faster startup. Re-enable it only with measurements
-      showing it helps.
+      An earlier revision of this file claimed the opposite, that ReadyToRun made startup
+      slower. That measurement was invalid: it timed a layout assembled by copying the
+      precompiled assemblies from obj over a build output, and the copy included a stale
+      Juice.App.dll from a differently configured build, so the process being timed
+      crashed on startup instead of running. Precompiled assemblies are only produced by
+      publish, or by build when -r is passed, and they stay in obj until packaging
+      substitutes them. If you re-measure this, verify the process is still alive before
+      trusting the number.
     -->
-    <PublishReadyToRun>false</PublishReadyToRun>
+    <PublishReadyToRun>true</PublishReadyToRun>
     <!--
       Trimming is off deliberately. The tray icon path goes through GDI+ and the settings
       page through WinRT projections, both of which the trimmer cannot see through, and a
