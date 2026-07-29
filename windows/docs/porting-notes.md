@@ -86,6 +86,38 @@ A browser with thirty renderer processes is thirty unrelated entries, there is n
 Grouping is currently by executable name, which is crude.
 It gets `msedge` right and will get an Electron app wrong, since several unrelated apps ship the same host executable name.
 
+## Diagnosing a broken package manifest
+
+**macOS:** `Info.plist` is a plist.
+A syntax error is reported as a syntax error, with a line number.
+
+**Windows:** an XML syntax error in `Package.appxmanifest` can surface as something with no apparent connection to the manifest at all.
+
+A comment in the manifest contained `--json`, and `--` is illegal inside an XML comment under XML 1.0 section 2.5.
+The real diagnostic is `APPX1402: An XML comment cannot contain '--'`, which would have been obvious.
+
+What actually appeared was an `MSB4018` stack trace complaining that
+`System.Security.Permissions, Version=8.0.0.0` could not be loaded.
+The validation task catches the `XmlException` and then throws while classifying it, because that assembly is not shipped alongside the task in the build tools package.
+The underlying message is lost and the manifest is never mentioned.
+
+Worth knowing for CI: any XML syntax error in the manifest can present as that bogus assembly load failure.
+When a packaging build fails with a missing `System.Security.Permissions`, validate the manifest XML first.
+
+## Manifest extension namespaces
+
+**macOS:** login items are registered in code through `SMAppService`, and the surrounding plist keys are few and well documented.
+
+**Windows:** the packaging extensions are declared in XML, and the namespace depends on whether the app is UWP or full trust, which is easy to get wrong because both forms appear in search results and only one validates.
+
+For a full-trust desktop app, `windows.startupTask` is a `desktop:Extension` containing a `desktop:StartupTask`.
+The `uap5` form of the same extension is for UWP.
+
+`windows.appExecutionAlias` is stranger still: the extension and the alias list are `uap3`, but the alias element inside them is `desktop`.
+A `uap3:ExecutionAlias` fails validation even though every surrounding element is `uap3`.
+
+The `Executable` attribute must also name a binary that is genuinely in the package payload, which means shipping the CLI alongside the GUI if the alias is to launch the CLI.
+
 ## Showing an app's icon
 
 **macOS:** `NSWorkspace.icon(forFile:)`.
@@ -187,5 +219,15 @@ The symptom was a silently wrong electricity price rather than an exception, whi
 Charts.
 The macOS app has three, and CONTRIBUTING.md guards them harder than anything else in the repo: axes pinned to the requested window, recording gaps rendered as gaps, no interpolation across missing data.
 
-The obstacle is not drawing them, it is that there is nothing to plot until the local store exists, because history has to outlive a single process lifetime.
-The dependency chain is store, then history, then charts.
+The blocker was that there was nothing to plot, because history has to outlive a single process lifetime.
+The SQLite store now exists and records coverage per hour alongside energy, specifically so a renderer can tell "measured, and the answer was low" from "not measured" and draw the second as a gap.
+`HourBucket.IsPlottable` encodes that decision in one place rather than leaving each chart to invent its own threshold.
+
+So the remaining work is rendering, plus wiring the app's sampling loop into the store.
+
+Real icons for packaged apps.
+Extraction reads the executable's resources, which is wrong for MSIX and Store apps whose real logo lives in the package manifest.
+The current behaviour returns a generic icon rather than nothing, which is the worse failure mode because it cannot be detected and fallen back from.
+
+Grouping processes into apps by executable name.
+Correct for `msedge`, wrong for anything built on a shared host executable.
