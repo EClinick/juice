@@ -224,7 +224,7 @@ struct StatsView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("Show All") {
-                    rangeVisibilityStorage = StatsRangeVisibility.defaultStorageValue
+                    rangeVisibilityStorage = StatsRangeVisibility.allStorageValue
                 }
                 .buttonStyle(.plain)
                 .font(.caption)
