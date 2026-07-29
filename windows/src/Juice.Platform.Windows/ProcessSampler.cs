@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.Versioning;
 using Juice.Core.Attribution;
+using Juice.Core.Monitoring;
+using Juice.Core.Power;
 using Juice.Platform.Windows.Interop;
 
 namespace Juice.Platform.Windows;
@@ -25,7 +27,7 @@ namespace Juice.Platform.Windows;
 /// </para>
 /// </remarks>
 [SupportedOSPlatform("windows")]
-public sealed class ProcessSampler : IDisposable
+public sealed class ProcessSampler : IDisposable, IProcessSampler
 {
     private const string GpuCounterPath = @"\GPU Engine(*)\Utilization Percentage";
 

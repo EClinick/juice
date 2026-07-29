@@ -1,7 +1,8 @@
 using System.Globalization;
 using System.Runtime.Versioning;
 using CommunityToolkit.Mvvm.ComponentModel;
-using Juice.App.Monitoring;
+using Juice.Core.Monitoring;
+using Juice.Platform.Windows;
 using Juice.App.Services;
 
 namespace Juice.App.ViewModels;
@@ -123,11 +124,11 @@ public sealed partial class SettingsViewModel : ObservableObject
 
         SourceDescriptionText = _monitor.Source?.Description ?? "Waiting for the first reading.";
 
-        GpuCountersText = _monitor.Processes is { } processes
+        GpuCountersText = _monitor.Processes as ProcessSampler is { } processes
             ? processes.GpuCountersAvailable ? "Available" : "Not available on this machine"
             : "Waiting for the first reading";
 
-        ProcessTableText = _monitor.Processes is { } sampler
+        ProcessTableText = _monitor.Processes as ProcessSampler is { } sampler
             ? sampler.UsingNativeProcessTable ? "Native bulk read" : "Managed enumeration fallback"
             : "Waiting for the first reading";
     }

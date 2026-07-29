@@ -188,4 +188,13 @@ public interface IPowerSource
 
     /// <summary>Takes a reading, or returns null when the source cannot currently measure.</summary>
     PowerSample? Read();
+
+    /// <summary>
+    /// Takes a discarded first reading, so the first reading a caller sees is real.
+    /// </summary>
+    /// <remarks>
+    /// Rate counters have no interval behind them until they have been read twice, so an
+    /// unprimed source reports zero watts once. Sources with no such warm-up ignore this.
+    /// </remarks>
+    void Prime(TimeSpan settle) { }
 }

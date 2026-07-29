@@ -1,7 +1,7 @@
 using Juice.Core.Attribution;
 using Juice.Core.Power;
 
-namespace Juice.App.Monitoring;
+namespace Juice.Core.Monitoring;
 
 /// <summary>
 /// Everything one pass of the sampling loop produced, already formatted where formatting
@@ -9,7 +9,7 @@ namespace Juice.App.Monitoring;
 /// </summary>
 /// <remarks>
 /// The snapshot is immutable and is the only thing that crosses from the sampling thread
-/// to the UI thread. Passing the live <see cref="Juice.Platform.Windows.ProcessSampler"/>
+/// to the UI thread. Passing the live <see cref="IProcessSampler"/>
 /// buffers instead would hand the UI a list that the next sample is about to overwrite.
 /// </remarks>
 public sealed record PowerSnapshot

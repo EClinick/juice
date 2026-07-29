@@ -2,7 +2,7 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Runtime.Versioning;
 using CommunityToolkit.Mvvm.ComponentModel;
-using Juice.App.Monitoring;
+using Juice.Core.Monitoring;
 using Juice.App.Services;
 using Juice.Core.Attribution;
 using Juice.Core.Cost;

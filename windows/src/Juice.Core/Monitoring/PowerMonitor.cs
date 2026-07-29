@@ -1,12 +1,8 @@
-using System.Runtime.Versioning;
-using Juice.App.Interop;
 using Juice.Core.Attribution;
 using Juice.Core.Power;
 using Juice.Core.Storage;
-using Juice.Platform.Windows;
-using Microsoft.UI.Dispatching;
 
-namespace Juice.App.Monitoring;
+namespace Juice.Core.Monitoring;
 
 /// <summary>
 /// Runs the sampling loop and publishes snapshots to the UI thread.
@@ -25,7 +21,6 @@ namespace Juice.App.Monitoring;
 /// the process table walk can make the flyout stutter.
 /// </para>
 /// </remarks>
-[SupportedOSPlatform("windows10.0.19041.0")]
 public sealed class PowerMonitor : IDisposable
 {
     /// <summary>
@@ -50,14 +45,17 @@ public sealed class PowerMonitor : IDisposable
     /// <summary>How often expired battery samples are swept.</summary>
     private static readonly TimeSpan PruneInterval = TimeSpan.FromHours(6);
 
-    private readonly DispatcherQueue _ui;
+    private readonly Func<IPowerSource> _sourceFactory;
+    private readonly Func<IProcessSampler> _processFactory;
+    private readonly IBatteryRuntimeReader? _runtime;
+    private readonly Action<Action> _post;
     private readonly EnergyAttributor _attributor = new();
     private readonly Lock _gate = new();
     private readonly Timer _timer;
     private readonly JuiceStore? _store;
 
-    private CompositePowerSource? _source;
-    private ProcessSampler? _processes;
+    private IPowerSource? _source;
+    private IProcessSampler? _processes;
 
     private ActivityState _state = ActivityState.TrayOnly;
     private bool _onAc = true;
@@ -72,28 +70,49 @@ public sealed class PowerMonitor : IDisposable
     private AttributionResult? _lastAttribution;
     private double? _idleBaseline;
 
-    /// <summary>Creates a monitor that publishes onto the given dispatcher.</summary>
-    /// <param name="ui">Dispatcher to publish snapshots on.</param>
+    /// <summary>Creates a monitor over the given platform pieces.</summary>
+    /// <param name="sourceFactory">
+    /// Builds the power source, called once on the first tick rather than in the
+    /// constructor so that a host can be created before any hardware is touched.
+    /// </param>
+    /// <param name="processFactory">Builds the process table sampler.</param>
+    /// <param name="runtime">
+    /// Optional supplier of the platform's own remaining-runtime estimate.
+    /// </param>
     /// <param name="store">
     /// Optional history store. When supplied, every attributed interval and a periodic
     /// battery sample are persisted, which is what allows the charts to show anything
     /// beyond the current process lifetime.
     /// </param>
-    public PowerMonitor(DispatcherQueue ui, JuiceStore? store = null)
+    /// <param name="post">
+    /// Marshals the snapshot event onto whichever thread the host wants it on. A user
+    /// interface passes its dispatcher. A host whose own loop is the sampling thread, such
+    /// as the tray agent or a headless collector, passes nothing and the event is raised
+    /// inline.
+    /// </param>
+    public PowerMonitor(
+        Func<IPowerSource> sourceFactory,
+        Func<IProcessSampler> processFactory,
+        IBatteryRuntimeReader? runtime = null,
+        JuiceStore? store = null,
+        Action<Action>? post = null)
     {
-        _ui = ui;
+        _sourceFactory = sourceFactory;
+        _processFactory = processFactory;
+        _runtime = runtime;
         _store = store;
+        _post = post ?? (action => action());
         _timer = new Timer(_ => Tick(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
     }
 
-    /// <summary>Raised on the UI thread each time a reading completes.</summary>
+    /// <summary>Raised each time a reading completes, on whichever thread <c>post</c> chose.</summary>
     public event EventHandler<PowerSnapshot>? SnapshotReady;
 
     /// <summary>The power source stack, or null until the first tick has built it.</summary>
-    public CompositePowerSource? Source => _source;
+    public IPowerSource? Source => _source;
 
     /// <summary>The process sampler, or null until the first tick has built it.</summary>
-    public ProcessSampler? Processes => _processes;
+    public IProcessSampler? Processes => _processes;
 
     /// <summary>
     /// What the user can currently see. Setting it re-arms the timer immediately so a
@@ -171,7 +190,7 @@ public sealed class PowerMonitor : IDisposable
             MaybePrune(now);
 
             var severity = DrainClassifier.Classify(sample?.SystemWatts, _idleBaseline);
-            var remaining = SystemPower.RemainingRuntime();
+            var remaining = _runtime?.RemainingRuntime();
 
             var snapshot = new PowerSnapshot
             {
@@ -184,7 +203,7 @@ public sealed class PowerMonitor : IDisposable
                 IdleBaselineWatts = _idleBaseline,
             };
 
-            _ui.TryEnqueue(() => SnapshotReady?.Invoke(this, snapshot));
+            _post(() => SnapshotReady?.Invoke(this, snapshot));
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
@@ -208,10 +227,10 @@ public sealed class PowerMonitor : IDisposable
     {
         if (_source is not null) return;
 
-        var source = CompositePowerSource.CreateDefault();
+        var source = _sourceFactory();
         source.Prime(PrimeSettle);
 
-        _processes = new ProcessSampler();
+        _processes = _processFactory();
         _source = source;
     }
 
@@ -337,7 +356,10 @@ public sealed class PowerMonitor : IDisposable
         }
 
         _timer.Dispose();
-        _source?.Dispose();
-        _processes?.Dispose();
+
+        // The interfaces do not require disposability, because not every implementation
+        // holds an operating system handle. The Windows ones do, so ask.
+        (_source as IDisposable)?.Dispose();
+        (_processes as IDisposable)?.Dispose();
     }
 }

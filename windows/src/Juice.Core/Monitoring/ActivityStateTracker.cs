@@ -1,6 +1,6 @@
 using Juice.Core.Power;
 
-namespace Juice.App.Monitoring;
+namespace Juice.Core.Monitoring;
 
 /// <summary>
 /// Folds the several independent signals Windows sends about visibility into the single

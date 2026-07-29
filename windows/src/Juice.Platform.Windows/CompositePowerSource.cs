@@ -31,12 +31,37 @@ public sealed class CompositePowerSource : IPowerSource, IDisposable
     }
 
     /// <summary>Builds the standard Windows source stack for this machine.</summary>
+    /// <remarks>
+    /// <para>
+    /// Both sources read the battery through WMI, but only one of them reads it often.
+    /// </para>
+    /// <para>
+    /// <see cref="WmiBatteryStateReader"/> runs two cross process queries against
+    /// <c>root\wmi</c> every time it is asked, which is orders of magnitude dearer than the
+    /// performance counter read it sits beside: the hardware rails come from PDH, which is
+    /// a memory read behind a handle. The meter source needs the battery only for mains
+    /// state, charge percentage and charge rate, none of which move faster than the cache
+    /// window, so it takes a cached reader. Uncached it was issuing roughly seventeen
+    /// thousand queries a day for values that change a few dozen times.
+    /// </para>
+    /// <para>
+    /// The battery source is the fallback that derives watts from the discharge rate
+    /// itself, so it keeps an uncached reader and stays exact where the number actually
+    /// depends on it.
+    /// </para>
+    /// <para>
+    /// <see cref="SystemPowerStatusReader"/> exists as an alternative that needs no WMI at
+    /// all, but it cannot report charge rate, so it is not used here. It is the right
+    /// starting point if this ever has to run under Native AOT, where WMI cannot work
+    /// because it activates its COM types by reflection.
+    /// </para>
+    /// </remarks>
     public static CompositePowerSource CreateDefault()
     {
         var battery = new WmiBatteryStateReader();
         return new CompositePowerSource(
         [
-            new EnergyMeterPowerSource(battery),
+            new EnergyMeterPowerSource(new CachedBatteryStateReader(battery)),
             new BatteryPowerSource(battery),
         ]);
     }

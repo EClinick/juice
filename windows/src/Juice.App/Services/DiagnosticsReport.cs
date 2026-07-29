@@ -1,7 +1,8 @@
 using System.Globalization;
 using System.Runtime.Versioning;
 using System.Text;
-using Juice.App.Monitoring;
+using Juice.Core.Monitoring;
+using Juice.Platform.Windows;
 using Juice.Core.Power;
 
 namespace Juice.App.Services;
@@ -36,7 +37,7 @@ public static class DiagnosticsReport
             report.AppendLine(CultureInfo.InvariantCulture, $"  Active tier: {TierName(source.Tier)}");
             report.AppendLine(CultureInfo.InvariantCulture, $"  Description: {source.Description}");
 
-            foreach (var candidate in source.Sources)
+            foreach (var candidate in (source as CompositePowerSource)?.Sources ?? [])
             {
                 var availability = candidate.IsAvailable ? "available" : "unavailable";
                 report.AppendLine(CultureInfo.InvariantCulture,
@@ -53,9 +54,9 @@ public static class DiagnosticsReport
         if (monitor.Processes is { } processes)
         {
             report.AppendLine(CultureInfo.InvariantCulture,
-                $"  Per-process GPU counters: {(processes.GpuCountersAvailable ? "available" : "unavailable")}");
+                $"  Per-process GPU counters: {((processes as ProcessSampler)?.GpuCountersAvailable == true ? "available" : "unavailable")}");
             report.AppendLine(CultureInfo.InvariantCulture,
-                $"  Native process table: {(processes.UsingNativeProcessTable ? "in use" : "fallen back to managed enumeration")}");
+                $"  Native process table: {((processes as ProcessSampler)?.UsingNativeProcessTable == true ? "in use" : "fallen back to managed enumeration")}");
         }
         else
         {

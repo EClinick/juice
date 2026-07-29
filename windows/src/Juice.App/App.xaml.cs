@@ -1,5 +1,5 @@
 using System.Runtime.Versioning;
-using Juice.App.Monitoring;
+using Juice.Core.Monitoring;
 using Juice.App.Services;
 using Juice.App.Tray;
 using Juice.App.ViewModels;
@@ -71,7 +71,12 @@ public partial class App : Application
         _flyoutViewModel = new FlyoutViewModel(_icons);
 
         _store = HistoryStoreFactory.TryOpen();
-        _monitor = new PowerMonitor(_ui, _store);
+        _monitor = new PowerMonitor(
+            CompositePowerSource.CreateDefault,
+            () => new ProcessSampler(),
+            new SystemPowerStatusReader(),
+            _store,
+            action => _ui.TryEnqueue(() => action()));
         _monitor.SnapshotReady += OnSnapshotReady;
 
         _activity.StateChanged += (_, state) =>
