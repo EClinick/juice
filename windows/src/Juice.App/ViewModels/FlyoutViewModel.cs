@@ -30,6 +30,12 @@ public sealed partial class FlyoutViewModel : ObservableObject
     private const int MaxAppRows = 5;
 
     /// <summary>
+    /// Rows the list reserves before any measurement exists: the app rows plus the
+    /// platform row, which is what the populated list settles at.
+    /// </summary>
+    private const int ReservedRowCount = MaxAppRows + 1;
+
+    /// <summary>
     /// Identity used for the platform row. It is not an app, so it takes a key that no
     /// executable can produce rather than sharing the app id space.
     /// </summary>
@@ -52,6 +58,11 @@ public sealed partial class FlyoutViewModel : ObservableObject
         PowerStateText = string.Empty;
         EnergyWindowText = "Collecting the first sampling window.";
         RateFooterText = string.Empty;
+
+        // Reserved from the outset rather than on the first snapshot, because the flyout
+        // can be opened before any snapshot has been delivered and that is exactly the
+        // case the user sees resize.
+        ReservePlaceholderRows();
     }
 
     private readonly AppIconService? _icons;
@@ -253,7 +264,7 @@ public sealed partial class FlyoutViewModel : ObservableObject
     {
         if (attribution is null || attribution.End <= attribution.Start)
         {
-            EnergyRows.Clear();
+            ReservePlaceholderRows();
             HasEnergyRows = false;
             EnergyWindowText = "Collecting the first sampling window.";
             return;
@@ -294,6 +305,7 @@ public sealed partial class FlyoutViewModel : ObservableObject
             row.CostText = MoneyFormatter.Format(
                 CostCalculator.AnnualCostOfSustainedWatts(watts, rate), rate.Currency) + " a year";
             row.IsPlatform = isPlatform;
+            row.IsPlaceholder = false;
             row.BarFraction = RankingShare.Of(watts, heaviestAppWatts);
 
             UpdateIcon(row, appId, isPlatform, pids);
@@ -303,6 +315,25 @@ public sealed partial class FlyoutViewModel : ObservableObject
         EnergyWindowText = rows.Count > 0
             ? $"Measured over the last {PowerFormatter.FormatDuration(window)}, {PowerFormatter.Energy(attribution.SystemWattHours)} total."
             : "No app drew measurable energy in the last window.";
+    }
+
+    /// <summary>
+    /// Fills the list with blank rows that occupy the height the populated list will
+    /// occupy, so the first real measurement does not resize the window under the user.
+    /// </summary>
+    private void ReservePlaceholderRows()
+    {
+        SyncRows(EnergyRows, ReservedRowCount, () => new EnergyRowViewModel(), (row, index) =>
+        {
+            row.AppId = string.Empty;
+            row.DisplayName = string.Empty;
+            row.WattsText = string.Empty;
+            row.CostText = string.Empty;
+            row.Icon = null;
+            row.IsPlatform = false;
+            row.IsPlaceholder = true;
+            row.BarFraction = 0;
+        });
     }
 
     /// <summary>

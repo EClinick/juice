@@ -213,6 +213,26 @@ Checking the unredirected path shows nothing and looks exactly like the code nev
 That mistake was made in this session and cost a round trip.
 When a packaged app appears not to have written its file, check the redirected path before concluding anything.
 
+## Reaching a material's options
+
+**macOS:** materials are values.
+`.ultraThinMaterial` and `.regularMaterial` are members of the same type, discoverable by autocomplete, usable anywhere a material is expected.
+
+**Windows:** the option you want may exist and still be unreachable from where you are looking.
+
+Acrylic has documented recipes, and the thin one is what the shell uses for surfaces that should show the desktop through them.
+`<DesktopAcrylicBackdrop Kind="Thin" />` fails to compile with `WMC0011: Unknown member 'Kind'`, which reads exactly like the SDK not supporting it.
+
+It does support it.
+`DesktopAcrylicKind` lives in `Microsoft.InteractiveExperiences.Projection.dll` rather than `Microsoft.WinUI.dll`, and the XAML element does not project the property even though the controller does.
+`MicaBackdrop.Kind` compiling while `DesktopAcrylicBackdrop.Kind` does not is the clue, and it is a misleading one, because it suggests the difference is between the two materials rather than between the element and the controller.
+
+The way through is a small `SystemBackdrop` subclass that attaches a `DesktopAcrylicController` with `Kind` set, which keeps the material declarative at the usage site.
+
+Worth setting only `Kind`.
+Setting `TintOpacity` and `LuminosityOpacity` without also setting `TintColor` and `FallbackColor` opts the controller out of its theme-derived colours, and the result was a light panel on a fully dark system.
+That failure is easy to misread as the theme being wrong somewhere, when the real cause is having partially overridden a set of values that are only coherent together.
+
 ## Showing an app's icon
 
 **macOS:** `NSWorkspace.icon(forFile:)`.

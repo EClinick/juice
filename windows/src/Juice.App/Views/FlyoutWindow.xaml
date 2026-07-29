@@ -17,15 +17,34 @@
             context menus, Mica for the base layer of long-lived windows. This flyout is
             transient, so acrylic is correct here and Mica is correct in settings.
 
-            The declarative form is used deliberately. Driving DesktopAcrylicController by
-            hand to tune tint and luminosity produced a panel that ignored the system
-            theme entirely, because the tint colour then has to be supplied per theme as
-            well. The declarative backdrop derives all of that from the configuration it
-            is given, and matching the taskbar is handled by theming the content instead.
+            Thin rather than the default base acrylic, because this surface sits directly
+            over whatever the user was working in and is meant to read as an extension of
+            the taskbar. Base acrylic is opaque enough that the window behind it stops
+            being legible, which made the flyout read as a flat panel. The declarative
+            DesktopAcrylicBackdrop element has no Kind property in this SDK, so the thin
+            variant is reached through a SystemBackdrop subclass that owns the controller.
+            See ThinAcrylicBackdrop for why nothing else about the material is set there.
         -->
-        <DesktopAcrylicBackdrop />
+        <local:ThinAcrylicBackdrop />
     </Window.SystemBackdrop>
 
+
+    <!--
+        Scrolls, rather than clipping, when the content cannot fit between the tray and
+        the top of the work area. The window is sized from its content and is capped at
+        the work area, and a capped window with no scroller would hide the rows past the
+        cap without saying so. Losing a measurement silently is the one failure this
+        project does not accept.
+
+        A ScrollViewer measures its child with unbounded height, so RootGrid still
+        reports its true content height and the window sizing below is unaffected.
+    -->
+    <ScrollViewer
+        x:Name="RootScroller"
+        HorizontalScrollBarVisibility="Disabled"
+        HorizontalScrollMode="Disabled"
+        VerticalScrollBarVisibility="Auto"
+        VerticalScrollMode="Auto">
 
     <!--
         Top-aligned so the grid sizes to its content rather than stretching to fill the
@@ -280,7 +299,14 @@
                 ItemsSource="{x:Bind ViewModel.EnergyRows, Mode=OneWay}">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate x:DataType="vm:EnergyRowViewModel">
-                        <Grid AutomationProperties.Name="{x:Bind local:FlyoutWindow.RowAnnouncement(DisplayName, WattsText, CostText), Mode=OneWay}">
+                        <Grid MinHeight="36" AutomationProperties.Name="{x:Bind local:FlyoutWindow.RowAnnouncement(IsPlaceholder, DisplayName, WattsText, CostText), Mode=OneWay}">
+                            <!--
+                                MinHeight pins the row to the height of a populated row,
+                                which is one body line over one caption line. It is what
+                                keeps a placeholder row and a real row exactly the same
+                                height, so the list does not resize the window when the
+                                first measurement lands.
+                            -->
                             <!--
                                 Ranking bar. It is a star sized column rather than a pixel
                                 width so it stays proportional at any flyout width, and it
@@ -363,6 +389,45 @@
                                     VerticalAlignment="Center"
                                     Style="{StaticResource BodyStrongTextBlockStyle}"
                                     Text="{x:Bind WattsText, Mode=OneWay}" />
+
+                                <!--
+                                    Placeholder blocks, shown only until the first
+                                    attribution window closes. They are blank on purpose:
+                                    a zero or a dash in these positions would read as a
+                                    measurement, and there is not one yet. They occupy the
+                                    same three columns as the real content so nothing
+                                    shifts sideways when the row fills in.
+                                -->
+                                <Border
+                                    Grid.Column="0"
+                                    Width="16"
+                                    Height="16"
+                                    VerticalAlignment="Center"
+                                    Background="{ThemeResource TextFillColorTertiaryBrush}"
+                                    CornerRadius="{StaticResource ControlCornerRadius}"
+                                    Opacity="0.15"
+                                    Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsPlaceholder), Mode=OneWay}" />
+
+                                <Border
+                                    Grid.Column="1"
+                                    Width="112"
+                                    Height="10"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Center"
+                                    Background="{ThemeResource TextFillColorTertiaryBrush}"
+                                    CornerRadius="{StaticResource ControlCornerRadius}"
+                                    Opacity="0.15"
+                                    Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsPlaceholder), Mode=OneWay}" />
+
+                                <Border
+                                    Grid.Column="2"
+                                    Width="40"
+                                    Height="10"
+                                    VerticalAlignment="Center"
+                                    Background="{ThemeResource TextFillColorTertiaryBrush}"
+                                    CornerRadius="{StaticResource ControlCornerRadius}"
+                                    Opacity="0.15"
+                                    Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsPlaceholder), Mode=OneWay}" />
                             </Grid>
                         </Grid>
                     </DataTemplate>
@@ -383,4 +448,5 @@
                 TextWrapping="Wrap" />
         </StackPanel>
     </Grid>
+    </ScrollViewer>
 </Window>

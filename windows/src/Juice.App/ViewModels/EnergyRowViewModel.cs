@@ -66,6 +66,22 @@ public sealed partial class EnergyRowViewModel : ObservableObject
     public partial bool IsPlatform { get; set; }
 
     /// <summary>
+    /// True while this row is reserving space for a measurement that has not arrived yet.
+    /// </summary>
+    /// <remarks>
+    /// Attribution needs two process samples several seconds apart, so the list is
+    /// necessarily empty for the first few seconds after launch. Rendering that as an
+    /// empty list made the flyout open short and then jump taller the moment the first
+    /// window closed. Placeholder rows hold the steady state geometry from the outset, so
+    /// data arriving changes what the rows say and not where anything sits.
+    ///
+    /// A placeholder carries no numbers at all. It is drawn as blank blocks rather than
+    /// as zeroes or dashes, because a zero would be a measurement and there is not one.
+    /// </remarks>
+    [ObservableProperty]
+    public partial bool IsPlaceholder { get; set; }
+
+    /// <summary>
     /// This row's watts as a fraction of the largest row's, from 0 to 1. Sets the width
     /// of the ranking bar drawn behind the row.
     /// </summary>

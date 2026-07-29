@@ -38,8 +38,12 @@ public sealed partial class FlyoutWindow : Window
     /// It is deliberately close to a typical populated flyout: the bottom edge is
     /// anchored, so any correction moves the top edge only, and seeding near the real
     /// answer keeps that correction too small to perceive.
+    ///
+    /// Measured against a first open with the app list reserved and no charts yet, which
+    /// is the layout every fresh launch shows, so the seed is right for the one open that
+    /// has no previous measurement to reuse.
     /// </remarks>
-    private const int SeedHeightDips = 420;
+    private const int SeedHeightDips = 500;
 
     /// <summary>Gap between the flyout and the taskbar edge, matching shell flyouts.</summary>
     private const int GapDips = 12;
@@ -275,8 +279,12 @@ public sealed partial class FlyoutWindow : Window
     /// Builds what a screen reader says for one energy row, so the list does not announce
     /// the view model's type name.
     /// </summary>
-    public static string RowAnnouncement(string name, string watts, string cost)
-        => $"{name}, {watts}, {cost}";
+    /// <remarks>
+    /// A reserved row announces that it is waiting rather than announcing three empty
+    /// strings, which would otherwise read out as a run of commas.
+    /// </remarks>
+    public static string RowAnnouncement(bool isPlaceholder, string name, string watts, string cost)
+        => isPlaceholder ? "Waiting for the first measurement" : $"{name}, {watts}, {cost}";
 
     /// <summary>
     /// Shows the flyout above <paramref name="anchor"/>, the tray icon's screen
@@ -290,7 +298,6 @@ public sealed partial class FlyoutWindow : Window
         if (scale <= 0) scale = 1.0;
 
         var width = (int)Math.Round(WidthDips * scale);
-        var height = OuterHeightFor(OpeningHeightDips(), scale);
         var gap = (int)Math.Round(GapDips * scale);
 
         var display = anchor is { } rect
@@ -300,6 +307,8 @@ public sealed partial class FlyoutWindow : Window
             : DisplayArea.Primary;
 
         var work = display.WorkArea;
+
+        var height = OuterHeightFor(ClampToWorkArea(OpeningHeightDips(), work, scale), scale);
 
         int x, y;
         if (anchor is { } icon)
@@ -448,6 +457,29 @@ public sealed partial class FlyoutWindow : Window
         => _contentHeightDips > 1 ? _contentHeightDips : SeedHeightDips;
 
     /// <summary>
+    /// Caps a content height at what the monitor's work area can actually show.
+    /// </summary>
+    /// <remarks>
+    /// Content taller than the screen would otherwise produce a window taller than the
+    /// screen, whose top rows would sit off the display. The cap is what the ScrollViewer
+    /// around the content exists for: past this height the list scrolls rather than
+    /// running off the top edge, so nothing is hidden without a way to reach it.
+    /// </remarks>
+    /// <param name="contentHeightDips">Measured content height, in DIPs.</param>
+    /// <param name="work">Work area of the monitor the flyout is on, in physical pixels.</param>
+    /// <param name="scale">Monitor scale factor, physical pixels per DIP.</param>
+    private static double ClampToWorkArea(double contentHeightDips, RectInt32 work, double scale)
+    {
+        // Two gaps: one below the window for the tray, one above it so the flyout never
+        // butts against the top of the work area.
+        var availableDips = (work.Height / scale) - (GapDips * 2);
+
+        // A work area this small is not a real configuration, and clamping to it would
+        // produce a window with no height at all.
+        return availableDips > 0 ? Math.Min(contentHeightDips, availableDips) : contentHeightDips;
+    }
+
+    /// <summary>
     /// Keeps the window exactly as tall as its content.
     /// </summary>
     /// <remarks>
@@ -483,7 +515,12 @@ public sealed partial class FlyoutWindow : Window
         var scale = NativeMethods.GetDpiForWindow(hwnd) / 96.0;
         if (scale <= 0) scale = 1.0;
 
-        var target = OuterHeightFor(height, scale);
+        var target = OuterHeightFor(
+            ClampToWorkArea(
+                height,
+                DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea,
+                scale),
+            scale);
         var current = AppWindow.Size.Height;
         // Sub-pixel disagreement is rounding, not a layout change. Acting on it would
         // resize the window on every single layout pass.
