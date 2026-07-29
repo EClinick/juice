@@ -255,14 +255,15 @@ Two things made this hard to find, and both are worth knowing.
 
 The precompiled copies live in an `R2R` folder under `obj` and are substituted at packaging time, so the build output still shows the original sizes.
 Inspecting the folder that was packaged shows 7 MB while the package contains 16 MB, which looks impossible.
+Reproducing the startup comparison means copying that `R2R` folder over a build output to get a runnable precompiled layout, since no ordinary build directory ever contains one.
 
 The natural explanation is also wrong in a convincing way.
 Comparing against a similar application suggested the Windows App SDK had simply grown between versions, since that application shipped 25 MB where this one shipped 56 MB of the same file.
 Checking the cached packages disproved it: `Microsoft.WinUI.dll` is 7 MB in every version from 1.8 through 2.3.
 The difference was never the SDK.
 
-Turning it off cut the bundle from 153.7 MB to 93.4 MB, reduced the idle working set from 24 MB to 4.5 MB, and made startup faster rather than slower.
-That last part is not a rounding error: precompiled native code is faulted in as mapped pages, whereas IL is jitted lazily, so only the code that actually runs is ever materialised.
+Turning it off cut the bundle from 153.7 MB to 93.4 MB and reduced the idle working set from 24 MB to 4.5 MB.
+The startup result is not a rounding error either: precompiled native code is faulted in as mapped pages, whereas IL is jitted lazily, so only the code that actually runs is ever materialised.
 
 ## Showing an app's icon
 
