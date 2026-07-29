@@ -27,14 +27,31 @@
     </Window.SystemBackdrop>
 
 
-    <Grid x:Name="RootGrid" Padding="12,8,12,12" RowSpacing="4">
+    <!--
+        Top-aligned so the grid sizes to its content rather than stretching to fill the
+        window. Its ActualHeight is then the content height and is independent of the
+        window height, which is what lets the window be resized from it without the two
+        feeding each other.
+
+        It is a tab stop with no focus visual purely so that opening the flyout parks
+        focus here rather than on the settings button, which would otherwise appear
+        preselected on every open. Focus visuals remain on for the controls themselves,
+        so keyboard users still see where they are once they tab.
+    -->
+    <Grid
+        x:Name="RootGrid"
+        VerticalAlignment="Top"
+        Padding="12,8,12,12"
+        IsTabStop="True"
+        RowSpacing="4"
+        UseSystemFocusVisuals="False">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
@@ -75,12 +92,9 @@
                 Padding="4"
                 AutomationProperties.AutomationId="FlyoutOpenSettingsButton"
                 AutomationProperties.Name="Open Juice settings"
-                Background="Transparent"
-                BorderThickness="0"
                 Click="OnOpenSettingsClick"
                 Style="{StaticResource SubtleButtonStyle}"
-                ToolTipService.ToolTip="Settings"
-                UseSystemFocusVisuals="False">
+                ToolTipService.ToolTip="Settings">
                 <FontIcon
                     FontFamily="{ThemeResource SymbolThemeFontFamily}"
                     FontSize="14"
@@ -259,14 +273,12 @@
                 Text="{x:Bind ViewModel.EnergyWindowText, Mode=OneWay}"
                 TextWrapping="Wrap" />
 
-            <ListView
+            <ItemsControl
                 Grid.Row="2"
                 AutomationProperties.AutomationId="FlyoutEnergyList"
                 AutomationProperties.Name="Top energy users"
-                IsItemClickEnabled="False"
-                ItemsSource="{x:Bind ViewModel.EnergyRows, Mode=OneWay}"
-                SelectionMode="None">
-                <ListView.ItemTemplate>
+                ItemsSource="{x:Bind ViewModel.EnergyRows, Mode=OneWay}">
+                <ItemsControl.ItemTemplate>
                     <DataTemplate x:DataType="vm:EnergyRowViewModel">
                         <Grid AutomationProperties.Name="{x:Bind local:FlyoutWindow.RowAnnouncement(DisplayName, WattsText, CostText), Mode=OneWay}">
                             <!--
@@ -330,6 +342,7 @@
                                 <FontIcon
                                     Grid.Column="0"
                                     VerticalAlignment="Center"
+                                    FontFamily="{ThemeResource SymbolThemeFontFamily}"
                                     FontSize="14"
                                     Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                                     Glyph="&#xE7F4;"
@@ -353,8 +366,8 @@
                             </Grid>
                         </Grid>
                     </DataTemplate>
-                </ListView.ItemTemplate>
-            </ListView>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
         </Grid>
 
         <!-- Rate provenance -->

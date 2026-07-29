@@ -178,6 +178,41 @@ That is a real loss of compile-time safety, so it is worth confining to presenta
 
 `System.IO.Path` also collides with `Microsoft.UI.Xaml.Shapes.Path` under implicit usings, which any XAML drawing code hits immediately and which needs an alias.
 
+## Removing a window border
+
+**macOS:** an `NSPanel` without a title bar has no border.
+There is nothing to remove.
+
+**Windows:** a WinUI window that has been told to have no border and no title bar can still have `WS_BORDER`, `WS_CAPTION` and `WS_DLGFRAME` set, and still draws a light non-client frame around itself.
+
+This one was expensive to find because the obvious explanation is wrong in a convincing way.
+Windows 11 does draw a border on rounded windows, it is controlled by `DWMWA_BORDER_COLOR`, and setting it to `DWMWA_COLOR_NONE` is the documented way to remove it.
+That is all true, and none of it helps, because the border in question is not that border.
+
+The diagnostic that settled it was cheap and should have come first: log the `HRESULT` of every `DwmSetWindowAttribute` call and dump the window style bits.
+Both calls returned `S_OK`, so DWM was never the problem, and the style dump showed the non-client frame still present.
+Comparing `GetClientRect` against `GetWindowRect` then showed a nine pixel chrome inset, which also explained why the window was taller than its content.
+
+The fix is to handle `WM_NCCALCSIZE` and report the whole window rectangle as client area, so no non-client frame is reserved or painted.
+
+The lesson is not about borders.
+Three rebuild, redeploy and relaunch cycles were spent testing hypotheses that a read-only probe would have eliminated in one.
+Redeploy to confirm a conclusion, not to test a guess.
+
+## Finding your own data on a packaged app
+
+**macOS:** `~/Library/Application Support/Juice` is where the app writes and where you look.
+Those are the same path.
+
+**Windows:** they are not.
+
+A packaged app calling `Environment.GetFolderPath(LocalApplicationData)` gets a redirected location, so a file the app believes it wrote to `%LOCALAPPDATA%\name.log` actually lands in
+`%LOCALAPPDATA%\Packages\<PackageFamilyName>\LocalCache\Local\name.log`.
+
+Checking the unredirected path shows nothing and looks exactly like the code never ran.
+That mistake was made in this session and cost a round trip.
+When a packaged app appears not to have written its file, check the redirected path before concluding anything.
+
 ## Showing an app's icon
 
 **macOS:** `NSWorkspace.icon(forFile:)`.

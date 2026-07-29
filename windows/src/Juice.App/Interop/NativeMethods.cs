@@ -106,6 +106,12 @@ internal static class NativeMethods
     /// <summary>Sentinel meaning "draw no border", as opposed to a transparent one.</summary>
     internal const int DWMWA_COLOR_NONE = unchecked((int)0xFFFFFFFE);
 
+    /// <summary>
+    /// Asks a window to size its client area. Answering it with zero makes the client area
+    /// the whole window rect, which leaves no non-client area for the system to paint.
+    /// </summary>
+    internal const uint WM_NCCALCSIZE = 0x0083;
+
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
     internal delegate nint WindowProc(nint hWnd, uint msg, nint wParam, nint lParam);
 
@@ -302,6 +308,23 @@ internal static class NativeMethods
         int attribute,
         ref int value,
         int size);
+
+    /// <summary>Subclass callback, matching <c>SUBCLASSPROC</c>.</summary>
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    internal delegate nint SubclassProc(
+        nint hWnd,
+        uint msg,
+        nint wParam,
+        nint lParam,
+        nuint id,
+        nint refData);
+
+    [DllImport("comctl32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool SetWindowSubclass(nint hWnd, SubclassProc callback, nuint id, nint refData);
+
+    [DllImport("comctl32.dll")]
+    internal static extern nint DefSubclassProc(nint hWnd, uint msg, nint wParam, nint lParam);
 
     /// <summary>Low 16 bits of a message parameter, as a signed coordinate.</summary>
     internal static int LowWord(nint value) => unchecked((short)(long)value);
