@@ -86,6 +86,47 @@ A browser with thirty renderer processes is thirty unrelated entries, there is n
 Grouping is currently by executable name, which is crude.
 It gets `msedge` right and will get an Electron app wrong, since several unrelated apps ship the same host executable name.
 
+## Showing an app's icon
+
+**macOS:** `NSWorkspace.icon(forFile:)`.
+One call, always returns something sensible, and CONTRIBUTING.md relies on it: app rows use real icons rather than glyphs.
+
+**Windows:** there is no single call, so it is reconstructed in three steps.
+The executable path is resolved from the process id with `QueryFullProcessImageName` under `PROCESS_QUERY_LIMITED_INFORMATION`, the icon is extracted from that executable's resources with `PrivateExtractIcons` at the size the list actually renders, and the result is encoded as PNG so the platform layer stays free of XAML types.
+
+Two things make this less reliable than the macOS equivalent, and both need a fallback in the UI.
+
+Many executables carry no icon resource at all.
+This was found the honest way: the first capability probe extracted the icon of the running process, got nothing, and looked like a bug in the interop.
+It was not.
+A bare .NET apphost has no icon unless `ApplicationIcon` is set, while `explorer.exe` extracted correctly on the same code path.
+Console hosts and service binaries are commonly in the same position.
+
+Packaged apps are worse.
+For an MSIX or Store app the real logo lives in the package manifest as `Square44x44Logo`, and the executable's own icon is often generic or absent, so `PrivateExtractIcons` returns something that is technically valid and visually wrong.
+Handling that properly means going through the package graph rather than the file, which is not yet implemented.
+
+Extraction is also expensive enough to need a cache, keyed by path and including negative results, because the answer never changes for a given executable and the list refreshes every few seconds.
+The cache from process id to path has to be invalidated periodically, since Windows recycles process ids and would otherwise eventually hand back the wrong executable.
+
+## Sitting visually next to the taskbar
+
+**macOS:** the menu bar hosts the item, so it inherits the correct appearance automatically.
+There is nothing to match because the app is drawn by the same surface.
+
+**Windows:** the tray icon is a bitmap the app renders itself, and the flyout is an ordinary window, so both have to be matched to the taskbar deliberately.
+
+The trap is that Windows has two independent theme switches that users frequently set differently.
+`AppsUseLightTheme` drives application chrome, while `SystemUsesLightTheme` drives the taskbar, Start and the notification area.
+Light apps on a dark taskbar is a common configuration.
+
+Anything drawn against the taskbar must follow `SystemUsesLightTheme`.
+Following the app theme instead produces a tray icon that is invisible against the taskbar it sits on, which is the most common way tray utilities get this wrong.
+
+There is a third switch as well.
+`ColorPrevalence` under `HKCU\Software\Microsoft\Windows\DWM` reports whether the user enabled "Show accent color on Start and taskbar", which determines whether the taskbar is accent-tinted or neutral, and the flyout has to match that too if it is to read as an extension of the taskbar rather than a window parked next to it.
+The accent itself is stored as a DWORD in ABGR order rather than the ARGB most Windows colour APIs use, so the red and blue channels have to be swapped back.
+
 ## Showing a number in the menu bar
 
 **macOS:** `MenuBarExtra` accepts a `Text` view.

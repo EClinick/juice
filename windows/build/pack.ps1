@@ -51,6 +51,7 @@ Set-StrictMode -Version Latest
 $buildRoot = $PSScriptRoot
 $windowsRoot = Split-Path -Parent $buildRoot
 $appProject = Join-Path $windowsRoot 'src\Juice.App\Juice.App.csproj'
+$cliProject = Join-Path $windowsRoot 'src\Juice.Cli\Juice.Cli.csproj'
 $manifestSource = Join-Path $windowsRoot 'src\Juice.App\Package.appxmanifest'
 $artifacts = Join-Path $windowsRoot 'artifacts'
 $packagesDir = Join-Path $artifacts 'packages'
@@ -108,6 +109,21 @@ foreach ($arch in $Architectures) {
         -p:PublishReadyToRun=true `
         -o $layout
     if ($LASTEXITCODE -ne 0) { throw "publish failed for $arch" }
+
+    # The manifest declares an AppExecutionAlias for juice.exe, so the CLI has to be
+    # inside the package or the alias resolves to nothing. Publishing it into the same
+    # layout is what makes one bundle serve both the tray app and the command line.
+    dotnet publish $cliProject `
+        -c $Configuration `
+        -r $rid `
+        --self-contained $selfContained.ToString().ToLowerInvariant() `
+        -p:PublishReadyToRun=true `
+        -o $layout
+    if ($LASTEXITCODE -ne 0) { throw "CLI publish failed for $arch" }
+
+    if (-not (Test-Path (Join-Path $layout 'juice.exe'))) {
+        throw "juice.exe missing from the $arch layout; the AppExecutionAlias would be dead."
+    }
 
     # Stamp the manifest per architecture. MSIX requires ProcessorArchitecture to match
     # the payload, and every package in a bundle must share one version.

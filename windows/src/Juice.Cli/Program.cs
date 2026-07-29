@@ -266,6 +266,16 @@ public static class Program
     {
         using var composite = CompositePowerSource.CreateDefault();
         using var processes = new ProcessSampler();
+        using var icons = new AppIconResolver();
+
+        var taskbar = TaskbarAppearanceReader.Read();
+
+        // Probe icon extraction against a system binary that definitely carries an icon.
+        // Probing the current process would be misleading: a bare .NET apphost has no
+        // icon resource at all, so a null there says nothing about the capability.
+        var iconProbe = icons.GetIconPngForPath(
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe"));
+        var iconsWork = iconProbe is { Length: > 0 };
 
         if (json)
         {
@@ -284,6 +294,9 @@ public static class Program
                 {
                     ["perProcessGpu"] = processes.GpuCountersAvailable,
                     ["nativeProcessTable"] = processes.UsingNativeProcessTable,
+                    ["appIcons"] = iconsWork,
+                    ["taskbarLightTheme"] = taskbar.IsLightTheme,
+                    ["accentOnTaskbar"] = taskbar.AccentOnTaskbar,
                 },
             });
             return ExitOk;
@@ -297,6 +310,10 @@ public static class Program
 
         Console.WriteLine($"  [{(processes.GpuCountersAvailable ? "x" : " ")}] per-process GPU utilisation");
         Console.WriteLine($"  [{(processes.UsingNativeProcessTable ? "x" : " ")}] bulk process table");
+        Console.WriteLine($"  [{(iconsWork ? "x" : " ")}] app icon extraction");
+        Console.WriteLine();
+        Console.WriteLine($"Taskbar: {(taskbar.IsLightTheme ? "light" : "dark")}, accent {(taskbar.AccentOnTaskbar ? "on" : "off")}, "
+            + $"RGB({taskbar.Accent.R},{taskbar.Accent.G},{taskbar.Accent.B})");
         return ExitOk;
     }
 

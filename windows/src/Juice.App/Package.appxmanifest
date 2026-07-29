@@ -2,10 +2,10 @@
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
-  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
   xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap uap5 desktop rescap">
+  IgnorableNamespaces="uap uap3 desktop rescap">
 
   <!--
     Version is major.minor.build.0 and is rewritten from $(JuiceVersion) at pack time by
@@ -49,30 +49,47 @@
 
       <Extensions>
         <!--
-          Puts `juice` on the PATH for any terminal, so the same package serves the tray
+          Puts `juice` on the PATH for any terminal, so one package serves both the tray
           app and the command line front end that AI tooling drives with the json switch.
-          Executable has to name a binary that is actually in the package, so it points at
-          Juice.App.exe and the alias itself supplies the `juice` name.
+          Executable points at the CLI rather than the GUI, because typing `juice` should
+          get you the command line; windows/build/pack.ps1 publishes Juice.Cli into the
+          same layout so juice.exe is present in the package.
+
+          The nesting is deliberate and easy to get wrong. For a full-trust desktop app
+          the extension and the alias list are uap3, but the alias element itself is
+          desktop. A uap3:ExecutionAlias here fails validation.
+
           The alias only resolves once the package is installed and the user has run the
           app at least once, which is a Windows behaviour and not something we control.
         -->
-        <uap5:Extension
+        <uap3:Extension
           Category="windows.appExecutionAlias"
-          Executable="Juice.App.exe"
+          Executable="juice.exe"
           EntryPoint="Windows.FullTrustApplication">
-          <uap5:AppExecutionAlias>
-            <uap5:ExecutionAlias Alias="juice.exe" />
-          </uap5:AppExecutionAlias>
-        </uap5:Extension>
+          <uap3:AppExecutionAlias>
+            <desktop:ExecutionAlias Alias="juice.exe" />
+          </uap3:AppExecutionAlias>
+        </uap3:Extension>
 
         <!--
-          Juice is a tray utility, so it starts with Windows but is disabled by default.
-          The user enables it from Settings, and Windows also lets them revoke it from
-          Task Manager's Startup tab.
+          Juice is a tray utility, so it registers to start with Windows but ships
+          disabled. Settings enables it by calling StartupTask.RequestEnableAsync against
+          this TaskId. Windows also lets the user revoke it from Task Manager's Startup
+          tab, and once revoked there it cannot be programmatically re-enabled, which is
+          the correct behaviour for a background app.
+
+          This extension is in the desktop namespace. The uap5 form is for UWP and does
+          not apply to a full-trust desktop app.
         -->
-        <uap5:Extension Category="windows.startupTask" Executable="Juice.App.exe" EntryPoint="Windows.FullTrustApplication">
-          <uap5:StartupTask TaskId="JuiceStartup" Enabled="false" DisplayName="Juice" />
-        </uap5:Extension>
+        <desktop:Extension
+          Category="windows.startupTask"
+          Executable="Juice.App.exe"
+          EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask
+            TaskId="JuiceStartup"
+            Enabled="false"
+            DisplayName="Juice" />
+        </desktop:Extension>
       </Extensions>
     </Application>
   </Applications>
