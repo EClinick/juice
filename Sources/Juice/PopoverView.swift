@@ -284,10 +284,7 @@ struct PopoverView: View {
             .controlSize(.small)
         }
         .padding(14)
-        // Both dashboards need enough room for their segmented controls and
-        // trailing actions. The old 320 pt battery width truncated the updater
-        // row and made the default range picker feel cramped.
-        .frame(width: 360)
+        .frame(width: model.isMacMini ? 360 : 320)
         .onAppear {
             model.refresh()
             helper.refresh()
