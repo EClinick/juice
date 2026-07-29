@@ -165,8 +165,9 @@ Packages are framework dependent on the Windows App SDK by default, which the St
 Pass `-DotNetFrameworkDependent` for a smaller package that also requires the matching .NET desktop runtime, which is only appropriate for sideloading onto machines you control.
 
 `ReadyToRun` is deliberately disabled.
-It roughly doubles every assembly it precompiles, which added around 41 MB per architecture, and it trades size for startup time in an application that is launched once and then runs for weeks.
-Turning it off cut the bundle by a quarter with no measurable change in startup, and dropped the idle working set from 24 MB to 4.5 MB.
+It roughly doubles every assembly it precompiles, which added around 41 MB per architecture, and measurement showed it also made startup slower: median time to a responsive process was 161 ms without it and 226 ms with it, over five runs each.
+The precompiled code has to be read and mapped before anything runs, and for an application this small that paging cost exceeds the jit work it avoids.
+Disabling it produced a package 60 MB smaller, 1.6 MB less resident memory, and faster startup.
 
 The package declares an `AppExecutionAlias`, so installing it puts `juice` on the PATH for any terminal.
 One bundle therefore serves both the tray application and the command line.

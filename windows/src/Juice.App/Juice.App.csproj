@@ -69,25 +69,23 @@
 
   <PropertyGroup>
     <!--
+      ReadyToRun is deliberately off, and measurement is the reason rather than a
+      size against speed judgement.
 
-      ReadyToRun is deliberately off. It precompiles IL to native code, which roughly
+      It precompiles IL to native code, which roughly doubles every assembly it touches:
+      the Windows API projection grows from 25 MB to 56 MB and the WinUI assembly from
+      7 MB to 16 MB, adding around 41 MB per architecture.
 
-      doubles the size of every assembly it touches: the Windows API projection grows from
+      It also made startup slower. Measured over five runs each, median time to a
+      responsive process was 161 ms without it and 226 ms with it. The precompiled code
+      has to be read from disk and mapped before anything runs, and for an application
+      this small that paging cost exceeds the jit work it avoids. Most of the precompiled
+      surface is Windows API projection this application never calls.
 
-      25 MB to 56 MB and the WinUI assembly from 7 MB to 16 MB, adding around 41 MB per
-
-      architecture to the package.
-
-    
-
-      The trade it offers is faster startup, which matters least for exactly this kind of
-
-      application. Juice is launched once and then sits in the tray for weeks, so it pays
-
-      the download and disk cost on every machine to save a fraction of a second, once.
-
+      So there is no trade to weigh. Disabling it produced a package 60 MB smaller, 1.6 MB
+      less resident memory, and faster startup. Re-enable it only with measurements
+      showing it helps.
     -->
-
     <PublishReadyToRun>false</PublishReadyToRun>
     <!--
       Trimming is off deliberately. The tray icon path goes through GDI+ and the settings

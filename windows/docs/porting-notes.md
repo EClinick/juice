@@ -241,9 +241,15 @@ There is no equivalent decision, and no equivalent surprise.
 **Windows:** the WinUI project template enables `PublishReadyToRun` for non-Debug builds, and it roughly doubles every assembly it precompiles.
 The Windows API projection grew from 25 MB to 56 MB and the WinUI assembly from 7 MB to 16 MB, adding around 41 MB per architecture.
 
-It is a fair default for many applications and a poor one here.
-ReadyToRun trades size for startup time, and it is the wrong trade for something launched once that then sits in the notification area for weeks.
-Juice was paying a download and disk cost on every machine to save a fraction of a second, once, in an application whose entire subject is background resource waste.
+It is a fair default for many applications and the wrong one here, though not for the reason you would expect.
+
+The obvious framing is a trade of size against startup time.
+Measured over five runs each, median time to a responsive process was 161 ms without ReadyToRun and 226 ms with it.
+It made startup slower.
+
+The precompiled code has to be read from disk and mapped before anything runs, and for an application this small that paging cost exceeds the jit work it avoids.
+Most of the precompiled surface is Windows API projection this application never calls.
+So there was no trade to weigh: disabling it produced a package 60 MB smaller, 1.6 MB less resident memory, and faster startup.
 
 Two things made this hard to find, and both are worth knowing.
 
@@ -255,7 +261,7 @@ Comparing against a similar application suggested the Windows App SDK had simply
 Checking the cached packages disproved it: `Microsoft.WinUI.dll` is 7 MB in every version from 1.8 through 2.3.
 The difference was never the SDK.
 
-Turning it off cut the bundle from 153.7 MB to 93.4 MB with no measurable change in startup, and reduced the idle working set from 24 MB to 4.5 MB.
+Turning it off cut the bundle from 153.7 MB to 93.4 MB, reduced the idle working set from 24 MB to 4.5 MB, and made startup faster rather than slower.
 That last part is not a rounding error: precompiled native code is faulted in as mapped pages, whereas IL is jitted lazily, so only the code that actually runs is ever materialised.
 
 ## Showing an app's icon
