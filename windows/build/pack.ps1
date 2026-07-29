@@ -166,6 +166,10 @@ function Remove-UnusedRuntimes {
         carry onnxruntime and DirectML and add roughly 38 MB per architecture. Juice
         performs no inference of any kind.
 
+        Also removes the event log message resources, which arrive transitively through
+        System.Diagnostics.PerformanceCounter and exist only to format event log entries.
+        Juice reads performance counters but never writes to the event log.
+
         These files are not in the build output. The build emits a .appxrecipe listing
         every file to package, and that recipe references them by absolute path inside the
         NuGet cache, so deleting them from the output folder achieves nothing: packaging
@@ -176,12 +180,12 @@ function Remove-UnusedRuntimes {
         learning targets fail the build outright when their assets are excluded.
 
         This is safe only because nothing in this application references those APIs. If a
-        feature ever needs on-device inference, delete this function rather than working
-        around it.
+        feature ever needs on-device inference, or starts writing to the event log, delete
+        the relevant pattern rather than working around it.
     #>
     param([Parameter(Mandatory)][string] $Layout)
 
-    $pattern = 'onnxruntime|DirectML|Microsoft\.ML\.OnnxRuntime|Microsoft\.Windows\.AI\.MachineLearning'
+    $pattern = 'onnxruntime|DirectML|Microsoft\.ML\.OnnxRuntime|Microsoft\.Windows\.AI\.MachineLearning|System\.Diagnostics\.EventLog\.Messages'
     $freed = 0
 
     # Prune the recipe first, since it is what packaging actually reads.

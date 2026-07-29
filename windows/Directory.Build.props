@@ -19,7 +19,7 @@
   <PropertyGroup>
     <JuiceMajor>0</JuiceMajor>
     <JuiceMinor>1</JuiceMinor>
-    <JuiceBuild>5</JuiceBuild>
+    <JuiceBuild>6</JuiceBuild>
     <JuiceVersion>$(JuiceMajor).$(JuiceMinor).$(JuiceBuild).0</JuiceVersion>
 
     <Version>$(JuiceMajor).$(JuiceMinor).$(JuiceBuild)</Version>
