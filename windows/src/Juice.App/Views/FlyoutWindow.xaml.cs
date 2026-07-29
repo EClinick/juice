@@ -147,6 +147,21 @@ public sealed partial class FlyoutWindow : Window
     /// </summary>
     public bool AllowClose { get; set; }
 
+    /// <summary>
+    /// Caption describing how much of the charted window was actually recorded.
+    /// </summary>
+    /// <remarks>
+    /// Shown beneath every chart, so a partially recorded window is never presented as a
+    /// complete one. The wording comes from the core library rather than being composed
+    /// here, so the caption cannot drift away from what the chart actually drew.
+    /// </remarks>
+    public static string HistoryCaption(EnergyChartSeries? series)
+        => series?.CoverageCaption() ?? string.Empty;
+
+    /// <summary>Caption describing breaks in the charge timeline.</summary>
+    public static string ChargeCaption(ChargeTimeline? timeline)
+        => timeline?.CoverageCaption() ?? string.Empty;
+
     /// <summary>Maps a flag to a visibility, for <c>x:Bind</c> without a converter.</summary>
     public static Visibility ToVisibility(bool value)
         => value ? Visibility.Visible : Visibility.Collapsed;

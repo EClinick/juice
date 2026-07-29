@@ -2,6 +2,7 @@ using System.Runtime.Versioning;
 using Juice.App.Interop;
 using Juice.Core.Attribution;
 using Juice.Core.Power;
+using Juice.Core.Storage;
 using Juice.Platform.Windows;
 using Microsoft.UI.Dispatching;
 
@@ -41,10 +42,19 @@ public sealed class PowerMonitor : IDisposable
     /// </summary>
     private static readonly TimeSpan MinimumAttributionWindow = TimeSpan.FromSeconds(5);
 
+    /// <summary>
+    /// How often a battery observation is persisted for the charge timeline.
+    /// </summary>
+    private static readonly TimeSpan BatterySampleInterval = TimeSpan.FromMinutes(1);
+
+    /// <summary>How often expired battery samples are swept.</summary>
+    private static readonly TimeSpan PruneInterval = TimeSpan.FromHours(6);
+
     private readonly DispatcherQueue _ui;
     private readonly EnergyAttributor _attributor = new();
     private readonly Lock _gate = new();
     private readonly Timer _timer;
+    private readonly JuiceStore? _store;
 
     private CompositePowerSource? _source;
     private ProcessSampler? _processes;
@@ -57,13 +67,22 @@ public sealed class PowerMonitor : IDisposable
     private PowerSample? _anchorSample;
     private List<ProcessSample>? _anchorProcesses;
     private DateTimeOffset _nextProcessSample = DateTimeOffset.MinValue;
+    private DateTimeOffset _nextBatterySample = DateTimeOffset.MinValue;
+    private DateTimeOffset _nextPrune = DateTimeOffset.MinValue;
     private AttributionResult? _lastAttribution;
     private double? _idleBaseline;
 
     /// <summary>Creates a monitor that publishes onto the given dispatcher.</summary>
-    public PowerMonitor(DispatcherQueue ui)
+    /// <param name="ui">Dispatcher to publish snapshots on.</param>
+    /// <param name="store">
+    /// Optional history store. When supplied, every attributed interval and a periodic
+    /// battery sample are persisted, which is what allows the charts to show anything
+    /// beyond the current process lifetime.
+    /// </param>
+    public PowerMonitor(DispatcherQueue ui, JuiceStore? store = null)
     {
         _ui = ui;
+        _store = store;
         _timer = new Timer(_ => Tick(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
     }
 
@@ -134,6 +153,8 @@ public sealed class PowerMonitor : IDisposable
 
             UpdateIdleBaseline(sample?.SystemWatts);
             MaybeAttribute(sample, now, cadence);
+            MaybeRecordBattery(sample, now);
+            MaybePrune(now);
 
             var severity = DrainClassifier.Classify(sample?.SystemWatts, _idleBaseline);
             var remaining = SystemPower.RemainingRuntime();
@@ -217,7 +238,14 @@ public sealed class PowerMonitor : IDisposable
             && _anchorProcesses is { } anchorProcesses
             && now - anchorSample.Timestamp >= MinimumAttributionWindow)
         {
-            _lastAttribution = _attributor.Attribute(anchorSample, sample, anchorProcesses, current);
+            var result = _attributor.Attribute(anchorSample, sample, anchorProcesses, current);
+            _lastAttribution = result;
+
+            // RecordInterval rejects anything longer than the continuity window, so a
+            // machine returning from sleep cannot dump hours of accumulated energy into
+            // the hour it woke up in. The rejection is silent and correct: that energy is
+            // real but unattributable to any particular hour.
+            TryRecord(() => _store?.RecordInterval(result));
 
             // The sampler reuses its buffer, so the anchor has to be a copy: the next
             // Sample() call would otherwise rewrite the very list being compared against.
@@ -230,6 +258,57 @@ public sealed class PowerMonitor : IDisposable
         {
             _anchorProcesses = [.. current];
             _anchorSample = sample;
+        }
+    }
+
+    /// <summary>
+    /// Persists a battery observation for the charge timeline.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately much less frequent than the power cadence. The timeline is drawn over
+    /// hours or days, so a sample a minute is already finer than anything the chart can
+    /// show, and writing one per tick would grow the database for no visible benefit.
+    /// </remarks>
+    private void MaybeRecordBattery(PowerSample? sample, DateTimeOffset now)
+    {
+        if (sample?.BatteryPercent is null || _store is null) return;
+        if (now < _nextBatterySample) return;
+
+        _nextBatterySample = now + BatterySampleInterval;
+        TryRecord(() => _store.RecordBatterySample(sample));
+    }
+
+    /// <summary>
+    /// Drops battery samples past their retention window.
+    /// </summary>
+    /// <remarks>
+    /// Hourly energy is never pruned. It is small, and it is the only copy of history
+    /// that outlives what the operating system itself keeps.
+    /// </remarks>
+    private void MaybePrune(DateTimeOffset now)
+    {
+        if (_store is null || now < _nextPrune) return;
+
+        _nextPrune = now + PruneInterval;
+        TryRecord(() => _store.Prune(now));
+    }
+
+    /// <summary>
+    /// Runs a store write, swallowing storage failures.
+    /// </summary>
+    /// <remarks>
+    /// A locked or corrupt database must not take down live measurement. Losing history
+    /// is bad; losing the tray readout because history could not be written is worse, and
+    /// the live path does not depend on the store at all.
+    /// </remarks>
+    private static void TryRecord(Action write)
+    {
+        try
+        {
+            write();
+        }
+        catch (Exception ex) when (ex is Microsoft.Data.Sqlite.SqliteException or IOException or InvalidOperationException)
+        {
         }
     }
 

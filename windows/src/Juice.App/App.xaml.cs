@@ -5,6 +5,8 @@ using Juice.App.Tray;
 using Juice.App.ViewModels;
 using Juice.App.Views;
 using Juice.Core.Power;
+using Juice.Core.Presentation;
+using Juice.Core.Storage;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Windows.ApplicationModel.DataTransfer;
@@ -34,6 +36,12 @@ public partial class App : Application
     private JuiceSettings _settings = null!;
     private RateService _rates = null!;
     private PowerMonitor _monitor = null!;
+
+    /// <summary>
+    /// Local history database. Null when it could not be opened, in which case Juice
+    /// still measures but has no history to chart.
+    /// </summary>
+    private JuiceStore? _store;
     private TrayIcon _tray = null!;
     private FlyoutWindow _flyout = null!;
     private SettingsWindow? _settingsWindow;
@@ -55,7 +63,8 @@ public partial class App : Application
         _icons = new AppIconService(_ui);
         _flyoutViewModel = new FlyoutViewModel(_icons);
 
-        _monitor = new PowerMonitor(_ui);
+        _store = HistoryStoreFactory.TryOpen();
+        _monitor = new PowerMonitor(_ui, _store);
         _monitor.SnapshotReady += OnSnapshotReady;
 
         _activity.StateChanged += (_, state) => _monitor.State = state;
@@ -152,6 +161,54 @@ public partial class App : Application
         {
             _flyoutViewModel.Update(snapshot, _rates.Current);
         }
+
+        if (isVisible && ReferenceEquals(sender, _flyout))
+        {
+            RefreshHistory();
+        }
+    }
+
+    /// <summary>
+    /// Rebuilds the history chart from the store.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Only refreshed when the flyout opens, not on every sampling tick. The chart is
+    /// hour-resolution, so it cannot visibly change more than once an hour, and querying
+    /// it on a five second cadence would be pure waste in a process that is trying not to
+    /// show up in its own energy rankings.
+    /// </para>
+    /// <para>
+    /// The window is the last 24 hours and is passed to the builder explicitly, which is
+    /// what pins the axis. A machine that has only been recording for twenty minutes
+    /// still shows a 24 hour axis with the rest drawn as gaps, rather than a full-looking
+    /// chart of twenty minutes.
+    /// </para>
+    /// </remarks>
+    private void RefreshHistory()
+    {
+        if (_store is null)
+        {
+            _flyoutViewModel.UpdateHistory(null);
+            _flyoutViewModel.UpdateCharge(null);
+            return;
+        }
+
+        try
+        {
+            var to = DateTimeOffset.Now;
+            var from = to.AddHours(-24);
+            var buckets = _store.SystemEnergyBetween(from, to);
+            _flyoutViewModel.UpdateHistory(EnergyChartBuilder.Build(buckets, from, to));
+            _flyoutViewModel.UpdateCharge(
+                ChargeTimelineBuilder.Build(_store.BatteryBetween(from, to), from, to));
+        }
+        catch (Exception ex) when (ex is Microsoft.Data.Sqlite.SqliteException or IOException or InvalidOperationException)
+        {
+            // History is a nicety; a failure to read it must not stop the flyout opening.
+            _flyoutViewModel.UpdateHistory(null);
+            _flyoutViewModel.UpdateCharge(null);
+        }
     }
 
     private void Invoke(TrayCommand command)
@@ -198,6 +255,7 @@ public partial class App : Application
         _tray.Dispose();
         _monitor.Dispose();
         _icons.Dispose();
+        _store?.Dispose();
 
         Exit();
     }

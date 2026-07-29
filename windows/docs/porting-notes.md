@@ -140,6 +140,44 @@ This matters more than it sounds, because Snapdragon X Copilot+ PCs are exactly 
 The interop does port cleanly.
 ARM64 Windows is LLP64 with the same structure layout as x64, so the hardcoded `SYSTEM_PROCESS_INFORMATION` field offsets are correct on both and the guard is a pointer-size check rather than an architecture check.
 
+## Drawing a chart
+
+**macOS:** Swift Charts ships in the SDK.
+A bar chart is a declarative `Chart { BarMark(...) }`, and it arrives already themed, already accessible, and already handling axes and scaling.
+VoiceOver descriptions and audio graphs come for free.
+
+**Windows:** WinUI 3 has no charting at all.
+There is no first-party equivalent, and the options are all dependencies: LiveCharts2, SkiaSharp, Win2D, or a commercial suite.
+
+For a tray utility that has to stay small and run for weeks, pulling in a rendering engine to draw twenty-four bars is disproportionate.
+So the chart is composed from primitives instead: a `Grid` with one star-width column per hour, holding a `Border` for a bar and a low `Rectangle` for a gap.
+
+That turns out to be a reasonable trade rather than a grudging one.
+Theme resources work automatically, so Light, Dark and HighContrast stay correct with no extra code.
+Per-column tooltips and automation names are ordinary properties.
+The cost is one element per column, which is fine for a day and wrong for a year, so anything longer than a few days has to be aggregated into daily buckets before it reaches the control.
+
+The accessibility gap is the part with no cheap answer.
+Swift Charts describes a series to VoiceOver on its own; here every column's automation name is written by hand, and there is no equivalent of an audio graph.
+
+It also means the honesty rules cannot be delegated.
+Swift Charts would happily draw whatever series it was given, and so will this, which is why axis pinning, gap columns and the refusal to interpolate all live in `EnergyChartBuilder` in the core library with tests around them, rather than in the renderer where each new chart could quietly reinvent them.
+
+## Binding modern C# to XAML
+
+**macOS:** SwiftUI reads Swift types directly.
+A struct with non-optional stored properties is simply a struct, and the view layer has no opinion about it.
+
+**Windows:** the WinUI XAML type-info generator emits a parameterless construction for every type reachable from an `x:Bind` path, whatever the type's own construction rules are.
+
+Any record with `required` members therefore fails to compile the moment it is bound, with five `CS9035` errors pointing into generated code the developer never wrote.
+The cause is not visible from the error, and the generated file is regenerated on every build, so editing it is not an option.
+
+The fix is to use `init` with defaults instead of `required` on the handful of types that cross into XAML, and to rely on the single intended producer to populate them.
+That is a real loss of compile-time safety, so it is worth confining to presentation types and keeping `required` everywhere the compiler can still enforce it.
+
+`System.IO.Path` also collides with `Microsoft.UI.Xaml.Shapes.Path` under implicit usings, which any XAML drawing code hits immediately and which needs an alias.
+
 ## Showing an app's icon
 
 **macOS:** `NSWorkspace.icon(forFile:)`.

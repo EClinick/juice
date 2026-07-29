@@ -113,6 +113,56 @@ public sealed partial class FlyoutViewModel : ObservableObject
     /// <summary>Top energy users, with the platform row last.</summary>
     public ObservableCollection<EnergyRowViewModel> EnergyRows { get; } = [];
 
+    /// <summary>
+    /// Recent energy history, or null when nothing has been recorded yet.
+    /// </summary>
+    /// <remarks>
+    /// Built by <see cref="EnergyChartBuilder"/>, so the axis is pinned to the requested
+    /// window and unrecorded hours arrive as explicit gap columns rather than being
+    /// omitted. The view only renders it.
+    /// </remarks>
+    [ObservableProperty]
+    public partial EnergyChartSeries? History { get; set; }
+
+    /// <summary>True when there is a history series worth drawing.</summary>
+    [ObservableProperty]
+    public partial bool HasHistory { get; set; }
+
+    /// <summary>
+    /// Battery charge over the same window, or null when there is nothing to draw.
+    /// </summary>
+    /// <remarks>
+    /// Split into continuous runs by <see cref="ChargeTimelineBuilder"/>, so a period the
+    /// machine was asleep breaks the line rather than being drawn through.
+    /// </remarks>
+    [ObservableProperty]
+    public partial ChargeTimeline? Charge { get; set; }
+
+    /// <summary>True when there is a charge timeline worth drawing.</summary>
+    [ObservableProperty]
+    public partial bool HasCharge { get; set; }
+
+    /// <summary>Applies a freshly built charge timeline.</summary>
+    public void UpdateCharge(ChargeTimeline? timeline)
+    {
+        Charge = timeline;
+        HasCharge = timeline is { IsEmpty: false };
+    }
+
+    /// <summary>
+    /// Applies a freshly built history series.
+    /// </summary>
+    /// <remarks>
+    /// A series with no data is still shown rather than hidden. The chart area with its
+    /// caption saying nothing was recorded is more honest, and more useful, than silently
+    /// omitting the section and leaving the user unsure whether Juice is recording at all.
+    /// </remarks>
+    public void UpdateHistory(EnergyChartSeries? series)
+    {
+        History = series;
+        HasHistory = series is { Bars.Count: > 0 };
+    }
+
     /// <summary>Applies a completed sampling pass.</summary>
     public void Update(PowerSnapshot snapshot, ElectricityRate rate)
     {

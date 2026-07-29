@@ -7,6 +7,7 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:local="using:Juice.App.Views"
     xmlns:vm="using:Juice.App.ViewModels"
+    xmlns:controls="using:Juice.App.Controls"
     mc:Ignorable="d">
 
     <Window.SystemBackdrop>
@@ -15,6 +16,7 @@
 
     <Grid x:Name="RootGrid" Padding="16" RowSpacing="12">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -152,8 +154,48 @@
             </ItemsControl.ItemTemplate>
         </ItemsControl>
 
+        <!-- Energy history. Gaps are rendered as gaps; see EnergyChartBuilder. -->
+        <StackPanel
+            Grid.Row="4"
+            Spacing="4"
+            Visibility="{x:Bind local:FlyoutWindow.ToVisibility(ViewModel.HasHistory), Mode=OneWay}">
+            <TextBlock
+                Style="{StaticResource BodyStrongTextBlockStyle}"
+                Text="Last 24 hours" />
+
+            <controls:EnergyHistoryChart
+                Height="56"
+                AutomationProperties.AutomationId="FlyoutHistoryChart"
+                Series="{x:Bind ViewModel.History, Mode=OneWay}" />
+
+            <TextBlock
+                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                Style="{StaticResource CaptionTextBlockStyle}"
+                Text="{x:Bind local:FlyoutWindow.HistoryCaption(ViewModel.History), Mode=OneWay}"
+                TextWrapping="Wrap" />
+
+            <TextBlock
+                Margin="0,4,0,0"
+                Style="{StaticResource BodyStrongTextBlockStyle}"
+                Text="Battery level"
+                Visibility="{x:Bind local:FlyoutWindow.ToVisibility(ViewModel.HasCharge), Mode=OneWay}" />
+
+            <controls:ChargeTimelineChart
+                Height="96"
+                AutomationProperties.AutomationId="FlyoutChargeTimeline"
+                Timeline="{x:Bind ViewModel.Charge, Mode=OneWay}"
+                Visibility="{x:Bind local:FlyoutWindow.ToVisibility(ViewModel.HasCharge), Mode=OneWay}" />
+
+            <TextBlock
+                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                Style="{StaticResource CaptionTextBlockStyle}"
+                Text="{x:Bind local:FlyoutWindow.ChargeCaption(ViewModel.Charge), Mode=OneWay}"
+                TextWrapping="Wrap"
+                Visibility="{x:Bind local:FlyoutWindow.ToVisibility(ViewModel.HasCharge), Mode=OneWay}" />
+        </StackPanel>
+
         <!-- Top energy users -->
-        <Grid Grid.Row="4" RowSpacing="4">
+        <Grid Grid.Row="5" RowSpacing="4">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
@@ -271,7 +313,7 @@
         </Grid>
 
         <!-- Rate provenance -->
-        <StackPanel Grid.Row="5" Spacing="4">
+        <StackPanel Grid.Row="6" Spacing="4">
             <Border
                 Height="1"
                 Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
