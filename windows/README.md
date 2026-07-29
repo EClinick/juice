@@ -175,7 +175,9 @@ The revision field stays 0 because the Microsoft Store reserves it and rewrites 
 
 ## Submitting to the Store
 
-Submission is scriptable and does not have to go through the portal.
+The portal accepts the bundle directly, and for occasional releases that is the shortest path: upload `windows/artifacts/Juice_<version>.msixbundle` under Packages in Partner Center.
+
+Submission can also be scripted, which is worth setting up once releases become frequent.
 `winapp store` wraps the Microsoft Store Developer CLI, downloading it on first use.
 
 ```powershell
@@ -190,16 +192,20 @@ Credentials are read from environment variables and are never stored in this rep
 They identify a Partner Center account and can publish software under it, so they belong in a secret store, in CI secrets, or in a shell session, and nowhere else.
 
 ```
-JUICE_STORE_TENANT_ID       Azure AD tenant containing the app registration
+JUICE_STORE_TENANT_ID       Microsoft Entra tenant containing the app registration
 JUICE_STORE_SELLER_ID       Partner Center seller id
-JUICE_STORE_CLIENT_ID       Azure AD application (client) id
+JUICE_STORE_CLIENT_ID       Microsoft Entra application (client) id
 JUICE_STORE_CLIENT_SECRET   Client secret for that application
 ```
 
-One-time setup lives in Partner Center under Account settings, then User management, then Azure AD applications: associate or create an Azure AD application, grant it access, and note the tenant, client and seller ids.
+The API authenticates through a Microsoft Entra application rather than through the account sign-in, so an individual account that uses a personal Microsoft account has one extra step: create a tenant under Account settings, then Tenants, which Partner Center offers at no cost.
+Then add the application under User management, assign it the Manager role, and collect the tenant, client and seller ids along with a key.
+The key is shown once and cannot be retrieved afterwards.
 
-The package identity must also match a product reserved in Partner Center.
-`Publisher` is account level and shared across every product published under it; `Name` is per product.
+Until that is set up, `submit.ps1` will stop with a message naming the missing variable, and the portal upload path remains available.
+
+The package identity must match a product reserved in Partner Center.
+`Name` is the publisher prefix joined to the reserved product name, and `Publisher` and `PublisherDisplayName` are account level and shared across every product published under the account.
 
 ## Sampling cost
 

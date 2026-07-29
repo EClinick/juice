@@ -17,8 +17,16 @@
         JUICE_STORE_CLIENT_SECRET   Client secret for that application
 
     One-time setup in Partner Center, under Account settings then User management then
-    Azure AD applications: associate or create an Azure AD application, grant it access,
-    and note the tenant, client and seller ids. Create a client secret for it.
+    Microsoft Entra applications: associate or create an application, assign it the Manager
+    role, and note the tenant, client and seller ids. Create a key for it, which is shown
+    once and cannot be retrieved afterwards.
+
+    Note for individual accounts. The API authenticates through a Microsoft Entra
+    application rather than through the account sign-in, so an account that uses a personal
+    Microsoft account needs a tenant first. Partner Center offers one at no cost under
+    Account settings then Tenants. Until that exists this script cannot be used, and the
+    portal upload path remains available: the bundle it would have submitted is the same
+    file.
 
 .PARAMETER Bundle
     Path to the .msixbundle. Defaults to the newest one in windows/artifacts.
