@@ -1,6 +1,8 @@
 import Testing
+import Combine
 import Foundation
 import JuiceCore
+import JuiceXPCShared
 @testable import Juice
 
 @MainActor
@@ -11,6 +13,7 @@ import JuiceCore
     private final class FakeSource: LivePowerSource {
         private(set) var startCount = 0
         private(set) var stopCount = 0
+        private(set) var cadenceUpdates: [LivePowerSamplingCadence] = []
         var isRunning: Bool { startCount - stopCount > 0 }
 
         var reading: LivePowerReading?
@@ -23,8 +26,91 @@ import JuiceCore
             AsyncStream { $0.finish() }
         }
 
+        func setSamplingCadence(_ cadence: LivePowerSamplingCadence) {
+            guard cadenceUpdates.last != cadence else { return }
+            cadenceUpdates.append(cadence)
+        }
         func start() { startCount += 1 }
         func stop() { stopCount += 1 }
+    }
+
+    /// Stream-backed source for verifying that status updates remain private
+    /// while only the menu-bar consumer is attached, then synchronize on open.
+    private final class StreamingSource: LivePowerSource {
+        private let readingStream: AsyncStream<LivePowerReading?>
+        private let statusStream: AsyncStream<LivePowerController.Status>
+        private let readingContinuation: AsyncStream<LivePowerReading?>.Continuation
+        private let statusContinuation: AsyncStream<LivePowerController.Status>.Continuation
+
+        var reading: LivePowerReading?
+        var status: LivePowerController.Status = .warmingUp
+        var readingUpdates: AsyncStream<LivePowerReading?> { readingStream }
+        var statusUpdates: AsyncStream<LivePowerController.Status> { statusStream }
+
+        init() {
+            (readingStream, readingContinuation) = AsyncStream.makeStream()
+            (statusStream, statusContinuation) = AsyncStream.makeStream()
+        }
+
+        func emit(status: LivePowerController.Status) {
+            self.status = status
+            statusContinuation.yield(status)
+        }
+
+        func setSamplingCadence(_ cadence: LivePowerSamplingCadence) {}
+        func start() {}
+        func stop() {
+            reading = nil
+            status = .warmingUp
+        }
+    }
+
+    /// A cancellable delay whose first invocation deliberately remains
+    /// suspended after cancellation. This lets a replacement loop install its
+    /// delay before the stale loop resumes its cleanup.
+    private actor ControlledDelay {
+        private var invocationCount = 0
+        private var cancellations: Set<Int> = []
+        private var pending: [Int: CheckedContinuation<Void, Never>] = [:]
+        private var releasedBeforeRegistration: Set<Int> = []
+
+        func sleep(_ duration: Duration) async {
+            invocationCount += 1
+            let invocation = invocationCount
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    if releasedBeforeRegistration.remove(invocation) != nil {
+                        continuation.resume()
+                    } else {
+                        pending[invocation] = continuation
+                    }
+                }
+            } onCancel: {
+                Task { await self.markCancelled(invocation) }
+            }
+        }
+
+        private func markCancelled(_ invocation: Int) {
+            cancellations.insert(invocation)
+            // Hold the first cancelled delay until the replacement delay is
+            // known to be installed. Later delays complete on cancellation.
+            if invocation != 1 {
+                release(invocation)
+            }
+        }
+
+        func release(_ invocation: Int) {
+            if let continuation = pending.removeValue(forKey: invocation) {
+                continuation.resume()
+            } else {
+                releasedBeforeRegistration.insert(invocation)
+            }
+        }
+
+        func calls() -> Int { invocationCount }
+        func wasCancelled(_ invocation: Int) -> Bool {
+            cancellations.contains(invocation)
+        }
     }
 
     private func liveApp(_ key: String, watts: Double) -> AppPowerReading {
@@ -149,6 +235,14 @@ import JuiceCore
         for _ in 0..<5 { await Task.yield() }
     }
 
+    private func waitUntil(_ condition: () async -> Bool) async {
+        for _ in 0..<200 {
+            if await condition() { return }
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+    }
+
     @Test("System load is captured with each live app reading")
     func systemLoadTracksLiveReadingCadence() {
         var loads = [24.0, 31.0]
@@ -231,6 +325,216 @@ import JuiceCore
         coordinator.setAttached(false, for: .stats(statsID))
         #expect(source.stopCount == 1)
         #expect(!source.isRunning)
+    }
+
+    @Test("Menu-bar-only sampling is background; visible demand is responsive")
+    func demandAwareSamplingCadence() {
+        let loader = TodayLoader(result: todayResult([]))
+        let (coordinator, source) = makeCoordinator(clock: { self.t0 }, loader: loader)
+        let menuBarID = UUID()
+
+        coordinator.setAttached(
+            true,
+            includesTodayHistory: false,
+            for: .menuBar(menuBarID))
+        #expect(source.cadenceUpdates == [.background])
+        #expect(source.startCount == 1)
+
+        // Opening either visible surface changes the existing loop's cadence;
+        // it must not start a second source or disturb the menu-bar token.
+        coordinator.setAttached(
+            true,
+            includesTodayHistory: false,
+            for: .popover(popoverID))
+        #expect(source.cadenceUpdates == [.background, .responsive])
+        #expect(source.startCount == 1)
+        #expect(coordinator.attachedConsumerCount == 2)
+
+        // Closing the last visible surface leaves the always-on menu-bar
+        // consumer attached and returns that same loop to background cadence.
+        coordinator.setAttached(false, for: .popover(popoverID))
+        #expect(source.cadenceUpdates == [.background, .responsive, .background])
+        #expect(source.stopCount == 0)
+        #expect(source.isRunning)
+    }
+
+    @Test("Stats demand remains responsive until the last visible token detaches")
+    func multipleVisibleConsumersKeepResponsiveCadence() {
+        let loader = TodayLoader(result: todayResult([]))
+        let (coordinator, source) = makeCoordinator(clock: { self.t0 }, loader: loader)
+        let menuBarID = UUID()
+
+        coordinator.setAttached(
+            true,
+            includesTodayHistory: false,
+            for: .menuBar(menuBarID))
+        coordinator.setAttached(
+            true,
+            includesTodayHistory: false,
+            for: .popover(popoverID))
+        coordinator.setAttached(
+            true,
+            includesTodayHistory: false,
+            for: .stats(statsID))
+
+        // Adding Stats while the popover is already visible is idempotent at
+        // the cadence layer and does not restart the shared source.
+        #expect(source.cadenceUpdates == [.background, .responsive])
+        #expect(source.startCount == 1)
+
+        coordinator.setAttached(false, for: .popover(popoverID))
+        #expect(source.cadenceUpdates == [.background, .responsive])
+        #expect(source.stopCount == 0)
+
+        coordinator.detachAll(kind: .stats)
+        #expect(source.cadenceUpdates == [.background, .responsive, .background])
+        #expect(source.stopCount == 0)
+    }
+
+    @Test("Changing cadence preserves the controller's cumulative baseline")
+    func controllerCadenceChangePreservesBaseline() async {
+        let path = "/Applications/Test.app/Contents/MacOS/Test"
+        var snapshots = [
+            LiveEnergySnapshot(timestampEpoch: 0, samples: [
+                LiveEnergySample(
+                    coalitionID: 1,
+                    leaderPID: 1,
+                    leaderPath: path,
+                    cpuEnergyNJ: 0,
+                    gpuEnergyNJ: 0,
+                    aneEnergyNJ: 0),
+            ]),
+            LiveEnergySnapshot(timestampEpoch: 5, samples: [
+                LiveEnergySample(
+                    coalitionID: 1,
+                    leaderPID: 1,
+                    leaderPath: path,
+                    cpuEnergyNJ: 5_000_000_000,
+                    gpuEnergyNJ: 0,
+                    aneEnergyNJ: 0),
+            ]),
+        ]
+        let controller = LivePowerController(
+            fetchSnapshot: { snapshots.removeFirst() })
+
+        await controller.sampleOnce()
+        #expect(controller.status == .warmingUp)
+        #expect(controller.reading == nil)
+
+        // This is the key lifecycle distinction from stop/start: cadence
+        // changes leave the model intact, so the next snapshot can delta
+        // against the baseline captured before the change.
+        controller.setSamplingCadence(.background)
+        await controller.sampleOnce()
+
+        #expect(controller.samplingCadence == .background)
+        #expect(controller.status == .sampling)
+        #expect((controller.reading?.totalMeteredWatts ?? 0) > 0)
+    }
+
+    @Test("Background-only ticks do not invalidate hidden coordinator UI")
+    func backgroundTicksSuppressUIPublication() {
+        let loader = TodayLoader(result: todayResult([]))
+        let (coordinator, _) = makeCoordinator(clock: { self.t0 }, loader: loader)
+        let menuBarID = UUID()
+
+        coordinator.setAttached(
+            true,
+            includesTodayHistory: false,
+            for: .menuBar(menuBarID))
+
+        var statusReadings: [LivePowerReading] = []
+        coordinator.onStatusReading = { statusReadings.append($0) }
+        var invalidations = 0
+        let observation = coordinator.objectWillChange.sink {
+            invalidations += 1
+        }
+        let backgroundReading = reading([liveApp("server", watts: 3)])
+        coordinator.apply(reading: backgroundReading)
+
+        #expect(invalidations == 0)
+        #expect(coordinator.reading == nil)
+        #expect(statusReadings == [backgroundReading])
+
+        // Opening the popover publishes the retained tick immediately, before
+        // waiting for another helper round trip.
+        coordinator.setAttached(
+            true,
+            includesTodayHistory: false,
+            for: .popover(popoverID))
+        #expect(invalidations > 0)
+        #expect(coordinator.reading == backgroundReading)
+
+        withExtendedLifetime(observation) {}
+    }
+
+    @Test("A hidden status update synchronizes only when a visible consumer attaches")
+    func backgroundStatusSynchronizesOnVisibleAttach() async {
+        let source = StreamingSource()
+        let coordinator = LivePowerCoordinator(
+            source: source,
+            loadToday: { self.todayResult([]) },
+            loadSystemLoad: { nil })
+        let menuBarID = UUID()
+
+        coordinator.setAttached(
+            true,
+            includesTodayHistory: false,
+            for: .menuBar(menuBarID))
+        await settle()
+
+        var invalidations = 0
+        let observation = coordinator.objectWillChange.sink {
+            invalidations += 1
+        }
+        source.emit(status: .helperOutdated)
+        await settle()
+
+        #expect(invalidations == 0)
+        #expect(coordinator.status == .warmingUp)
+
+        coordinator.setAttached(
+            true,
+            includesTodayHistory: false,
+            for: .popover(popoverID))
+        #expect(invalidations > 0)
+        #expect(coordinator.status == .helperOutdated)
+
+        withExtendedLifetime(observation) {}
+    }
+
+    @Test("A stopped loop cannot clear the replacement loop's delay handle")
+    func staleLoopCannotOrphanReplacementDelay() async {
+        let delay = ControlledDelay()
+        let controller = LivePowerController(
+            fetchSnapshot: {
+                LiveEnergySnapshot(timestampEpoch: 0, samples: [])
+            },
+            sleep: { duration in await delay.sleep(duration) })
+
+        controller.start()
+        await waitUntil { await delay.calls() == 1 }
+        #expect(await delay.calls() == 1)
+
+        // Keep the first cancelled delay suspended, then let the replacement
+        // loop install delay 2 before the stale loop's cleanup resumes.
+        controller.stop()
+        await waitUntil { await delay.wasCancelled(1) }
+        controller.start()
+        await waitUntil { await delay.calls() == 2 }
+        #expect(await delay.calls() == 2)
+        await delay.release(1)
+        await settle()
+
+        // A cadence transition must still own and cancel delay 2. Without
+        // generation-guarded cleanup, the old loop could nil out this handle.
+        controller.setSamplingCadence(.background)
+        await waitUntil { await delay.wasCancelled(2) }
+        #expect(await delay.wasCancelled(2))
+
+        // Ensure no controlled delay is left parked if an assertion fails.
+        await delay.release(2)
+        controller.stop()
     }
 
     @Test("Idempotent tokens: repeated attach from one consumer counts once")

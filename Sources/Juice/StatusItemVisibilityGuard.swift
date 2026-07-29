@@ -37,6 +37,10 @@ enum StatusItemVisibilityGuard {
 
     private static var observation: NSKeyValueObservation?
     private static var protectionExpiry = Date.distantPast
+    private static weak var protectedItem: NSStatusItem?
+    /// A reading can arrive before MenuBarExtra materializes its status item.
+    /// Retain only the formatted label and apply it when discovery succeeds.
+    private static var pendingPowerLabel: String?
 
     static func engage() {
         locateStatusItem(attemptsLeft: locateAttempts)
@@ -61,6 +65,7 @@ enum StatusItemVisibilityGuard {
         // already be in flight, and it must not find termination-on-removal
         // armed. The guard takes over the remove-to-quit role below.
         item.behavior = []
+        protectedItem = item
         protectionExpiry = Date().addingTimeInterval(startupWindow)
         if !item.isVisible {
             NSLog("Juice: menu bar item was hidden at launch; re-asserting visibility")
@@ -70,6 +75,38 @@ enum StatusItemVisibilityGuard {
             guard !item.isVisible else { return }
             DispatchQueue.main.async { hidden(item) }
         }
+        if let pendingPowerLabel {
+            applyPowerLabel(pendingPowerLabel, to: item)
+        }
+    }
+
+    /// Updates only the already-discovered AppKit status button instead of
+    /// publishing a SwiftUI dependency from the app-scoped MenuBarExtra scene.
+    /// Discovery remains centralized here; this adds no private selector or KVC
+    /// path beyond the guard's existing status-item lookup.
+    static func updatePowerLabel(_ text: String) {
+        let formattedValueChanged = pendingPowerLabel != text
+        pendingPowerLabel = text
+        guard let item = protectedItem else { return }
+        guard formattedValueChanged
+            || item.button?.title != text
+            || item.button?.image != nil
+            || item.button?.imagePosition != .noImage else { return }
+        applyPowerLabel(text, to: item)
+    }
+
+    private static func applyPowerLabel(_ text: String, to item: NSStatusItem) {
+        guard let button = item.button else { return }
+        item.length = NSStatusItem.variableLength
+        button.image = nil
+        // MenuBarExtra created this button from an Image-only SwiftUI label.
+        // Clearing the image does not necessarily change NSButton's layout
+        // mode, so explicitly allow the replacement title to be drawn.
+        button.imagePosition = .noImage
+        button.title = text
+        button.toolTip = "Juice current metered power: \(text)"
+        button.setAccessibilityLabel("Juice current metered power")
+        button.setAccessibilityValue(text)
     }
 
     private static func hidden(_ item: NSStatusItem) {

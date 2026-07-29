@@ -1,0 +1,209 @@
+import AppKit
+import SwiftUI
+import Testing
+@testable import Juice
+
+@MainActor
+@Suite(.serialized)
+struct StatsWindowLifecycleTests {
+    private let minimumSize = NSSize(width: 300, height: 200)
+    private let defaultSize = NSSize(width: 640, height: 440)
+
+    @Test("Only the managed window close detaches consumers and removes its host")
+    func handlesOnlyManagedWindowClose() throws {
+        var detachCount = 0
+        let presenter = StatsWindowPresenter { detachCount += 1 }
+        presenter.present(
+            Color.clear,
+            title: "Lifecycle test",
+            minimumContentSize: minimumSize,
+            contentSize: defaultSize,
+            frameAutosaveName: uniqueAutosaveName())
+        let managedWindow = try #require(presenter.window)
+        let hostedController = managedWindow.contentViewController
+        let unrelatedWindow = NSWindow()
+
+        presenter.windowWillClose(
+            Notification(name: NSWindow.willCloseNotification, object: unrelatedWindow))
+
+        #expect(detachCount == 0)
+        #expect(managedWindow.contentViewController != nil)
+
+        presenter.windowWillClose(
+            Notification(name: NSWindow.willCloseNotification, object: managedWindow))
+
+        #expect(detachCount == 1)
+        #expect(managedWindow.contentViewController !== hostedController)
+        managedWindow.orderOut(nil)
+    }
+
+    @Test("Closing through AppKit cancels the hosted SwiftUI task")
+    func closeCancelsHostedTask() async throws {
+        let probe = HostedTaskProbe()
+        var detachCount = 0
+        let presenter = StatsWindowPresenter { detachCount += 1 }
+        presenter.present(
+            HostedTaskProbeView(probe: probe),
+            title: "Task cancellation test",
+            minimumContentSize: minimumSize,
+            contentSize: defaultSize,
+            frameAutosaveName: uniqueAutosaveName())
+        let window = try #require(presenter.window)
+
+        var taskStarted = false
+        for _ in 0..<100 {
+            taskStarted = await probe.started
+            if taskStarted { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(taskStarted)
+
+        window.close()
+
+        var taskCancelled = false
+        for _ in 0..<100 {
+            taskCancelled = await probe.cancelled
+            if taskCancelled { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(detachCount == 1)
+        #expect(taskCancelled)
+    }
+
+    @Test("A closed retained window is reused with a fresh host and preserved size")
+    func reopensRetainedWindow() throws {
+        let presenter = StatsWindowPresenter(detachStatsConsumers: {})
+        let autosaveName = uniqueAutosaveName()
+        presenter.present(
+            Color.red,
+            title: "First",
+            minimumContentSize: minimumSize,
+            contentSize: defaultSize,
+            frameAutosaveName: autosaveName)
+        let originalWindow = try #require(presenter.window)
+        #expect(originalWindow.frameAutosaveName == autosaveName)
+        originalWindow.setContentSize(NSSize(width: 820, height: 610))
+
+        presenter.windowWillClose(
+            Notification(name: NSWindow.willCloseNotification, object: originalWindow))
+        let discardedHost = originalWindow.contentViewController
+
+        presenter.present(
+            Color.blue,
+            title: "Second",
+            minimumContentSize: minimumSize,
+            contentSize: defaultSize,
+            frameAutosaveName: uniqueAutosaveName())
+        let reopenedWindow = try #require(presenter.window)
+
+        #expect(reopenedWindow === originalWindow)
+        #expect(reopenedWindow.contentViewController != nil)
+        #expect(reopenedWindow.contentViewController !== discardedHost)
+        #expect(reopenedWindow.title == "Second")
+        expectSize(
+            reopenedWindow.contentRect(forFrameRect: reopenedWindow.frame).size,
+            equals: NSSize(width: 820, height: 610))
+        reopenedWindow.orderOut(nil)
+    }
+
+    @Test("A saved frame restores its content size on first presentation")
+    func restoresAutosavedContentSize() throws {
+        let autosaveName = uniqueAutosaveName()
+        defer { NSWindow.removeFrame(usingName: autosaveName) }
+        let savedContentSize = NSSize(width: 780, height: 520)
+        let seedWindow = NSWindow(
+            contentRect: NSRect(origin: NSPoint(x: 120, y: 120), size: savedContentSize),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false)
+        seedWindow.saveFrame(usingName: autosaveName)
+
+        let presenter = StatsWindowPresenter(detachStatsConsumers: {})
+        presenter.present(
+            Color.clear,
+            title: "Restored",
+            minimumContentSize: minimumSize,
+            contentSize: defaultSize,
+            frameAutosaveName: autosaveName)
+        let restoredWindow = try #require(presenter.window)
+
+        expectSize(
+            restoredWindow.contentRect(forFrameRect: restoredWindow.frame).size,
+            equals: savedContentSize)
+        restoredWindow.orderOut(nil)
+    }
+
+    @Test("Reopening grows content that is below a new minimum")
+    func growsContentForNewMinimum() throws {
+        let presenter = StatsWindowPresenter(detachStatsConsumers: {})
+        presenter.present(
+            Color.clear,
+            title: "Small",
+            minimumContentSize: minimumSize,
+            contentSize: defaultSize,
+            frameAutosaveName: uniqueAutosaveName())
+        let window = try #require(presenter.window)
+        window.setContentSize(defaultSize)
+        presenter.windowWillClose(
+            Notification(name: NSWindow.willCloseNotification, object: window))
+
+        let largerMinimum = NSSize(width: 860, height: 560)
+        let largerDefault = NSSize(width: 940, height: 600)
+        presenter.present(
+            Color.clear,
+            title: "Large",
+            minimumContentSize: largerMinimum,
+            contentSize: largerDefault,
+            frameAutosaveName: uniqueAutosaveName())
+
+        expectSize(
+            window.contentRect(forFrameRect: window.frame).size,
+            equals: largerDefault)
+        #expect(window.contentMinSize == largerMinimum)
+        window.orderOut(nil)
+    }
+
+    private func uniqueAutosaveName() -> NSWindow.FrameAutosaveName {
+        "StatsWindowLifecycleTests-\(UUID().uuidString)"
+    }
+
+    private func expectSize(
+        _ actual: NSSize,
+        equals expected: NSSize,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        #expect(
+            abs(actual.width - expected.width) < 0.5,
+            sourceLocation: sourceLocation)
+        #expect(
+            abs(actual.height - expected.height) < 0.5,
+            sourceLocation: sourceLocation)
+    }
+}
+
+private actor HostedTaskProbe {
+    private(set) var started = false
+    private(set) var cancelled = false
+
+    func run() async {
+        started = true
+        do {
+            try await Task.sleep(for: .seconds(60))
+        } catch is CancellationError {
+            cancelled = true
+        } catch {
+            Issue.record("Unexpected hosted task error: \(error)")
+        }
+    }
+}
+
+private struct HostedTaskProbeView: View {
+    let probe: HostedTaskProbe
+
+    var body: some View {
+        Color.clear
+            .task {
+                await probe.run()
+            }
+    }
+}

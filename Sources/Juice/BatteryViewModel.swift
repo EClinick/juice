@@ -23,7 +23,12 @@ final class BatteryViewModel: ObservableObject {
         lowPowerModeProvider: @escaping () -> Bool = {
             ProcessInfo.processInfo.isLowPowerModeEnabled
         },
-        notificationCenter: NotificationCenter = .default
+        notificationCenter: NotificationCenter = .default,
+        batteryPollingPublisher: @escaping () -> AnyPublisher<Date, Never> = {
+            Timer.publish(every: 60, on: .main, in: .common)
+                .autoconnect()
+                .eraseToAnyPublisher()
+        }
     ) {
         self.onReading = onReading
         self.isMacMini = isMacMini
@@ -31,9 +36,13 @@ final class BatteryViewModel: ObservableObject {
         self.lowPowerModeProvider = lowPowerModeProvider
         isLowPowerModeEnabled = lowPowerModeProvider()
         refresh()
+        // Mac mini current-power UI is driven by LivePowerCoordinator. There is
+        // no battery state or Low Power Mode status icon to keep synchronized,
+        // so avoid creating background resources that can only trigger no-ops.
+        guard !isMacMini else { return }
+
         // Background cadence; the popover triggers an immediate refresh on open.
-        timer = Timer.publish(every: 60, on: .main, in: .common)
-            .autoconnect()
+        timer = batteryPollingPublisher()
             .sink { [weak self] _ in self?.refresh() }
         // Power mode can change independently of a battery reading. Observe the
         // system notification so the menu bar icon updates immediately.

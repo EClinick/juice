@@ -1,6 +1,14 @@
 import Foundation
 import JuiceCore
 
+/// Sampling demand for the shared live-power source. Visible views retain the
+/// existing responsive cadence; the always-attached Mac mini menu-bar consumer
+/// can use a lower-overhead background cadence while no view is open.
+enum LivePowerSamplingCadence: Equatable {
+    case responsive
+    case background
+}
+
 /// The sampling half of the coordinator: something that can be started and
 /// stopped and publishes a live reading plus a status. ``LivePowerController``
 /// is the production conformer; tests substitute a deterministic double so the
@@ -12,6 +20,7 @@ protocol LivePowerSource: AnyObject {
     var status: LivePowerController.Status { get }
     var readingUpdates: AsyncStream<LivePowerReading?> { get }
     var statusUpdates: AsyncStream<LivePowerController.Status> { get }
+    func setSamplingCadence(_ cadence: LivePowerSamplingCadence)
     func start()
     func stop()
 }
@@ -109,6 +118,10 @@ final class LivePowerCoordinator: ObservableObject {
     /// Optional app-level observer used by Mac mini mode to persist the shared
     /// live reading without creating a second polling loop.
     var onReading: (@Sendable (LivePowerReading) async -> Void)?
+    /// Main-actor, non-publishing observer for the Mac mini status-item label.
+    /// Kept separate from serialized persistence so a slow store write cannot
+    /// make the displayed current wattage lag behind the source.
+    var onStatusReading: ((LivePowerReading) -> Void)?
 
     private let source: LivePowerSource
     private let loadToday: () async -> EnergySourceSelector.TopAppsResult
@@ -116,6 +129,13 @@ final class LivePowerCoordinator: ObservableObject {
     private let now: () -> Date
     private let todayRefreshInterval: Duration
     private var merger = LiveTodayMerger()
+    /// Source truth continues advancing while the Mac mini has only its
+    /// background menu-bar consumer. These values are copied into the
+    /// `@Published` UI surface when a popover or Stats consumer attaches, so
+    /// closed SwiftUI view trees are not invalidated by every background tick.
+    private var latestReading: LivePowerReading?
+    private var latestStatus: LivePowerController.Status = .warmingUp
+    private var latestHybrid: HybridTodayList?
 
     /// Currently attached consumers and whether each needs Today history.
     /// Sampling runs while non-empty; history refreshes while any value is true.
@@ -166,6 +186,7 @@ final class LivePowerCoordinator: ObservableObject {
     ) {
         let wasEmpty = attached.isEmpty
         let neededTodayHistory = needsTodayHistory
+        let hadVisibleConsumer = hasVisibleConsumer
         if wantsLive {
             attached[consumer] = includesTodayHistory
         } else {
@@ -177,10 +198,16 @@ final class LivePowerCoordinator: ObservableObject {
             startSampling()
         } else if !wasEmpty && isEmpty {
             stopSampling()
-        } else if !neededTodayHistory && needsTodayHistory {
-            startTodayRefresh()
-        } else if neededTodayHistory && !needsTodayHistory {
-            stopTodayRefresh()
+        } else {
+            updateSamplingCadenceIfNeeded()
+            if !neededTodayHistory && needsTodayHistory {
+                startTodayRefresh()
+            } else if neededTodayHistory && !needsTodayHistory {
+                stopTodayRefresh()
+            }
+        }
+        if !wasEmpty && !hadVisibleConsumer && hasVisibleConsumer {
+            publishLatestState()
         }
     }
 
@@ -194,14 +221,23 @@ final class LivePowerCoordinator: ObservableObject {
         attached = attached.filter { $0.key.kind != kind }
         if !wasEmpty && attached.isEmpty {
             stopSampling()
-        } else if neededTodayHistory && !needsTodayHistory {
-            stopTodayRefresh()
+        } else {
+            updateSamplingCadenceIfNeeded()
+            if neededTodayHistory && !needsTodayHistory {
+                stopTodayRefresh()
+            }
         }
     }
 
     /// The count of attached consumers, for tests asserting reference behavior.
     var attachedConsumerCount: Int { attached.count }
     private var needsTodayHistory: Bool { attached.values.contains(true) }
+    private var hasVisibleConsumer: Bool {
+        attached.keys.contains { $0.kind != .menuBar }
+    }
+    private var samplingCadence: LivePowerSamplingCadence {
+        hasVisibleConsumer ? .responsive : .background
+    }
 
     /// Forces an immediate off-cadence Today refresh (a manual retry after a
     /// failed or empty fetch). No-op when nothing is attached, since the
@@ -223,10 +259,15 @@ final class LivePowerCoordinator: ObservableObject {
     private func startSampling() {
         // Re-age grace immediately so a cached active row from a previous
         // session cannot linger past its window before the first fresh tick.
-        reading = nil
-        systemLoadWatts = nil
-        recomputeHybrid()
+        latestReading = nil
+        latestStatus = source.status
+        if hasVisibleConsumer {
+            reading = nil
+            systemLoadWatts = nil
+        }
+        recomputeHybrid(publish: hasVisibleConsumer)
 
+        source.setSamplingCadence(samplingCadence)
         source.start()
         observeSource()
         if needsTodayHistory { startTodayRefresh() }
@@ -242,9 +283,19 @@ final class LivePowerCoordinator: ObservableObject {
         // The source's stop() clears its reading; mirror that so the hints fall
         // back to "warming up" on reattach. The merger is deliberately NOT
         // reset: grace state persists across close/reopen.
+        latestReading = nil
+        latestStatus = source.status
         reading = nil
         systemLoadWatts = nil
-        status = source.status
+        status = latestStatus
+    }
+
+    /// Reconfigures the existing loop only when its demand class changes.
+    /// Repeated attachment updates within the same class are absorbed by the
+    /// source, preserving both token idempotence and the model baseline.
+    private func updateSamplingCadenceIfNeeded() {
+        guard !attached.isEmpty else { return }
+        source.setSamplingCadence(samplingCadence)
     }
 
     /// Mirrors the source's published state onto the coordinator and recomputes
@@ -265,7 +316,10 @@ final class LivePowerCoordinator: ObservableObject {
             guard let self else { return }
             for await status in self.source.statusUpdates {
                 if Task.isCancelled { break }
-                self.status = status
+                self.latestStatus = status
+                if self.hasVisibleConsumer {
+                    self.status = status
+                }
             }
         }
     }
@@ -318,16 +372,25 @@ final class LivePowerCoordinator: ObservableObject {
     /// Stores the latest reading and re-folds it into the hybrid. Synchronous so
     /// the stream observer and the tests share one deterministic path.
     func apply(reading: LivePowerReading?) {
-        self.reading = reading
-        systemLoadWatts = reading == nil ? nil : loadSystemLoad()
-        if let reading, let onReading {
-            let previousDelivery = readingDelivery
-            readingDelivery = Task {
-                await previousDelivery?.value
-                await onReading(reading)
+        latestReading = reading
+        if let reading {
+            onStatusReading?(reading)
+            if let onReading {
+                let previousDelivery = readingDelivery
+                readingDelivery = Task {
+                    await previousDelivery?.value
+                    await onReading(reading)
+                }
             }
         }
-        recomputeHybrid()
+        // Direct tests call apply() without attaching; preserve that seam while
+        // production background-only sampling suppresses UI publications.
+        let shouldPublish = attached.isEmpty || hasVisibleConsumer
+        if shouldPublish {
+            self.reading = reading
+            systemLoadWatts = reading == nil ? nil : loadSystemLoad()
+        }
+        recomputeHybrid(publish: shouldPublish)
     }
 
     /// Stops accepting source updates and waits for every already-enqueued
@@ -352,7 +415,24 @@ final class LivePowerCoordinator: ObservableObject {
     /// Folds the latest live reading into today's history. The merger needs the
     /// wall clock for its grace period, so the clock is captured here rather
     /// than inside the merger. This is the single place the merger ever runs.
-    private func recomputeHybrid() {
-        hybrid = merger.merge(live: reading, today: todayResult?.apps ?? [], now: now())
+    private func recomputeHybrid(publish: Bool = true) {
+        latestHybrid = merger.merge(
+            live: latestReading,
+            today: todayResult?.apps ?? [],
+            now: now())
+        if publish {
+            hybrid = latestHybrid
+        }
+    }
+
+    /// Synchronizes the latest background sample before a visible consumer
+    /// renders. This is deliberately the only background-to-UI bridge: normal
+    /// menu-bar-only ticks advance source/model/persistence state without
+    /// sending `objectWillChange` through the hidden SwiftUI hierarchy.
+    private func publishLatestState() {
+        reading = latestReading
+        systemLoadWatts = latestReading == nil ? nil : loadSystemLoad()
+        status = latestStatus
+        recomputeHybrid()
     }
 }
