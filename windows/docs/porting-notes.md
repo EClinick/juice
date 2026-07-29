@@ -118,6 +118,28 @@ A `uap3:ExecutionAlias` fails validation even though every surrounding element i
 
 The `Executable` attribute must also name a binary that is genuinely in the package payload, which means shipping the CLI alongside the GUI if the alias is to launch the CLI.
 
+## Building and verifying on ARM64
+
+**macOS:** universal binaries.
+One artifact contains both architectures, `swift build` produces something that runs natively on the machine you are sitting at, and Rosetta is not in the picture for your own builds.
+
+**Windows:** architectures are separate artifacts all the way through, and the development machine's own architecture changes what "running the app" actually means.
+
+Cross-compiling is fine. `dotnet build -p:Platform=x64` on an ARM64 machine runs the compiler natively and simply emits x64, and the x64 slice has to be built because it ships in the bundle.
+
+Running that slice locally is the trap.
+An x64 process on ARM64 executes under Prism emulation, which burns materially more CPU for the same work.
+
+For Juice specifically that is not a performance footnote, it corrupts the measurement.
+Energy is attributed to processes by their share of processor time, so an emulated build inflates its own CPU consumption, takes a larger share of the CPU rail than the native build would, and reports numbers that describe the emulator rather than the app.
+A tool that measures energy has to be verified as the native binary.
+
+So on an ARM64 development machine, build both and verify ARM64.
+This matters more than it sounds, because Snapdragon X Copilot+ PCs are exactly the machines most likely to carry the EMI device that the hardware power source depends on, which makes ARM64 the primary target for this app rather than an afterthought.
+
+The interop does port cleanly.
+ARM64 Windows is LLP64 with the same structure layout as x64, so the hardcoded `SYSTEM_PROCESS_INFORMATION` field offsets are correct on both and the guard is a pointer-size check rather than an architecture check.
+
 ## Showing an app's icon
 
 **macOS:** `NSWorkspace.icon(forFile:)`.

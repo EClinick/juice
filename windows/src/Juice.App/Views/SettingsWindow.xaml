@@ -1,0 +1,225 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="Juice.App.Views.SettingsWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:local="using:Juice.App.Views"
+    mc:Ignorable="d">
+
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid>
+        <ScrollViewer Padding="24">
+            <StackPanel Spacing="16">
+
+                <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="Settings" />
+
+                <!-- Electricity rate -->
+                <Border
+                    Padding="16"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="{StaticResource OverlayCornerRadius}">
+                    <StackPanel Spacing="12">
+                        <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="Electricity rate" />
+
+                        <TextBlock
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            Text="Juice measures energy from hardware counters, so the watt-hours are sound. The price attached to them is the uncertain part."
+                            TextWrapping="Wrap" />
+
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <TextBlock
+                                Grid.Column="0"
+                                VerticalAlignment="Center"
+                                Style="{StaticResource BodyStrongTextBlockStyle}"
+                                Text="Region" />
+
+                            <TextBlock
+                                Grid.Column="1"
+                                VerticalAlignment="Center"
+                                AutomationProperties.AutomationId="SettingsRegionText"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                Text="{x:Bind ViewModel.RegionText, Mode=OneWay}" />
+                        </Grid>
+
+                        <TextBlock
+                            AutomationProperties.AutomationId="SettingsResolvedRateText"
+                            Text="{x:Bind ViewModel.ResolvedRateText, Mode=OneWay}"
+                            TextWrapping="Wrap" />
+
+                        <ToggleSwitch
+                            x:Name="UseCustomRateToggle"
+                            AutomationProperties.AutomationId="SettingsUseCustomRateToggle"
+                            AutomationProperties.Name="Use my own electricity rate"
+                            Header="Use my own rate"
+                            IsOn="{x:Bind ViewModel.UseCustomRate, Mode=TwoWay}"
+                            OffContent="Using the regional average"
+                            OnContent="Using the price I entered" />
+
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <NumberBox
+                                x:Name="RateNumberBox"
+                                Grid.Column="0"
+                                AutomationProperties.AutomationId="SettingsRateNumberBox"
+                                AutomationProperties.Name="Price per kilowatt hour"
+                                Header="Price per kWh"
+                                IsEnabled="{x:Bind ViewModel.UseCustomRate, Mode=OneWay}"
+                                Minimum="0"
+                                SmallChange="0.01"
+                                SpinButtonPlacementMode="Compact"
+                                Value="{x:Bind ViewModel.CustomRatePerKwh, Mode=TwoWay}" />
+
+                            <TextBox
+                                x:Name="CurrencyTextBox"
+                                Grid.Column="1"
+                                AutomationProperties.AutomationId="SettingsCurrencyTextBox"
+                                AutomationProperties.Name="Currency code"
+                                Header="Currency"
+                                IsEnabled="{x:Bind ViewModel.UseCustomRate, Mode=OneWay}"
+                                MaxLength="3"
+                                PlaceholderText="USD"
+                                Text="{x:Bind ViewModel.Currency, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- Startup -->
+                <Border
+                    Padding="16"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="{StaticResource OverlayCornerRadius}">
+                    <StackPanel Spacing="12">
+                        <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="Startup" />
+
+                        <ToggleSwitch
+                            x:Name="StartWithWindowsToggle"
+                            AutomationProperties.AutomationId="SettingsStartWithWindowsToggle"
+                            AutomationProperties.Name="Start Juice with Windows"
+                            Header="Start with Windows"
+                            IsOn="{x:Bind ViewModel.StartWithWindows, Mode=TwoWay}" />
+
+                        <InfoBar
+                            AutomationProperties.AutomationId="SettingsStartupNoteInfoBar"
+                            IsClosable="False"
+                            IsOpen="{x:Bind local:SettingsWindow.HasText(ViewModel.StartupNote), Mode=OneWay}"
+                            Message="{x:Bind ViewModel.StartupNote, Mode=OneWay}"
+                            Severity="Informational" />
+                    </StackPanel>
+                </Border>
+
+                <!-- Diagnostics -->
+                <Border
+                    Padding="16"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="{StaticResource OverlayCornerRadius}">
+                    <StackPanel Spacing="12">
+                        <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="Diagnostics" />
+
+                        <Grid ColumnSpacing="16" RowSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="200" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <TextBlock
+                                Grid.Row="0"
+                                Grid.Column="0"
+                                Style="{StaticResource BodyStrongTextBlockStyle}"
+                                Text="Active power source" />
+                            <TextBlock
+                                Grid.Row="0"
+                                Grid.Column="1"
+                                AutomationProperties.AutomationId="SettingsSourceTierText"
+                                Text="{x:Bind ViewModel.SourceTierText, Mode=OneWay}"
+                                TextWrapping="Wrap" />
+
+                            <TextBlock
+                                Grid.Row="1"
+                                Grid.Column="0"
+                                Style="{StaticResource BodyStrongTextBlockStyle}"
+                                Text="Details" />
+                            <TextBlock
+                                Grid.Row="1"
+                                Grid.Column="1"
+                                AutomationProperties.AutomationId="SettingsSourceDescriptionText"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                Text="{x:Bind ViewModel.SourceDescriptionText, Mode=OneWay}"
+                                TextWrapping="Wrap" />
+
+                            <TextBlock
+                                Grid.Row="2"
+                                Grid.Column="0"
+                                Style="{StaticResource BodyStrongTextBlockStyle}"
+                                Text="Per-process GPU counters" />
+                            <TextBlock
+                                Grid.Row="2"
+                                Grid.Column="1"
+                                AutomationProperties.AutomationId="SettingsGpuCountersText"
+                                Text="{x:Bind ViewModel.GpuCountersText, Mode=OneWay}"
+                                TextWrapping="Wrap" />
+
+                            <TextBlock
+                                Grid.Row="3"
+                                Grid.Column="0"
+                                Style="{StaticResource BodyStrongTextBlockStyle}"
+                                Text="Process table" />
+                            <TextBlock
+                                Grid.Row="3"
+                                Grid.Column="1"
+                                AutomationProperties.AutomationId="SettingsProcessTableText"
+                                Text="{x:Bind ViewModel.ProcessTableText, Mode=OneWay}"
+                                TextWrapping="Wrap" />
+                        </Grid>
+
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button
+                                x:Name="RefreshDiagnosticsButton"
+                                AutomationProperties.AutomationId="SettingsRefreshDiagnosticsButton"
+                                Click="OnRefreshDiagnosticsClick"
+                                Content="Refresh" />
+
+                            <Button
+                                x:Name="CopyDiagnosticsButton"
+                                AutomationProperties.AutomationId="SettingsCopyDiagnosticsButton"
+                                Click="OnCopyDiagnosticsClick"
+                                Content="Copy diagnostics" />
+                        </StackPanel>
+
+                        <TextBlock
+                            x:Name="CopyConfirmationText"
+                            AutomationProperties.AutomationId="SettingsCopyConfirmationText"
+                            Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                            Style="{StaticResource CaptionTextBlockStyle}" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</Window>

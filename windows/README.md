@@ -52,6 +52,11 @@ dotnet test windows/tests/Juice.Core.Tests/Juice.Core.Tests.csproj
 dotnet test windows/tests/Juice.Core.Tests/Juice.Core.Tests.csproj --filter "FullyQualifiedName~AppsPlusPlatform"
 ```
 
+Build the architecture you are running on, and verify there.
+Both slices ship, so both get built at pack time, but an x64 build executed on an ARM64 machine runs under Prism emulation and burns materially more CPU for the same work.
+Since Juice attributes energy to processes by their share of processor time, an emulated build inflates its own consumption and reports numbers that describe the emulator rather than the app.
+On a Snapdragon X machine that means `-p:Platform=ARM64` for anything you intend to run.
+
 ## Command line
 
 The CLI has two modes.

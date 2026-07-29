@@ -1,0 +1,286 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="Juice.App.Views.FlyoutWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:local="using:Juice.App.Views"
+    xmlns:vm="using:Juice.App.ViewModels"
+    mc:Ignorable="d">
+
+    <Window.SystemBackdrop>
+        <DesktopAcrylicBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid x:Name="RootGrid" Padding="16" RowSpacing="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <Grid Grid.Row="0" ColumnSpacing="8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <TextBlock
+                Grid.Column="0"
+                VerticalAlignment="Center"
+                Style="{StaticResource BodyStrongTextBlockStyle}"
+                Text="Juice" />
+
+            <Button
+                x:Name="OpenSettingsButton"
+                Grid.Column="1"
+                AutomationProperties.AutomationId="FlyoutOpenSettingsButton"
+                AutomationProperties.Name="Open Juice settings"
+                Padding="8"
+                Background="Transparent"
+                BorderThickness="0"
+                Click="OnOpenSettingsClick"
+                ToolTipService.ToolTip="Settings">
+                <FontIcon FontSize="16" Glyph="&#xE713;" />
+            </Button>
+        </Grid>
+
+        <!-- Live readout -->
+        <StackPanel Grid.Row="1">
+            <TextBlock
+                AutomationProperties.AutomationId="FlyoutSystemWatts"
+                AutomationProperties.Name="{x:Bind local:FlyoutWindow.ReadoutAnnouncement(ViewModel.WattsText, ViewModel.SourceText), Mode=OneWay}"
+                Foreground="{x:Bind local:FlyoutWindow.ReadoutBrush(ViewModel.Severity), Mode=OneWay}"
+                Style="{StaticResource TitleLargeTextBlockStyle}"
+                Text="{x:Bind ViewModel.WattsText, Mode=OneWay}" />
+
+            <TextBlock
+                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                Style="{StaticResource CaptionTextBlockStyle}"
+                Text="{x:Bind ViewModel.SourceText, Mode=OneWay}" />
+        </StackPanel>
+
+        <!-- Battery and supply state -->
+        <StackPanel
+            Grid.Row="2"
+            Orientation="Horizontal"
+            Spacing="8">
+            <TextBlock
+                AutomationProperties.AutomationId="FlyoutBatteryPercent"
+                Foreground="{x:Bind local:FlyoutWindow.BatteryBrush(ViewModel.BatteryLevel), Mode=OneWay}"
+                Style="{StaticResource BodyStrongTextBlockStyle}"
+                Text="{x:Bind ViewModel.BatteryText, Mode=OneWay}"
+                Visibility="{x:Bind local:FlyoutWindow.ToVisibility(ViewModel.HasBattery), Mode=OneWay}" />
+
+            <TextBlock
+                VerticalAlignment="Center"
+                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                Style="{StaticResource CaptionTextBlockStyle}"
+                Text="{x:Bind ViewModel.PowerStateText, Mode=OneWay}" />
+        </StackPanel>
+
+        <!-- Per-rail breakdown -->
+        <ItemsControl
+            Grid.Row="3"
+            ItemsSource="{x:Bind ViewModel.Rails, Mode=OneWay}"
+            Visibility="{x:Bind local:FlyoutWindow.ToVisibility(ViewModel.HasRails), Mode=OneWay}">
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <StackPanel Orientation="Horizontal" Spacing="8" />
+                </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:RailRowViewModel">
+                    <Border
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1"
+                        CornerRadius="{StaticResource ControlCornerRadius}">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="3" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <!--
+                                One strip per rail, with only the matching one shown.
+
+                                Do not replace these with a single Border bound to a brush
+                                property on the row. A Brush handed over by a view model is
+                                the instance from whichever theme dictionary was active
+                                when the row was built, and bindings inside a DataTemplate
+                                are not reachable from the window's Bindings.Update(), so
+                                on a light or dark switch the strip would keep painting the
+                                old theme's colour. Selecting the brush declaratively with
+                                ThemeResource is what makes it follow the system theme,
+                                including high contrast.
+                            -->
+                            <Border
+                                Grid.Column="0"
+                                Background="{ThemeResource AccentFillColorDefaultBrush}"
+                                Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsCpu), Mode=OneWay}" />
+                            <Border
+                                Grid.Column="0"
+                                Background="{ThemeResource SystemFillColorSuccessBrush}"
+                                Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsGpu), Mode=OneWay}" />
+                            <Border
+                                Grid.Column="0"
+                                Background="{ThemeResource SystemFillColorAttentionBrush}"
+                                Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsNpu), Mode=OneWay}" />
+                            <Border
+                                Grid.Column="0"
+                                Background="{ThemeResource TextFillColorTertiaryBrush}"
+                                Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsSupply), Mode=OneWay}" />
+
+                            <StackPanel Grid.Column="1" Margin="12,8">
+                                <TextBlock
+                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                    Style="{StaticResource CaptionTextBlockStyle}"
+                                    Text="{x:Bind Name, Mode=OneWay}" />
+                                <TextBlock
+                                    Style="{StaticResource BodyStrongTextBlockStyle}"
+                                    Text="{x:Bind WattsText, Mode=OneWay}" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+
+        <!-- Top energy users -->
+        <Grid Grid.Row="4" RowSpacing="4">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <TextBlock
+                Grid.Row="0"
+                Style="{StaticResource BodyStrongTextBlockStyle}"
+                Text="Top energy users" />
+
+            <TextBlock
+                Grid.Row="1"
+                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                Style="{StaticResource CaptionTextBlockStyle}"
+                Text="{x:Bind ViewModel.EnergyWindowText, Mode=OneWay}"
+                TextWrapping="Wrap" />
+
+            <ListView
+                Grid.Row="2"
+                AutomationProperties.AutomationId="FlyoutEnergyList"
+                AutomationProperties.Name="Top energy users"
+                IsItemClickEnabled="False"
+                ItemsSource="{x:Bind ViewModel.EnergyRows, Mode=OneWay}"
+                SelectionMode="None">
+                <ListView.ItemTemplate>
+                    <DataTemplate x:DataType="vm:EnergyRowViewModel">
+                        <Grid AutomationProperties.Name="{x:Bind local:FlyoutWindow.RowAnnouncement(DisplayName, WattsText, CostText), Mode=OneWay}">
+                            <!--
+                                Ranking bar. It is a star sized column rather than a pixel
+                                width so it stays proportional at any flyout width, and it
+                                sits behind the text rather than beside it so ranking
+                                costs no row height. The fill is translucent, which means
+                                it all but disappears under high contrast: that is the
+                                right way for it to fail, because the ordering and the
+                                watts still carry the ranking on their own.
+
+                                The two fills are separate Borders toggled by IsPlatform
+                                rather than one Border taking a brush from the row, for the
+                                same reason as the rail strips above: a view model brush
+                                would be captured from one theme dictionary and could not
+                                be refreshed from inside a DataTemplate on a theme switch.
+                                Only the theme independent values, the GridLengths and the
+                                Visibilities, come from function bindings here.
+                            -->
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="{x:Bind local:FlyoutWindow.BarLength(BarFraction), Mode=OneWay}" />
+                                    <ColumnDefinition Width="{x:Bind local:FlyoutWindow.BarRemainderLength(BarFraction), Mode=OneWay}" />
+                                </Grid.ColumnDefinitions>
+
+                                <Border
+                                    Grid.Column="0"
+                                    Background="{ThemeResource AccentFillColorDefaultBrush}"
+                                    CornerRadius="{StaticResource ControlCornerRadius}"
+                                    Opacity="0.18"
+                                    Visibility="{x:Bind local:FlyoutWindow.ToVisibilityInverse(IsPlatform), Mode=OneWay}" />
+
+                                <Border
+                                    Grid.Column="0"
+                                    Background="{ThemeResource TextFillColorTertiaryBrush}"
+                                    CornerRadius="{StaticResource ControlCornerRadius}"
+                                    Opacity="0.15"
+                                    Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsPlatform), Mode=OneWay}" />
+                            </Grid>
+
+                            <Grid Padding="8,0" ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="16" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <!--
+                                    The app's own icon, per CONTRIBUTING.md. The column is
+                                    a fixed width rather than Auto so the names stay
+                                    aligned whether or not an icon could be extracted.
+                                -->
+                                <Image
+                                    Grid.Column="0"
+                                    Width="16"
+                                    Height="16"
+                                    VerticalAlignment="Center"
+                                    Source="{x:Bind Icon, Mode=OneWay}"
+                                    Visibility="{x:Bind local:FlyoutWindow.ToVisibilityIfPresent(Icon), Mode=OneWay}" />
+
+                                <FontIcon
+                                    Grid.Column="0"
+                                    VerticalAlignment="Center"
+                                    FontSize="14"
+                                    Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                    Glyph="&#xE7F4;"
+                                    Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsPlatform), Mode=OneWay}" />
+
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock
+                                        Text="{x:Bind DisplayName, Mode=OneWay}"
+                                        TextTrimming="CharacterEllipsis" />
+                                    <TextBlock
+                                        Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                        Style="{StaticResource CaptionTextBlockStyle}"
+                                        Text="{x:Bind CostText, Mode=OneWay}" />
+                                </StackPanel>
+
+                                <TextBlock
+                                    Grid.Column="2"
+                                    VerticalAlignment="Center"
+                                    Style="{StaticResource BodyStrongTextBlockStyle}"
+                                    Text="{x:Bind WattsText, Mode=OneWay}" />
+                            </Grid>
+                        </Grid>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+        </Grid>
+
+        <!-- Rate provenance -->
+        <StackPanel Grid.Row="5" Spacing="4">
+            <Border
+                Height="1"
+                Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+            <TextBlock
+                AutomationProperties.AutomationId="FlyoutRateFooter"
+                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                Style="{StaticResource CaptionTextBlockStyle}"
+                Text="{x:Bind ViewModel.RateFooterText, Mode=OneWay}"
+                TextWrapping="Wrap" />
+        </StackPanel>
+    </Grid>
+</Window>
