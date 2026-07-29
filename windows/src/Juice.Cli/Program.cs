@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Juice.Core.Attribution;
+using Juice.Core.Battery;
 using Juice.Core.Contracts;
 using Juice.Core.Cost;
 using Juice.Core.Power;
@@ -47,6 +48,7 @@ public static class Program
                 "now" => Now(json),
                 "top" => Top(args, json),
                 "sources" => Sources(json),
+                "battery" => Battery(json),
                 "verify" => Verify(args, json),
                 "help" or "--help" or "-h" => Help(),
                 _ => Fail(json, command, "unknownCommand", $"Unknown command '{command}'.", ExitUsage),
@@ -407,8 +409,7 @@ public static class Program
         return ExitOk;
     }
 
-    private static int Verify(string[] args, bool json)
-    {
+    private static int Verify(string[] args, bool json)    {
         var seconds = ReadSeconds(args, 30);
 
         using var meter = new EnergyMeterPowerSource(new WmiBatteryStateReader());
@@ -452,6 +453,71 @@ public static class Program
             : "FAIL - the two derivations disagree by more than the tolerance.");
 
         return audit.Passed ? ExitOk : ExitFailed;
+    }
+
+    /// <summary>
+    /// Reports battery health from the Windows battery report.
+    /// </summary>
+    /// <remarks>
+    /// This is history Juice could not reconstruct itself, because it predates the app
+    /// being installed. The report needs no elevation and reaches back over the machine's
+    /// whole life.
+    /// </remarks>
+    private static int Battery(bool json)
+    {
+        if (BatteryReportReader.Read() is not { } health)
+        {
+            return Fail(json, "battery", "noBatteryReport",
+                "Could not generate a battery report on this machine.", ExitFailed);
+        }
+
+        if (health.Current is not { } current)
+        {
+            return Fail(json, "battery", "noBattery",
+                "This machine has no battery history.", ExitFailed);
+        }
+
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(new
+            {
+                schemaVersion = JuiceSchema.Version,
+                platform = "windows",
+                command = "battery",
+                ok = true,
+                designWattHours = current.DesignWattHours,
+                fullChargeWattHours = current.FullChargeWattHours,
+                healthFraction = current.HealthFraction,
+                cycleCount = current.CycleCount,
+                capacityLostPercent = health.CapacityLostPercent,
+                historyEntries = health.History.Count,
+                summary = health.Summary(),
+            }, JuiceSchema.Options));
+            return ExitOk;
+        }
+
+        Console.WriteLine(health.Summary());
+        Console.WriteLine();
+        Console.WriteLine($"Design capacity     {current.DesignWattHours,7:0.0} Wh");
+        Console.WriteLine($"Full charge now     {current.FullChargeWattHours,7:0.0} Wh");
+
+        if (current.HealthFraction is { } fraction)
+        {
+            Console.WriteLine($"Health              {fraction * 100,7:0.0} %");
+        }
+
+        if (current.CycleCount is { } cycles)
+        {
+            Console.WriteLine($"Cycles              {cycles,7}");
+        }
+
+        if (health.CapacityLostPercent is { } lost)
+        {
+            Console.WriteLine($"Lost since {health.Oldest!.Start:yyyy-MM-dd} {lost,7:0.0} points");
+        }
+
+        Console.WriteLine($"History entries     {health.History.Count,7}");
+        return ExitOk;
     }
 
     private static int ReadSeconds(string[] args, int fallback)

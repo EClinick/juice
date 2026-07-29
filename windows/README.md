@@ -66,6 +66,7 @@ The default is a human-readable terminal view.
 ```powershell
 juice now                    # current draw, per rail
 juice top --seconds 30       # top energy users, with cost per app
+juice battery                # battery health and capacity loss over the machine's life
 juice sources                # which power sources this machine has
 juice verify --seconds 30    # audit the energy accumulator against integrated power
 ```
