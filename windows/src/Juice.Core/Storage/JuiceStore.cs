@@ -65,6 +65,15 @@ public sealed class JuiceStore : IDisposable
             PRAGMA journal_mode = WAL;
             PRAGMA synchronous = NORMAL;
 
+            -- The default page cache is far larger than this store needs. Queries run
+            -- when a window opens, a few times an hour at most, over a database measured
+            -- in megabytes, so holding a large cache resident for a process that is idle
+            -- almost all of the time is pure cost. Negative means kibibytes.
+            PRAGMA cache_size = -512;
+
+            -- Keep scratch on disk rather than in the heap, for the same reason.
+            PRAGMA temp_store = FILE;
+
             CREATE TABLE IF NOT EXISTS system_energy_hours (
                 hour_start      INTEGER PRIMARY KEY,
                 system_wh       REAL NOT NULL DEFAULT 0,

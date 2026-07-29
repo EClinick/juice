@@ -7,6 +7,7 @@ using Juice.App.Views;
 using Juice.Core.Power;
 using Juice.Core.Presentation;
 using Juice.Core.Storage;
+using Juice.Platform.Windows;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Windows.ApplicationModel.DataTransfer;
@@ -42,6 +43,12 @@ public partial class App : Application
     /// still measures but has no history to chart.
     /// </summary>
     private JuiceStore? _store;
+
+    /// <summary>Pending idle trim, replaced each time a window closes.</summary>
+    private Timer? _idleTrim;
+
+    /// <summary>How long after the last window closes to collect and trim.</summary>
+    private static readonly TimeSpan IdleTrimDelay = TimeSpan.FromSeconds(5);
     private TrayIcon _tray = null!;
     private FlyoutWindow _flyout = null!;
     private SettingsWindow? _settingsWindow;
@@ -67,7 +74,16 @@ public partial class App : Application
         _monitor = new PowerMonitor(_ui, _store);
         _monitor.SnapshotReady += OnSnapshotReady;
 
-        _activity.StateChanged += (_, state) => _monitor.State = state;
+        _activity.StateChanged += (_, state) =>
+        {
+            _monitor.State = state;
+
+            // Anything other than Foreground means nothing is on screen, so whatever the
+            // last visible window needed can go back to the operating system. This is the
+            // hook that matters in practice: a tray app spends almost all of its life
+            // arriving here and never opening a window at all.
+            if (state != ActivityState.Foreground) ScheduleIdleTrim();
+        };
 
         _flyout = new FlyoutWindow(_flyoutViewModel);
         _flyout.SettingsRequested += (_, _) => ShowSettings();
@@ -76,6 +92,10 @@ public partial class App : Application
         CreateTrayIcon();
 
         _monitor.Start();
+
+        // First trim after startup settles. Launch touches a great deal that is never
+        // needed again: XAML parsing, resource dictionaries, JIT for paths that run once.
+        ScheduleIdleTrim();
     }
 
     private void CreateTrayIcon()
@@ -157,6 +177,11 @@ public partial class App : Application
         // being visible counts, so the flag is recomputed from both rather than set.
         _activity.IsWindowVisible = _flyout.IsOpen || _settingsWindow is { Visible: true };
 
+        // Nothing on screen means the XAML tree, decoded icons and layout scratch that a
+        // visible window needed are all dead weight until the next open. Give the runtime
+        // a moment to settle, then collect and hand the pages back.
+        if (!_activity.IsWindowVisible) ScheduleIdleTrim();
+
         if (isVisible && ReferenceEquals(sender, _flyout) && _latest is { } snapshot)
         {
             _flyoutViewModel.Update(snapshot, _rates.Current);
@@ -211,6 +236,29 @@ public partial class App : Application
         }
     }
 
+    /// <summary>
+    /// Collects and trims the working set a short while after the last window closes.
+    /// </summary>
+    /// <remarks>
+    /// Delayed rather than immediate because closing a window is followed by teardown that
+    /// itself allocates, and trimming into that only forces the pages straight back in.
+    /// Debounced because opening and closing the flyout repeatedly should cost one trim,
+    /// not one per close.
+    /// </remarks>
+    private void ScheduleIdleTrim()
+    {
+        _idleTrim?.Dispose();
+        _idleTrim = new Timer(
+            _ =>
+            {
+                if (_activity.IsWindowVisible) return;
+                ProcessMemory.TrimAfterIdle();
+            },
+            null,
+            IdleTrimDelay,
+            Timeout.InfiniteTimeSpan);
+    }
+
     private void Invoke(TrayCommand command)
     {
         switch (command)
@@ -256,6 +304,7 @@ public partial class App : Application
         _monitor.Dispose();
         _icons.Dispose();
         _store?.Dispose();
+        _idleTrim?.Dispose();
 
         Exit();
     }

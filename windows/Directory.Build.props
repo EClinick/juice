@@ -35,8 +35,25 @@
   <PropertyGroup>
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <RetainVMGarbageCollection>false</RetainVMGarbageCollection>
     <TieredPGO>true</TieredPGO>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Trade a little throughput for a smaller heap. This process is idle almost all of
+      the time and its hot paths are counter reads, so the collector aggressively
+      returning memory is worth more than it costs.
+    -->
+    <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="5" />
+
+    <!--
+      Return freed segments to the operating system rather than holding them for reuse.
+      A tray application that spikes while a window is open should not keep that memory
+      resident for the days afterwards when nothing is on screen.
+    -->
+    <RuntimeHostConfigurationOption Include="System.GC.RetainVM" Value="false" />
+  </ItemGroup>
 
 </Project>

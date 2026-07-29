@@ -22,18 +22,31 @@
     so production builds should always pass this.
 
 .PARAMETER FrameworkDependent
-    Produces a smaller package that requires the .NET and Windows App SDK runtimes to
-    already be present. The default is self-contained, because Juice is a utility people
-    sideload or install from the Store and it should never fail to start because of a
-    missing runtime.
+    Builds against the installed Windows App SDK runtime instead of carrying it.
+
+    This is the right choice for Store submission. The Windows App SDK ships as a
+    framework package that the Store resolves and installs automatically, so depending on
+    it costs the user nothing and removes a large payload, including the ONNX and DirectML
+    components that a self-contained Windows App SDK drags in whether or not the
+    application does any machine learning. Juice does none.
+
+    The .NET runtime is carried regardless. It is not a framework package, the Store will
+    not install it, and a framework-dependent .NET build would fail to start on a machine
+    without the matching desktop runtime. Use -DotNetFrameworkDependent only for
+    sideloading onto machines you control.
+
+.PARAMETER DotNetFrameworkDependent
+    Also build against an installed .NET runtime. Produces the smallest package, but the
+    target machine must already have the matching .NET desktop runtime. Not suitable for
+    Store submission.
 
 .EXAMPLE
-    .\pack.ps1
-    Self-contained development bundle signed with a generated certificate.
+    .\pack.ps1 -FrameworkDependent
+    Store profile. Windows App SDK from the framework package, .NET carried.
 
 .EXAMPLE
     .\pack.ps1 -CertPath .\prod.pfx -Timestamp http://timestamp.digicert.com
-    Production bundle.
+    Fully self-contained production bundle for sideloading.
 #>
 [CmdletBinding()]
 param(
@@ -42,6 +55,7 @@ param(
     [string] $CertPassword = 'password',
     [string] $Timestamp,
     [switch] $FrameworkDependent,
+    [switch] $DotNetFrameworkDependent,
     [string[]] $Architectures
 )
 
@@ -53,15 +67,62 @@ $windowsRoot = Split-Path -Parent $buildRoot
 $appProject = Join-Path $windowsRoot 'src\Juice.App\Juice.App.csproj'
 $cliProject = Join-Path $windowsRoot 'src\Juice.Cli\Juice.Cli.csproj'
 $manifestSource = Join-Path $windowsRoot 'src\Juice.App\Package.appxmanifest'
+$TargetFramework = 'net10.0-windows10.0.26100.0'
 $artifacts = Join-Path $windowsRoot 'artifacts'
 $packagesDir = Join-Path $artifacts 'packages'
 
 function Get-JuiceVersion {
     # Single source of truth: Directory.Build.props. The revision stays 0 because the
     # Microsoft Store reserves that field and rewrites it on submission.
+    #
+    # XPath rather than property access: under Set-StrictMode, reaching for a property
+    # that a given PropertyGroup does not carry is an error rather than a null, and the
+    # file has several groups.
     $props = [xml](Get-Content (Join-Path $windowsRoot 'Directory.Build.props'))
-    $group = $props.Project.PropertyGroup | Where-Object { $null -ne $_.JuiceMajor }
-    "{0}.{1}.{2}.0" -f $group.JuiceMajor, $group.JuiceMinor, $group.JuiceBuild
+
+    $major = $props.SelectSingleNode('//JuiceMajor')
+    $minor = $props.SelectSingleNode('//JuiceMinor')
+    $build = $props.SelectSingleNode('//JuiceBuild')
+
+    if (-not $major -or -not $minor -or -not $build) {
+        throw "Could not read JuiceMajor/JuiceMinor/JuiceBuild from Directory.Build.props."
+    }
+
+    "{0}.{1}.{2}.0" -f $major.InnerText, $minor.InnerText, $build.InnerText
+}
+
+function Remove-UnusedRuntimes {
+    <#
+    .SYNOPSIS
+        Deletes payload the application never loads.
+
+    .DESCRIPTION
+        The Windows App SDK meta-package pulls in its AI and machine learning components,
+        which carry onnxruntime and DirectML and add roughly 40 MB per architecture. Juice
+        performs no inference of any kind.
+
+        Excluding them through NuGet does not work: the machine learning targets fail the
+        build outright when their assets are excluded, so the files are removed from the
+        staged layout instead. This is blunt, and it is safe only because nothing in this
+        application references those APIs. If a feature ever needs on-device inference,
+        delete this function rather than working around it.
+    #>
+    param([Parameter(Mandatory)][string] $Layout)
+
+    $unused = 'onnxruntime.dll', 'DirectML.dll', 'Microsoft.ML.OnnxRuntime.dll'
+    $freed = 0
+
+    foreach ($name in $unused) {
+        $file = Join-Path $Layout $name
+        if (-not (Test-Path $file)) { continue }
+
+        $freed += (Get-Item $file).Length
+        Remove-Item $file -Force
+    }
+
+    if ($freed -gt 0) {
+        Write-Host ("  pruned unused runtimes: {0:N1} MB" -f ($freed / 1MB)) -ForegroundColor DarkGray
+    }
 }
 
 function Assert-Tool {
@@ -97,39 +158,57 @@ if (-not $CertPath) {
     if ($LASTEXITCODE -ne 0) { throw "certificate generation failed" }
 }
 
-# Self-contained is the default. Two separate runtimes have to be carried: the .NET
-# runtime via dotnet publish, and the Windows App SDK via WindowsAppSDKSelfContained
-# and winapp's --self-contained. Setting only one of them still leaves the app unable
-# to start on a clean machine.
-$selfContained = -not $FrameworkDependent
-$selfContainedFlag = if ($selfContained) { 'true' } else { 'false' }
-$deploymentLabel = if ($selfContained) { 'self-contained' } else { 'framework-dependent' }
-Write-Host ("Deployment: {0}" -f $deploymentLabel)
+# Two independent decisions, deliberately kept apart.
+#
+# The Windows App SDK is a framework package the Store resolves and installs, so depending
+# on it costs the user nothing and removes a large payload, including the ONNX and DirectML
+# components a self-contained Windows App SDK carries whether or not the application does
+# any machine learning. Juice does none.
+#
+# The .NET runtime is not a framework package. The Store will not install it, so it is
+# carried unless the caller explicitly opts out for sideloading onto machines they control.
+$sdkSelfContained = -not $FrameworkDependent
+$dotnetSelfContained = -not $DotNetFrameworkDependent
+
+$sdkFlag = if ($sdkSelfContained) { 'true' } else { 'false' }
+$dotnetFlag = if ($dotnetSelfContained) { 'true' } else { 'false' }
+
+Write-Host ("Windows App SDK: {0}" -f $(if ($sdkSelfContained) { 'carried' } else { 'framework package' }))
+Write-Host (".NET runtime   : {0}" -f $(if ($dotnetSelfContained) { 'carried' } else { 'framework dependent' }))
 
 foreach ($arch in $Architectures) {
-    Write-Host "`nPublishing $arch" -ForegroundColor Cyan
+    Write-Host "`nBuilding $arch" -ForegroundColor Cyan
 
     $rid = "win-$arch"
-    $layout = Join-Path $artifacts "layout\$arch"
 
-    dotnet publish $appProject `
+    # Build rather than publish, and package the build output directly.
+    #
+    # This is what the Windows packaging guidance prescribes, and the reason is the
+    # manifest. The build emits an AppxManifest.xml with everything the source manifest
+    # cannot know injected into it, above all the PackageDependency on the Windows App SDK
+    # framework package at the exact version this build resolved. Publishing to a separate
+    # folder and supplying a hand-written manifest loses that, and the result installs
+    # cleanly and then dies at startup with REGDB_E_CLASSNOTREG.
+    dotnet build $appProject `
         -c $Configuration `
         -r $rid `
-        --self-contained $selfContainedFlag `
+        --self-contained $dotnetFlag `
         -p:Platform=$arch `
-        -p:WindowsAppSDKSelfContained=$selfContainedFlag `
-        -p:PublishReadyToRun=true `
-        -o $layout
-    if ($LASTEXITCODE -ne 0) { throw "publish failed for $arch" }
+        -p:WindowsAppSDKSelfContained=$sdkFlag
+    if ($LASTEXITCODE -ne 0) { throw "build failed for $arch" }
 
-    # The manifest declares an AppExecutionAlias for juice.exe, so the CLI has to be
-    # inside the package or the alias resolves to nothing. Publishing it into the same
-    # layout is what makes one bundle serve both the tray app and the command line.
+    $layout = Join-Path (Split-Path -Parent $appProject) "bin\$arch\$Configuration\$TargetFramework\$rid"
+    if (-not (Test-Path (Join-Path $layout 'AppxManifest.xml'))) {
+        throw "No AppxManifest.xml in $layout. Packaging that would produce a package that cannot start."
+    }
+
+    # The manifest declares an AppExecutionAlias for juice.exe, so the CLI has to be inside
+    # the package or the alias resolves to nothing. It is published into the same folder,
+    # which is what makes one bundle serve both the tray app and the command line.
     dotnet publish $cliProject `
         -c $Configuration `
         -r $rid `
-        --self-contained $selfContainedFlag `
-        -p:PublishReadyToRun=true `
+        --self-contained $dotnetFlag `
         -o $layout
     if ($LASTEXITCODE -ne 0) { throw "CLI publish failed for $arch" }
 
@@ -137,11 +216,27 @@ foreach ($arch in $Architectures) {
         throw "juice.exe missing from the $arch layout; the AppExecutionAlias would be dead."
     }
 
+    Remove-UnusedRuntimes -Layout $layout
+
     # Stamp the manifest per architecture. MSIX requires ProcessorArchitecture to match
     # the payload, and every package in a bundle must share one version.
-    $manifest = [xml](Get-Content $manifestSource)
+    #
+    # This edits the manifest the build generated, never the source one. The build injects
+    # the PackageDependency on the Windows App SDK framework package at the exact version
+    # it resolved, and losing that produces a package that installs cleanly and then dies
+    # at startup with REGDB_E_CLASSNOTREG.
+    $generated = Join-Path $layout 'AppxManifest.xml'
+    $manifest = [xml](Get-Content $generated)
     $manifest.Package.Identity.Version = $version
     $manifest.Package.Identity.SetAttribute('ProcessorArchitecture', $arch)
+
+    # Resolve the build-time placeholders. They cannot survive into the packaged manifest
+    # because the layout contains two executables, the tray application and the command
+    # line, so nothing downstream can infer which one the Application element means.
+    $app = $manifest.Package.Applications.Application
+    if ($app.Executable -like '*$targetnametoken$*') { $app.Executable = 'Juice.App.exe' }
+    if ($app.EntryPoint -like '*$targetentrypoint$*') { $app.EntryPoint = 'Windows.FullTrustApplication' }
+
     $stamped = Join-Path $layout 'Package.appxmanifest'
     $manifest.Save($stamped)
 
@@ -152,11 +247,12 @@ foreach ($arch in $Architectures) {
         'package', $layout,
         '--manifest', $stamped,
         '--output', $msix,
+        '--executable', 'Juice.App.exe',
         '--cert', $CertPath,
         '--cert-password', $CertPassword,
         '--quiet'
     )
-    if ($selfContained) { $packArgs += '--self-contained' }
+    if ($sdkSelfContained) { $packArgs += '--self-contained' }
 
     winapp @packArgs
     if ($LASTEXITCODE -ne 0) { throw "winapp package failed for $arch" }
