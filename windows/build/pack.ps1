@@ -40,13 +40,27 @@
     target machine must already have the matching .NET desktop runtime. Not suitable for
     Store submission.
 
+.PARAMETER NoBump
+    Repackage without incrementing the version.
+
+    By default the build segment is bumped on every pack. The Store rejects a submission
+    whose version is not strictly greater than the last one accepted, and remembering to
+    edit Directory.Build.props by hand is exactly the step that gets forgotten on the
+    second submission. The revision segment is never touched and always stays 0, because
+    the Store reserves it.
+
 .EXAMPLE
     .\pack.ps1 -FrameworkDependent
-    Store profile. Windows App SDK from the framework package, .NET carried.
+    Store profile. Bumps the build segment, takes the Windows App SDK from its framework
+    package, carries .NET.
 
 .EXAMPLE
     .\pack.ps1 -CertPath .\prod.pfx -Timestamp http://timestamp.digicert.com
     Fully self-contained production bundle for sideloading.
+
+.EXAMPLE
+    .\pack.ps1 -NoBump
+    Rebuild the current version, for iterating locally without burning version numbers.
 #>
 [CmdletBinding()]
 param(
@@ -56,6 +70,7 @@ param(
     [string] $Timestamp,
     [switch] $FrameworkDependent,
     [switch] $DotNetFrameworkDependent,
+    [switch] $NoBump,
     [string[]] $Architectures
 )
 
@@ -125,6 +140,34 @@ function Remove-UnusedRuntimes {
     }
 }
 
+function Step-JuiceBuildNumber {
+    <#
+    .SYNOPSIS
+        Increments the build segment in Directory.Build.props.
+
+    .DESCRIPTION
+        The Store rejects a submission whose version is not strictly greater than the last
+        one accepted, so every packed build gets a new number by default rather than
+        relying on someone remembering to edit the file.
+
+        Only the build segment moves. The revision stays 0 because the Store reserves that
+        field and rewrites it when it repackages a submission, so shipping a non-zero
+        revision makes the submitted and published versions disagree.
+    #>
+    $propsPath = Join-Path $windowsRoot 'Directory.Build.props'
+    $text = [System.IO.File]::ReadAllText($propsPath)
+
+    $pattern = '(<JuiceBuild>)(\d+)(</JuiceBuild>)'
+    $match = [regex]::Match($text, $pattern)
+    if (-not $match.Success) { throw "Could not find JuiceBuild in $propsPath." }
+
+    $next = [int]$match.Groups[2].Value + 1
+    $updated = [regex]::Replace($text, $pattern, "`${1}$next`${3}", 1)
+
+    [System.IO.File]::WriteAllText($propsPath, $updated)
+    Write-Host ("Version bumped: build {0} -> {1}" -f $match.Groups[2].Value, $next) -ForegroundColor DarkGray
+}
+
 function Assert-Tool {
     if (-not (Get-Command winapp -ErrorAction SilentlyContinue)) {
         throw "winapp is not on PATH. Install the Windows App CLI, then re-run."
@@ -141,6 +184,8 @@ Assert-Tool
 if (-not $Architectures) {
     $Architectures = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { @('arm64', 'x64') } else { @('x64', 'arm64') }
 }
+
+if (-not $NoBump) { Step-JuiceBuildNumber }
 
 $version = Get-JuiceVersion
 Write-Host "Juice $version" -ForegroundColor Cyan

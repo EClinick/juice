@@ -8,18 +8,23 @@
   IgnorableNamespaces="uap uap3 desktop rescap">
 
   <!--
-    Version is major.minor.build.0 and is rewritten from $(JuiceVersion) at pack time by
-    windows/build/pack.ps1. The revision field stays 0 because the Microsoft Store
-    reserves it and rewrites it when it repackages a submission.
+    Version is major.minor.build.0 and is stamped from windows/Directory.Build.props at
+    pack time. The revision field stays 0 because the Microsoft Store reserves it and
+    rewrites it when it repackages a submission.
+
+    Publisher is the account-level identity from Partner Center and is shared by every
+    application published under it. Name must match the product name reserved in Partner
+    Center for this specific application, following the same convention as the other
+    products on this account.
   -->
   <Identity
-    Name="Juice.Juice"
-    Publisher="CN=Juice"
+    Name="Clinick.Juice"
+    Publisher="CN=46604BD4-AFD9-4B23-8EB3-10EAF66872A5"
     Version="0.1.0.0" />
 
   <Properties>
     <DisplayName>Juice</DisplayName>
-    <PublisherDisplayName>Juice</PublisherDisplayName>
+    <PublisherDisplayName>Clinick</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
     <Description>See what is eating your battery, what it costs, and how much power your PC is drawing right now.</Description>
   </Properties>
