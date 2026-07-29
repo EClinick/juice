@@ -274,17 +274,25 @@ One more thing follows from all this, and it is the part that generalises furthe
 
 ReadyToRun looks like a per-project setting, and it is not.
 An MSIX layout is a single flat folder, so the application's build supplies every shared assembly in the package, and the command line tool contributes only its own four files on top.
-Whether the command line project precompiles therefore decides the content of `juice.dll`, 0.03 MB of it, and nothing else, while the packaged `juice.exe` loads the application's precompiled assemblies out of the shared folder and gets the benefit regardless.
-Turning it off there changed the bundle by zero bytes, which is what made this visible.
+Of those four, only `juice.dll` contains IL, so the command line project's setting decides the fate of exactly one assembly in the package.
+Turning it off there moved the bundle by 50,176 bytes per architecture, which is what made this visible.
 
 It is a package-wide decision that happens to be spelled as a project property, and the project it belongs to is whichever one supplies the shared payload.
+
+Which is also why both projects now enable it, despite the command line tool gaining nothing measurable from precompiling on its own.
+Measured in isolation it is not startup bound: median wall time for `juice now` was 2040 ms against 2050 ms over twelve interleaved runs of each, with the ranges overlapping, because every command samples hardware counters over a real time window that dwarfs any jit work.
+That measurement argues about whether the package should precompile at all, and the application already settled that question by paying 12.6 MB for it.
+Once that is paid, excluding one executable saves four hundredths of a percent of the package and leaves the only code unique to the command line as the single jitted assembly among precompiled ones.
+The consistent choice is the cheap one.
 
 That also corrected a wrong attribution made on the way here.
 The 63 MB Windows API projection in the package is the application's, precompiled under a self-contained .NET build, not the command line tool's.
 An earlier measurement had put the application's cost at 21.8 MB, but that was taken framework-dependent on .NET, which precompiles far less.
 Only the comparison of the packages this script actually produces is trustworthy, because it is the only one where every other variable is held where it ships.
+
 The lesson is not about ReadyToRun.
 It is that a build feature which quietly writes its output somewhere other than the build output will defeat measurement by inspection, and that a measurement which cannot fail is not a measurement.
+
 ## Showing an app's icon
 
 **macOS:** `NSWorkspace.icon(forFile:)`.

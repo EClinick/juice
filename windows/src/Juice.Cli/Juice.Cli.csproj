@@ -13,30 +13,31 @@
     -->
     <InvariantGlobalization>false</InvariantGlobalization>
     <!--
-      ReadyToRun is off here, but this setting has almost no effect on the shipped package,
-      and that is worth explaining because the obvious reading is wrong.
+      ReadyToRun is on, matching Juice.App, and it has to be a package-wide decision rather
+      than a per-project one.
 
       An MSIX layout is a single flat folder. The tray application's build supplies every
-      shared assembly in it, the .NET runtime and the Windows API projection included, and
-      pack.ps1 copies only four files out of this project's publish on top: juice.exe,
-      juice.dll and the two json files. So whether this project precompiles decides the
-      size and content of juice.dll alone, 0.03 MB of it, and nothing else.
+      shared assembly in it, and pack.ps1 copies only four files out of this project's
+      publish on top: juice.exe, juice.dll and the two json files. Of those, only juice.dll
+      contains IL, so this setting decides the fate of exactly one assembly in the package.
 
-      ReadyToRun is therefore a package-wide decision made by Juice.App, not a per-project
-      one. It is enabled there. The packaged juice.exe loads that application's precompiled
-      assemblies out of the shared folder and gets the benefit either way.
+      That assembly costs 50,176 bytes to precompile, 27,648 against 77,824. Set against
+      the 12.6 MB the package already spends precompiling on arm64, declining to spend it
+      would leave the only code unique to the command line as the single assembly still
+      jitted, surrounded by precompiled ones, and save four hundredths of a percent of the
+      package for the trouble.
 
-      Off is still the right setting, for two reasons that apply outside the package.
-      Publishing this project standalone with it on costs 43 MB, the Windows API projection
-      growing from 25 MB to 63 MB, which pack.ps1 pays for on every architecture and then
-      discards. And it buys nothing measurable: median wall time for juice now is 2040 ms
-      with it and 2050 ms without, over twelve interleaved runs of each with warm-up runs
-      discarded, and the ranges overlap completely. Even the lightest command, sources,
-      moves only from 933 ms to 907 ms. This tool is not startup bound. Every command
-      samples hardware energy counters over a real time window, and that window dwarfs the
-      jit work precompiling avoids.
+      Measured in isolation the tool gains little from precompiling, because it is not
+      startup bound: median wall time for juice now was 2040 ms against 2050 ms over twelve
+      interleaved runs of each, with the ranges overlapping. That measurement argues about
+      whether the package should use ReadyToRun at all, which is Juice.App's decision, and
+      it does. Once that is paid for, excluding one executable from it buys nothing.
+
+      Note that publishing this project standalone with it on costs 43 MB, the Windows API
+      projection growing from 25 MB to 63 MB, which pack.ps1 pays for and then discards
+      since it copies only four files. That is packaging time, not package size.
     -->
-    <PublishReadyToRun>false</PublishReadyToRun>
+    <PublishReadyToRun>true</PublishReadyToRun>
   </PropertyGroup>
 
   <ItemGroup>
