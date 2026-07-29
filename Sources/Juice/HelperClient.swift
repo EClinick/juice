@@ -140,6 +140,25 @@ final class HelperClient: @unchecked Sendable {
         }
     }
 
+    private func clearHandshakeCache(
+        for context: ConnectionContext,
+        settingState newState: HelperState? = nil
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard
+            connection === context.connection,
+            connectionGeneration == context.generation
+        else {
+            return
+        }
+        handshakeCache = nil
+        connectionGeneration &+= 1
+        if let newState {
+            _state = newState
+        }
+    }
+
     private func cachedHandshake(for context: ConnectionContext) -> (Int, String)? {
         lock.lock()
         defer { lock.unlock() }
@@ -227,16 +246,21 @@ final class HelperClient: @unchecked Sendable {
     }
 
     private func performHandshake(
-        on context: ConnectionContext
+        on context: ConnectionContext,
+        failureState: HelperState? = nil
     ) async throws -> (Int, String) {
         try await withCheckedThrowingContinuation { continuation in
             let resumed = OneShot()
             guard let proxy = remoteProxy(on: context, errorHandler: { error in
-                self.clearHandshakeCache(expected: context.connection)
+                self.clearHandshakeCache(
+                    for: context,
+                    settingState: failureState)
                 self.reportConnectionFailure()
                 resumed.run { continuation.resume(throwing: error) }
             }) else {
-                clearHandshakeCache(expected: context.connection)
+                clearHandshakeCache(
+                    for: context,
+                    settingState: failureState)
                 resumed.run {
                     continuation.resume(throwing: HelperError.error(
                         .internalError, message: "Failed to create helper proxy"))
@@ -244,7 +268,9 @@ final class HelperClient: @unchecked Sendable {
                 return
             }
             resumed.armTimeout(after: requestTimeout) { [weak self] in
-                self?.invalidateConnection(expected: context.connection)
+                self?.invalidateConnection(
+                    context: context,
+                    settingState: failureState)
                 self?.reportConnectionFailure()
                 continuation.resume(throwing: HelperClientError.timedOut)
             }
@@ -271,7 +297,9 @@ final class HelperClient: @unchecked Sendable {
         for _ in 0..<2 {
             let context = currentConnection()
             do {
-                let (version, _) = try await performHandshake(on: context)
+                let (version, _) = try await performHandshake(
+                    on: context,
+                    failureState: .unavailable)
                 let newState: HelperState =
                     (1...JuiceXPC.protocolVersion).contains(version)
                     ? .ready : .versionMismatch
@@ -391,6 +419,28 @@ final class HelperClient: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    private func invalidateConnection(
+        context: ConnectionContext,
+        settingState newState: HelperState? = nil
+    ) {
+        lock.lock()
+        let oldConnection: (any HelperClientConnection)?
+        if connection === context.connection,
+           connectionGeneration == context.generation {
+            oldConnection = connection
+            connection = nil
+            handshakeCache = nil
+            connectionGeneration &+= 1
+            if let newState {
+                _state = newState
+            }
+        } else {
+            oldConnection = nil
+        }
+        lock.unlock()
+        oldConnection?.invalidate()
     }
 
     private func invalidateConnection(expected: any HelperClientConnection) {

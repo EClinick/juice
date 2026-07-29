@@ -142,6 +142,35 @@ struct HelperClientTests {
         #expect(secondHelper.handshakeCount == 2)
     }
 
+    @Test("Consecutive current proxy failures replace prior ready state")
+    func checkStatePublishesCurrentFailures() async {
+        let helper = MockHelper(protocolVersion: JuiceXPC.protocolVersion)
+        let connection = MockHelperConnection(helper: helper)
+        let client = makeClient(connections: [connection])
+
+        let readyState = await client.checkState()
+        guard case .ready = readyState else {
+            Issue.record("Expected initial helper state to be ready")
+            return
+        }
+
+        helper.repliesToHandshake = false
+        helper.onHandshake = {
+            connection.fail(TestConnectionError.expected)
+        }
+        let failedState = await client.checkState()
+
+        guard case .unavailable = failedState else {
+            Issue.record("Expected consecutive proxy errors to publish unavailable")
+            return
+        }
+        guard case .unavailable = client.state else {
+            Issue.record("Expected prior ready state to be replaced")
+            return
+        }
+        #expect(helper.handshakeCount == 3)
+    }
+
     @Test("An interruption clears the cache on the retained connection")
     func interruptionRequiresRevalidation() async throws {
         let helper = MockHelper(protocolVersion: 3)
@@ -416,7 +445,7 @@ private final class MockHelperConnection: HelperClientConnection, @unchecked Sen
 private final class MockHelper: NSObject, HelperProtocol, @unchecked Sendable {
     private let lock = NSLock()
     private var _protocolVersion: Int
-    private let repliesToHandshake: Bool
+    private var _repliesToHandshake: Bool
     private let repliesToLiveSample: Bool
     private var _onHandshake: (() -> Void)?
     private var _beforeHandshakeReply: (() -> Void)?
@@ -433,6 +462,19 @@ private final class MockHelper: NSObject, HelperProtocol, @unchecked Sendable {
         set {
             lock.lock()
             _protocolVersion = newValue
+            lock.unlock()
+        }
+    }
+
+    var repliesToHandshake: Bool {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _repliesToHandshake
+        }
+        set {
+            lock.lock()
+            _repliesToHandshake = newValue
             lock.unlock()
         }
     }
@@ -487,7 +529,7 @@ private final class MockHelper: NSObject, HelperProtocol, @unchecked Sendable {
         repliesToLiveSample: Bool = true
     ) {
         _protocolVersion = protocolVersion
-        self.repliesToHandshake = repliesToHandshake
+        _repliesToHandshake = repliesToHandshake
         self.repliesToLiveSample = repliesToLiveSample
     }
 
@@ -495,6 +537,7 @@ private final class MockHelper: NSObject, HelperProtocol, @unchecked Sendable {
         lock.lock()
         _handshakeCount += 1
         let version = _protocolVersion
+        let repliesToHandshake = _repliesToHandshake
         let onHandshake = _onHandshake
         let beforeReply = _beforeHandshakeReply
         _beforeHandshakeReply = nil
