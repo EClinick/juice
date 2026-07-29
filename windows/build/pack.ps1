@@ -109,30 +109,51 @@ function Get-JuiceVersion {
 function Remove-UnusedRuntimes {
     <#
     .SYNOPSIS
-        Deletes payload the application never loads.
+        Removes payload the application never loads from the packaging recipe.
 
     .DESCRIPTION
-        The Windows App SDK meta-package pulls in its AI and machine learning components,
-        which carry onnxruntime and DirectML and add roughly 40 MB per architecture. Juice
+        The Windows App SDK meta-package pulls in its machine learning components, which
+        carry onnxruntime and DirectML and add roughly 38 MB per architecture. Juice
         performs no inference of any kind.
 
-        Excluding them through NuGet does not work: the machine learning targets fail the
-        build outright when their assets are excluded, so the files are removed from the
-        staged layout instead. This is blunt, and it is safe only because nothing in this
-        application references those APIs. If a feature ever needs on-device inference,
-        delete this function rather than working around it.
+        These files are not in the build output. The build emits a .appxrecipe listing
+        every file to package, and that recipe references them by absolute path inside the
+        NuGet cache, so deleting them from the output folder achieves nothing: packaging
+        reads the recipe, not the folder. Pruning the recipe entries is what actually keeps
+        them out.
+
+        Excluding the packages through NuGet is not an option either, because the machine
+        learning targets fail the build outright when their assets are excluded.
+
+        This is safe only because nothing in this application references those APIs. If a
+        feature ever needs on-device inference, delete this function rather than working
+        around it.
     #>
     param([Parameter(Mandatory)][string] $Layout)
 
-    $unused = 'onnxruntime.dll', 'DirectML.dll', 'Microsoft.ML.OnnxRuntime.dll'
+    $pattern = 'onnxruntime|DirectML|Microsoft\.ML\.OnnxRuntime|Microsoft\.Windows\.AI\.MachineLearning'
     $freed = 0
 
-    foreach ($name in $unused) {
-        $file = Join-Path $Layout $name
-        if (-not (Test-Path $file)) { continue }
+    # Prune the recipe first, since it is what packaging actually reads.
+    foreach ($recipe in Get-ChildItem $Layout -Filter '*.appxrecipe' -File -ErrorAction SilentlyContinue) {
+        $xml = [xml](Get-Content $recipe.FullName)
+        $removed = 0
 
-        $freed += (Get-Item $file).Length
-        Remove-Item $file -Force
+        foreach ($node in @($xml.SelectNodes('//*[@Include]'))) {
+            if ($node.Include -notmatch $pattern) { continue }
+
+            if (Test-Path $node.Include) { $freed += (Get-Item $node.Include).Length }
+            [void]$node.ParentNode.RemoveChild($node)
+            $removed++
+        }
+
+        if ($removed -gt 0) { $xml.Save($recipe.FullName) }
+    }
+
+    # Then the folder, for anything a previous build left behind.
+    foreach ($file in Get-ChildItem $Layout -File -ErrorAction SilentlyContinue) {
+        if ($file.Name -notmatch $pattern) { continue }
+        Remove-Item $file.FullName -Force
     }
 
     if ($freed -gt 0) {
