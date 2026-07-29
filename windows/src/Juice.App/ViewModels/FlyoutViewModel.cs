@@ -142,25 +142,43 @@ public sealed partial class FlyoutViewModel : ObservableObject
     [ObservableProperty]
     public partial bool HasCharge { get; set; }
 
-    /// <summary>Applies a freshly built charge timeline.</summary>
+    /// <summary>
+    /// Applies a freshly built charge timeline.
+    /// </summary>
+    /// <remarks>
+    /// A timeline with only a handful of points is hidden rather than drawn. It would
+    /// occupy as much height as a full day of history while showing a stub of line in one
+    /// corner, which looks like a rendering fault and pushes the app ranking below the
+    /// fold for no information gained.
+    /// </remarks>
     public void UpdateCharge(ChargeTimeline? timeline)
     {
         Charge = timeline;
-        HasCharge = timeline is { IsEmpty: false };
+        HasCharge = timeline is { IsEmpty: false, PointCount: >= MinimumTimelinePoints };
     }
+
+    /// <summary>
+    /// Points required before the charge timeline is worth the vertical space it costs.
+    /// </summary>
+    /// <remarks>
+    /// Battery samples are written about once a minute, so this is roughly a quarter of an
+    /// hour of continuous recording.
+    /// </remarks>
+    private const int MinimumTimelinePoints = 15;
 
     /// <summary>
     /// Applies a freshly built history series.
     /// </summary>
     /// <remarks>
-    /// A series with no data is still shown rather than hidden. The chart area with its
-    /// caption saying nothing was recorded is more honest, and more useful, than silently
-    /// omitting the section and leaving the user unsure whether Juice is recording at all.
+    /// An all-gap series hides the chart and leaves only its caption. A plot area of pure
+    /// gap markers carries no more information than the sentence under it, and on a
+    /// freshly installed machine it would push the app ranking, which is the reason most
+    /// people open the flyout, below the fold for the first day.
     /// </remarks>
     public void UpdateHistory(EnergyChartSeries? series)
     {
         History = series;
-        HasHistory = series is { Bars.Count: > 0 };
+        HasHistory = series is { IsEmpty: false };
     }
 
     /// <summary>Applies a completed sampling pass.</summary>

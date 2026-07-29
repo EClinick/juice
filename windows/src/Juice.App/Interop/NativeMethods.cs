@@ -100,6 +100,12 @@ internal static class NativeMethods
     internal const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
     internal const int DWMWCP_ROUND = 2;
 
+    /// <summary>Border colour attribute, used to remove the system border entirely.</summary>
+    internal const int DWMWA_BORDER_COLOR = 34;
+
+    /// <summary>Sentinel meaning "draw no border", as opposed to a transparent one.</summary>
+    internal const int DWMWA_COLOR_NONE = unchecked((int)0xFFFFFFFE);
+
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
     internal delegate nint WindowProc(nint hWnd, uint msg, nint wParam, nint lParam);
 

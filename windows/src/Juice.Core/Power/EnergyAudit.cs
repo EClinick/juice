@@ -81,7 +81,12 @@ public static class EnergyAudit
         var startTime = clock();
 
         var previousTime = startTime;
-        var previousWatts = first?.WattsFor(rail) ?? 0;
+
+        // Integrate the platform's own power counter, never the possibly
+        // accumulator-derived Watts. Comparing the accumulator against a figure derived
+        // from the accumulator would make this check pass by construction, which is worse
+        // than having no check at all because it would look like evidence.
+        var previousWatts = first?.CounterWattsFor(rail) ?? first?.WattsFor(rail) ?? 0;
 
         var integrated = 0.0;
         var samples = 1;
@@ -95,7 +100,7 @@ public static class EnergyAudit
             if (source.Read() is not { } sample) continue;
 
             var now = clock();
-            var watts = sample.WattsFor(rail) ?? previousWatts;
+            var watts = sample.CounterWattsFor(rail) ?? sample.WattsFor(rail) ?? previousWatts;
 
             // Trapezoid rule: the mean of the endpoints over the elapsed time.
             integrated += (watts + previousWatts) / 2.0 * (now - previousTime).TotalHours;

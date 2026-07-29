@@ -9,6 +9,13 @@
     mc:Ignorable="d">
 
     <Window.SystemBackdrop>
+        <!--
+            Mica, not acrylic, because this is a long-lived window. The Windows material
+            guidance splits them by lifetime: acrylic for transient light-dismiss surfaces
+            such as the tray flyout, Mica for the base layer of windows that stay open.
+            Mica is also the cheaper of the two to composite, which matters for an app
+            whose whole purpose is not to waste power.
+        -->
         <MicaBackdrop />
     </Window.SystemBackdrop>
 

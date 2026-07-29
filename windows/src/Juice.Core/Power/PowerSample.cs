@@ -59,15 +59,36 @@ public enum PowerRail
 }
 
 /// <summary>
-/// One rail's reading at a point in time. <paramref name="CumulativeWattHours"/> is the
-/// running accumulator when the source provides one; it is monotonic and survives
-/// polling gaps, so it is preferred over integrating <paramref name="Watts"/>.
+/// One rail's reading at a point in time.
 /// </summary>
+/// <param name="Rail">Which rail this is.</param>
+/// <param name="InstanceName">Raw platform instance name, for diagnostics.</param>
+/// <param name="Watts">
+/// Best available power figure, which may be derived from the energy accumulator.
+/// </param>
+/// <param name="CumulativeWattHours">
+/// Running accumulator when the source provides one. It is monotonic and survives polling
+/// gaps, so it is preferred over integrating <paramref name="Watts"/>.
+/// </param>
+/// <param name="CounterWatts">
+/// Power as reported directly by the platform's own power counter, independent of the
+/// energy accumulator, or null when the platform has no such counter.
+/// </param>
+/// <remarks>
+/// <paramref name="Watts"/> and <paramref name="CounterWatts"/> are kept separate
+/// specifically so that <see cref="EnergyAudit"/> stays meaningful. Juice prefers
+/// accumulator-derived power for display, because the platform's instantaneous counter
+/// can average to zero across a short window. But an audit that compared the accumulator
+/// against a figure derived from the accumulator would be checking a number against
+/// itself. The audit therefore integrates <paramref name="CounterWatts"/>, which comes
+/// from a different counter and different arithmetic.
+/// </remarks>
 public readonly record struct RailReading(
     PowerRail Rail,
     string InstanceName,
     double Watts,
-    double? CumulativeWattHours);
+    double? CumulativeWattHours,
+    double? CounterWatts = null);
 
 /// <summary>
 /// A single system-wide power observation, with whatever rail detail the source offered.
@@ -125,6 +146,28 @@ public sealed record PowerSample
         {
             if (r.Rail != rail || r.CumulativeWattHours is not { } wh) continue;
             sum += wh;
+            found = true;
+        }
+        return found ? sum : null;
+    }
+
+    /// <summary>
+    /// Watts on a rail as reported by the platform's own power counter, independent of any
+    /// energy accumulator. Null when the platform offers no such counter.
+    /// </summary>
+    /// <remarks>
+    /// Used by <see cref="EnergyAudit"/> so that the audit compares two genuinely
+    /// independent derivations rather than checking the accumulator against a figure
+    /// derived from it.
+    /// </remarks>
+    public double? CounterWattsFor(PowerRail rail)
+    {
+        double sum = 0;
+        var found = false;
+        foreach (var r in Rails)
+        {
+            if (r.Rail != rail || r.CounterWatts is not { } w) continue;
+            sum += w;
             found = true;
         }
         return found ? sum : null;

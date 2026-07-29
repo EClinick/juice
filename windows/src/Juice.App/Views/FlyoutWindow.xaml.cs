@@ -67,6 +67,7 @@ public sealed partial class FlyoutWindow : Window
         AppWindow.Hide();
 
         ApplyRoundedCorners();
+        ApplyTaskbarTheme();
 
         // Closing the only window would end the process, and the flyout is opened and
         // dismissed dozens of times a day, so it is hidden instead and never closed.
@@ -342,15 +343,63 @@ public sealed partial class FlyoutWindow : Window
         SettingsRequested?.Invoke(this, EventArgs.Empty);
     }
 
+    /// <summary>
+    /// Themes the flyout content to match the taskbar rather than the app.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Windows has two independent theme switches: <c>AppsUseLightTheme</c> drives
+    /// application chrome, while <c>SystemUsesLightTheme</c> drives the taskbar. They can
+    /// be set differently, and light apps on a dark taskbar is a supported configuration.
+    /// </para>
+    /// <para>
+    /// A flyout anchored to the taskbar reads as part of the shell, so it follows the
+    /// taskbar switch. Following the app switch instead would produce a light panel
+    /// hanging off a dark taskbar, which is the same class of mistake as a tray icon that
+    /// is invisible against the bar it sits on.
+    /// </para>
+    /// <para>
+    /// Only the content theme is set here. The backdrop derives its colours from that, so
+    /// nothing in this file needs to know what acrylic looks like in either theme. An
+    /// earlier attempt to tune the acrylic by hand, setting tint and luminosity opacity on
+    /// a DesktopAcrylicController without also supplying a per-theme tint colour, rendered
+    /// a light panel on a fully dark system. Theme the content and let the material follow.
+    /// </para>
+    /// </remarks>
+    private void ApplyTaskbarTheme()
+    {
+        if (Content is not FrameworkElement root) return;
+
+        root.RequestedTheme = TaskbarAppearanceReader.Read().IsLightTheme
+            ? ElementTheme.Light
+            : ElementTheme.Dark;
+    }
+
+    /// <summary>
+    /// Rounds the window and removes the system border stroke.
+    /// </summary>
+    /// <remarks>
+    /// Rounding alone is not enough. A borderless window still gets a one pixel system
+    /// border, and that stroke is drawn to the window rectangle rather than to the rounded
+    /// region, so it cuts across the corners and makes the radius look wrong. Setting the
+    /// border colour to none removes it and lets the acrylic define the shape.
+    /// </remarks>
     private void ApplyRoundedCorners()
     {
         var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
-        var preference = NativeMethods.DWMWCP_ROUND;
 
+        var preference = NativeMethods.DWMWCP_ROUND;
         NativeMethods.DwmSetWindowAttribute(
             hwnd,
             NativeMethods.DWMWA_WINDOW_CORNER_PREFERENCE,
             ref preference,
+            sizeof(int));
+
+        var noBorder = NativeMethods.DWMWA_COLOR_NONE;
+        NativeMethods.DwmSetWindowAttribute(
+            hwnd,
+            NativeMethods.DWMWA_BORDER_COLOR,
+            ref noBorder,
             sizeof(int));
     }
 }

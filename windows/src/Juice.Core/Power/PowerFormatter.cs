@@ -28,21 +28,44 @@ public static class PowerFormatter
     public const double ChargingThresholdWatts = 0.5;
 
     /// <summary>
-    /// The at-most-three character string drawn into the tray icon.
+    /// The short string drawn into the tray icon, fitted to a character budget.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Below 10 W a single digit loses too much relative precision, so one decimal is
     /// kept ("7.2"); the decimal point is narrow and costs little width. From 10 W up,
     /// the integer is enough and stays legible at 16 pixels. Three-digit draws are
-    /// capped at "99+" rather than shrinking the font to illegibility.
+    /// capped rather than shrinking the font to illegibility.
+    /// </para>
+    /// <para>
+    /// The budget exists because some icon styles spend width on a mark identifying the
+    /// reading as power. Precision is what gives way when space is tight, never the mark:
+    /// a number nobody can attribute to power is worth less than a rounder number they
+    /// can, which is the whole problem with a bare figure in the notification area.
+    /// </para>
     /// </remarks>
-    public static string TrayLabel(double? watts)
+    /// <param name="watts">Draw, or null when unknown.</param>
+    /// <param name="maxCharacters">Character budget, at least 1.</param>
+    public static string TrayLabel(double? watts, int maxCharacters = 3)
     {
         if (watts is not { } w || double.IsNaN(w) || w < 0) return UnknownTrayLabel;
 
-        if (w >= 99.5) return "99+";
-        if (w >= 9.95) return Math.Round(w).ToString("0");
-        return w.ToString("0.0");
+        if (maxCharacters >= 3)
+        {
+            if (w >= 99.5) return "99+";
+            if (w >= 9.95) return Math.Round(w).ToString("0");
+            return w.ToString("0.0");
+        }
+
+        if (maxCharacters == 2)
+        {
+            // No room for an overflow marker, so a very high draw pins at 99 rather than
+            // spilling to three digits and being clipped.
+            return w >= 99.5 ? "99" : Math.Round(w).ToString("0");
+        }
+
+        // A single character can only carry an order of magnitude honestly.
+        return w >= 9.5 ? "9" : Math.Round(w).ToString("0");
     }
 
     /// <summary>Precise wattage for tooltips, popovers and tables.</summary>

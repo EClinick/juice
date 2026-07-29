@@ -294,11 +294,11 @@ public sealed class EnergyMeterPowerSource : IPowerSource, IDisposable
                     }
                 }
 
-                var watts = double.IsNaN(derivedWatts)
-                    ? EnergyUnits.MilliwattsToWatts(_power.NextValue())
-                    : derivedWatts;
+                var counterWatts = EnergyUnits.MilliwattsToWatts(_power.NextValue());
 
-                reading = new RailReading(Rail, Instance, watts, cumulativeWh);
+                var watts = double.IsNaN(derivedWatts) ? counterWatts : derivedWatts;
+
+                reading = new RailReading(Rail, Instance, watts, cumulativeWh, counterWatts);
                 return true;
             }
             catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)

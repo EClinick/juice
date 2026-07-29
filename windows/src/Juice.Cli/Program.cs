@@ -50,6 +50,7 @@ public static class Program
                 "sources" => Sources(json),
                 "battery" => Battery(json),
                 "verify" => Verify(args, json),
+                "trayicons" => TrayIcons(args),
                 "help" or "--help" or "-h" => Help(),
                 _ => Fail(json, command, "unknownCommand", $"Unknown command '{command}'.", ExitUsage),
             };
@@ -520,6 +521,31 @@ public static class Program
         return ExitOk;
     }
 
+    /// <summary>
+    /// Writes a sheet of every tray icon style at every notification area size.
+    /// </summary>
+    /// <remarks>
+    /// A design aid, not a user feature. The tray icon is the app's most visible surface
+    /// and the hardest to inspect, so being able to review it as a file beats squinting at
+    /// a live taskbar or driving the UI to look at it.
+    /// </remarks>
+    private static int TrayIcons(string[] args)
+    {
+        var index = Array.FindIndex(args, a => a.Equals("--out", StringComparison.OrdinalIgnoreCase));
+        var path = index >= 0 && index + 1 < args.Length
+            ? args[index + 1]
+            : Path.Combine(Path.GetTempPath(), "juice-tray-preview.png");
+
+        var wattsIndex = Array.FindIndex(args, a => a.Equals("--watts", StringComparison.OrdinalIgnoreCase));
+        var watts = wattsIndex >= 0 && wattsIndex + 1 < args.Length
+                    && double.TryParse(args[wattsIndex + 1], out var w)
+            ? w
+            : 34.8;
+
+        TrayIconRenderer.SavePreviewSheet(path, watts);
+        Console.WriteLine(path);
+        return ExitOk;
+    }
     private static int ReadSeconds(string[] args, int fallback)
     {
         var index = Array.FindIndex(args, a => a.Equals("--seconds", StringComparison.OrdinalIgnoreCase));
