@@ -199,6 +199,47 @@ struct HelperClientTests {
         #expect(helper.liveSampleCount == 2)
     }
 
+    @Test("A stale fetch error preserves the revalidated connection cache")
+    func staleFetchErrorDoesNotClearNewHandshake() async throws {
+        let firstFetchStarted = AsyncTestSignal()
+        let helper = MockHelper(
+            protocolVersion: 3,
+            repliesToLiveSample: false)
+        helper.onLiveSample = {
+            firstFetchStarted.signal()
+        }
+        let connection = MockHelperConnection(helper: helper)
+        let client = makeClient(connections: [connection])
+
+        let staleFetch = Task {
+            try await client.fetchLiveEnergySample()
+        }
+        await firstFetchStarted.wait()
+        connection.interrupt()
+
+        helper.repliesToLiveSample = true
+        helper.onLiveSample = nil
+        _ = try await client.fetchLiveEnergySample()
+
+        connection.fail(
+            TestConnectionError.expected,
+            requestIndex: 1)
+        do {
+            _ = try await staleFetch.value
+            Issue.record("Expected the stale fetch to fail")
+        } catch TestConnectionError.expected {
+            // Expected.
+        } catch {
+            Issue.record("Expected test proxy error, got \(error)")
+        }
+
+        _ = try await client.fetchLiveEnergySample()
+
+        #expect(helper.handshakeCount == 2)
+        #expect(helper.liveSampleCount == 3)
+        #expect(connection.invalidateCount == 0)
+    }
+
     @Test("Invalidation builds and validates a replacement connection")
     func invalidationUsesReplacementConnection() async throws {
         let firstHelper = MockHelper(protocolVersion: 3)
@@ -397,7 +438,7 @@ private final class MockHelperConnection: HelperClientConnection, @unchecked Sen
 
     private let lock = NSLock()
     private let helper: HelperProtocol
-    private var errorHandler: ((Error) -> Void)?
+    private var errorHandlers: [(Error) -> Void] = []
     private(set) var resumeCount = 0
     private(set) var invalidateCount = 0
 
@@ -421,7 +462,7 @@ private final class MockHelperConnection: HelperClientConnection, @unchecked Sen
         _ handler: @escaping (Error) -> Void
     ) -> HelperProtocol? {
         lock.lock()
-        errorHandler = handler
+        errorHandlers.append(handler)
         lock.unlock()
         return helper
     }
@@ -434,9 +475,14 @@ private final class MockHelperConnection: HelperClientConnection, @unchecked Sen
         invalidationHandler?()
     }
 
-    func fail(_ error: Error) {
+    func fail(_ error: Error, requestIndex: Int? = nil) {
         lock.lock()
-        let handler = errorHandler
+        let handler: ((Error) -> Void)?
+        if let requestIndex, errorHandlers.indices.contains(requestIndex) {
+            handler = errorHandlers[requestIndex]
+        } else {
+            handler = errorHandlers.last
+        }
         lock.unlock()
         handler?(error)
     }
@@ -446,8 +492,9 @@ private final class MockHelper: NSObject, HelperProtocol, @unchecked Sendable {
     private let lock = NSLock()
     private var _protocolVersion: Int
     private var _repliesToHandshake: Bool
-    private let repliesToLiveSample: Bool
+    private var _repliesToLiveSample: Bool
     private var _onHandshake: (() -> Void)?
+    private var _onLiveSample: (() -> Void)?
     private var _beforeHandshakeReply: (() -> Void)?
     private var _handshakeCount = 0
     private var _batteryLevelCount = 0
@@ -505,6 +552,32 @@ private final class MockHelper: NSObject, HelperProtocol, @unchecked Sendable {
         }
     }
 
+    var repliesToLiveSample: Bool {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _repliesToLiveSample
+        }
+        set {
+            lock.lock()
+            _repliesToLiveSample = newValue
+            lock.unlock()
+        }
+    }
+
+    var onLiveSample: (() -> Void)? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _onLiveSample
+        }
+        set {
+            lock.lock()
+            _onLiveSample = newValue
+            lock.unlock()
+        }
+    }
+
     var handshakeCount: Int {
         lock.lock()
         defer { lock.unlock() }
@@ -530,7 +603,7 @@ private final class MockHelper: NSObject, HelperProtocol, @unchecked Sendable {
     ) {
         _protocolVersion = protocolVersion
         _repliesToHandshake = repliesToHandshake
-        self.repliesToLiveSample = repliesToLiveSample
+        _repliesToLiveSample = repliesToLiveSample
     }
 
     func handshake(reply: @escaping (Int, String) -> Void) {
@@ -571,7 +644,10 @@ private final class MockHelper: NSObject, HelperProtocol, @unchecked Sendable {
     ) {
         lock.lock()
         _liveSampleCount += 1
+        let repliesToLiveSample = _repliesToLiveSample
+        let onLiveSample = _onLiveSample
         lock.unlock()
+        onLiveSample?()
         if repliesToLiveSample {
             let snapshot = LiveEnergySnapshot(timestampEpoch: 1, samples: [])
             reply(try! JSONEncoder().encode(snapshot), nil)

@@ -385,11 +385,11 @@ final class HelperClient: @unchecked Sendable {
         try await withCheckedThrowingContinuation { continuation in
             let resumed = OneShot()
             guard let proxy = remoteProxy(on: context, errorHandler: { error in
-                self.clearHandshakeCache(expected: context.connection)
+                self.clearHandshakeCache(for: context)
                 self.reportConnectionFailure()
                 resumed.run { continuation.resume(throwing: error) }
             }) else {
-                clearHandshakeCache(expected: context.connection)
+                clearHandshakeCache(for: context)
                 resumed.run {
                     continuation.resume(throwing: HelperError.error(
                         .internalError, message: "Failed to create helper proxy"))
@@ -397,7 +397,7 @@ final class HelperClient: @unchecked Sendable {
                 return
             }
             resumed.armTimeout(after: requestTimeout) { [weak self] in
-                self?.invalidateConnection(expected: context.connection)
+                self?.invalidateConnection(context: context)
                 self?.reportConnectionFailure()
                 continuation.resume(throwing: HelperClientError.timedOut)
             }
@@ -436,21 +436,6 @@ final class HelperClient: @unchecked Sendable {
             if let newState {
                 _state = newState
             }
-        } else {
-            oldConnection = nil
-        }
-        lock.unlock()
-        oldConnection?.invalidate()
-    }
-
-    private func invalidateConnection(expected: any HelperClientConnection) {
-        lock.lock()
-        let oldConnection: (any HelperClientConnection)?
-        if connection === expected {
-            oldConnection = connection
-            connection = nil
-            handshakeCache = nil
-            connectionGeneration &+= 1
         } else {
             oldConnection = nil
         }
