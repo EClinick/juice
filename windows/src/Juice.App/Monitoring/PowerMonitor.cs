@@ -108,6 +108,20 @@ public sealed class PowerMonitor : IDisposable
             {
                 if (_state == value) return;
                 _state = value;
+
+                // Re-arming the timer alone is not enough. The process sample is gated
+                // separately by _nextProcessSample, which was set using the previous, much
+                // slower cadence, so a flyout opened while the tray cadence was in force
+                // would keep returning early until that deadline passed. On AC that is a
+                // thirty second wait before the app list shows anything, which reads as
+                // the app being broken rather than as it being frugal.
+                //
+                // Clearing the deadline lets the next tick sample immediately. It is safe
+                // because attribution still requires the anchor to be at least
+                // MinimumAttributionWindow old, so this cannot manufacture a reading from
+                // too short an interval.
+                _nextProcessSample = DateTimeOffset.MinValue;
+
                 if (!_running) return;
             }
 
