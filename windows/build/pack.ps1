@@ -106,6 +106,56 @@ function Get-JuiceVersion {
     "{0}.{1}.{2}.0" -f $major.InnerText, $minor.InnerText, $build.InnerText
 }
 
+function Add-ToPackageRecipe {
+    <#
+    .SYNOPSIS
+        Adds files to the packaging recipe so they end up in the package.
+
+    .DESCRIPTION
+        Packaging reads the .appxrecipe the build emitted, not the contents of the output
+        folder, so a file copied in afterwards is silently dropped. That failure is quiet
+        and only shows up as a missing binary at runtime, which for the command line means
+        an execution alias pointing at nothing.
+    #>
+    param(
+        [Parameter(Mandatory)][string] $Layout,
+        [Parameter(Mandatory)][string[]] $Names
+    )
+
+    foreach ($recipe in Get-ChildItem $Layout -Filter '*.appxrecipe' -File -ErrorAction SilentlyContinue) {
+        $xml = [xml](Get-Content $recipe.FullName)
+
+        $group = $xml.SelectSingleNode('//*[local-name()="ItemGroup"][*[local-name()="AppxPackagedFile"]]')
+        if (-not $group) { continue }
+
+        $ns = $xml.DocumentElement.NamespaceURI
+        $added = 0
+
+        foreach ($name in $Names) {
+            $path = Join-Path $Layout $name
+            if (-not (Test-Path $path)) { continue }
+
+            $already = $group.ChildNodes | Where-Object { $_.Include -eq $path }
+            if ($already) { continue }
+
+            $node = $xml.CreateElement('AppxPackagedFile', $ns)
+            $node.SetAttribute('Include', $path)
+
+            $target = $xml.CreateElement('PackagePath', $ns)
+            $target.InnerText = $name
+            [void]$node.AppendChild($target)
+
+            [void]$group.AppendChild($node)
+            $added++
+        }
+
+        if ($added -gt 0) {
+            $xml.Save($recipe.FullName)
+            Write-Host ("  added {0} command line files to the recipe" -f $added) -ForegroundColor DarkGray
+        }
+    }
+}
+
 function Remove-UnusedRuntimes {
     <#
     .SYNOPSIS
@@ -292,9 +342,11 @@ foreach ($arch in $Architectures) {
         Copy-Item $src -Destination $layout -Force
     }
 
-    if (-not (Test-Path (Join-Path $layout 'juice.exe'))) {
-        throw "juice.exe missing from the $arch layout; the AppExecutionAlias would be dead."
-    }
+    # Copying the files into the folder is not enough. Packaging reads the .appxrecipe,
+    # which lists every file to include, so anything added to the folder afterwards is
+    # silently dropped. The command line has to be added to the recipe as well or the
+    # AppExecutionAlias points at a binary that is not in the package.
+    Add-ToPackageRecipe -Layout $layout -Names 'juice.exe', 'juice.dll', 'juice.deps.json', 'juice.runtimeconfig.json'
 
     Remove-UnusedRuntimes -Layout $layout
 
