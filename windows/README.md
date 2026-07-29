@@ -169,7 +169,37 @@ The package declares an `AppExecutionAlias`, so installing it puts `juice` on th
 One bundle therefore serves both the tray application and the command line.
 
 Versions are `major.minor.build.0`, defined once in `windows/Directory.Build.props` and stamped into the manifest at pack time.
+`pack.ps1` bumps the build segment on every run, because the Store rejects a submission whose version is not strictly greater than the last one accepted, and editing it by hand is the step that gets forgotten on the second submission.
+Pass `-NoBump` to repackage the same version while iterating locally.
 The revision field stays 0 because the Microsoft Store reserves it and rewrites it when it repackages a submission.
+
+## Submitting to the Store
+
+Submission is scriptable and does not have to go through the portal.
+`winapp store` wraps the Microsoft Store Developer CLI, downloading it on first use.
+
+```powershell
+# Validate credentials and the bundle without submitting anything
+windows\build\submit.ps1 -WhatIf
+
+# Submit the newest bundle in windows/artifacts
+windows\build\submit.ps1
+```
+
+Credentials are read from environment variables and are never stored in this repository.
+They identify a Partner Center account and can publish software under it, so they belong in a secret store, in CI secrets, or in a shell session, and nowhere else.
+
+```
+JUICE_STORE_TENANT_ID       Azure AD tenant containing the app registration
+JUICE_STORE_SELLER_ID       Partner Center seller id
+JUICE_STORE_CLIENT_ID       Azure AD application (client) id
+JUICE_STORE_CLIENT_SECRET   Client secret for that application
+```
+
+One-time setup lives in Partner Center under Account settings, then User management, then Azure AD applications: associate or create an Azure AD application, grant it access, and note the tenant, client and seller ids.
+
+The package identity must also match a product reserved in Partner Center.
+`Publisher` is account level and shared across every product published under it; `Name` is per product.
 
 ## Sampling cost
 
