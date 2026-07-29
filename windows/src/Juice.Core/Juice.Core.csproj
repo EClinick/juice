@@ -5,4 +5,14 @@
     <RootNamespace>Juice.Core</RootNamespace>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
+    <!--
+      Microsoft.Data.Sqlite 10.0.10 resolves the native SQLite bundle to 2.1.11, which
+      carries GHSA-2m69-gcr7-jv3q. Pin the transitive package forward to a patched build.
+      Remove this once Microsoft.Data.Sqlite ships with a clean bundle by default.
+    -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
+  </ItemGroup>
+
 </Project>

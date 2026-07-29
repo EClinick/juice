@@ -1,0 +1,150 @@
+# Porting notes: what macOS gives you for free
+
+A running log of things that are a line or two of Swift on macOS and a genuine piece of engineering on Windows.
+
+This exists for three reasons.
+It stops the next person rediscovering the same holes.
+It explains why some Windows files are far larger than their macOS counterparts, which otherwise looks like gold plating in review.
+And it records the empirical findings that Windows does not document, which would otherwise live only in someone's terminal history.
+
+Entries are appended as they are hit, newest at the bottom of each section.
+
+## Live power while plugged in
+
+**macOS:** `IOKit` `AppleSmartBattery` gives instantaneous amperage and voltage with no permissions.
+The catch is that it only describes the battery, so a laptop on AC reports nothing, and the macOS app has this blind spot too.
+
+**Windows:** the same blind spot exists in the obvious API.
+`root\wmi` `BatteryStatus` reports `ChargeRate` and `DischargeRate` in milliwatts, and both read zero when a full battery sits on AC.
+
+The way out is a genuinely better source that macOS has no equivalent of.
+Machines with an ACPI Energy Meter Interface device expose an `Energy Meter` PDH counter set that meters the physical rails, and it works on AC and on battery alike.
+On the development Surface it exposes eleven rails including `sys`, `cpu_cluster_0..2`, `gpu`, `psu_usb` and `usbc_total`.
+
+So this is the one place where the Windows port is strictly ahead of the original, and it is worth the effort.
+It is not universal: desktops and many cheaper laptops have no EMI device, so the battery source has to remain as a fallback and the app has to say which one it used.
+
+## Undocumented counter units
+
+**macOS:** powerlog columns are in nanojoules.
+Undocumented by Apple, but the units are at least consistent and widely known, and the macOS code converts with a single named constant.
+
+**Windows:** the `Energy Meter` counter units are documented nowhere at all.
+
+They had to be established empirically.
+Integrating the `Power` counter over a 117 second window and dividing the `Energy` counter delta by that integral gave 278,011 units per millijoule on `sys` and 278,010 on `psu_usb`.
+Two independent rails agreeing to four significant figures is not a coincidence, and 2.78011e8 units per joule matches the 2.77778e8 picowatt-hours in a joule to within 0.08%.
+
+So `Power` is milliwatts and `Energy` is picowatt-hours, giving `Wh = pWh / 1e12`.
+
+The lesson is that an assumption like this must not sit unguarded in a constant.
+`juice verify` re-runs the comparison against live hardware, so if a future Windows release rescales the counter the check fails immediately instead of silently corrupting every displayed watt-hour.
+
+## Reading a counter at all
+
+**macOS:** read the IOKit property, get a number.
+
+**Windows:** the `Power` counters are of type `AverageCount64`, meaning each read reports the average since the previous read.
+The first read of a fresh handle has no baseline and necessarily returns 0.
+
+A continuously polling GUI never notices, because it discards one sample at startup.
+A one-shot command like `juice now` reports 0 W on a machine drawing 30 W, which is the worst possible failure mode for an app whose entire promise is that displayed numbers are true.
+
+Worse, the EMI driver only refreshes about once a second, so even a correctly primed short window can land entirely between refreshes and average to exactly zero.
+
+The fix was to stop trusting the averaging counter and derive watts from the `Energy` accumulator delta over a measured interval instead.
+The accumulator is monotonic, so any elapsed energy appears in the delta whenever it is read, and there is no interval short enough to produce a false zero.
+The averaging counter is kept only as a fallback for rails that expose no accumulator.
+
+## Per-app energy
+
+**macOS:** powerlog records CPU, GPU and Neural Engine energy per coalition, in nanojoules, already attributed.
+The hard part on macOS is only getting at it, because the database is root-only, which is what the privileged XPC helper exists for.
+
+**Windows:** there is no per-process energy API.
+None.
+Task Manager's "Power usage" column is a bucketed rating derived from the Energy Estimation Engine, not a number any application can read.
+
+Energy therefore has to be attributed rather than read.
+Because the CPU and GPU rails are metered separately, the split can at least be principled: CPU rail energy is divided by each process's share of processor time, and GPU rail energy by each process's share of GPU engine utilisation.
+
+Two invariants keep this honest.
+The division is exact, so attributed energy always sums to the measured rail energy rather than drifting from it.
+And energy that no process can be held responsible for is reported as platform overhead, defined as the residual so that apps plus platform always equals the measured system total.
+
+The equivalent macOS numbers are measured; the Windows ones are measured at the rail and apportioned below it.
+That difference should be stated in the UI rather than hidden.
+
+## Grouping processes into apps
+
+**macOS:** a coalition is an app plus all its helper processes, and the kernel maintains it.
+Bundle identifiers give a stable app identity for free, and `NSWorkspace` gives a real icon.
+
+**Windows:** processes are flat.
+A browser with thirty renderer processes is thirty unrelated entries, there is no stable identity comparable to a bundle id, and extracting an icon means reading the executable's resources.
+
+Grouping is currently by executable name, which is crude.
+It gets `msedge` right and will get an Electron app wrong, since several unrelated apps ship the same host executable name.
+
+## Showing a number in the menu bar
+
+**macOS:** `MenuBarExtra` accepts a `Text` view.
+Arbitrary width, arbitrary content, follows the system appearance automatically.
+
+**Windows:** the notification area has no text API whatsoever.
+An icon is a square bitmap of 16, 20, 24 or 32 pixels depending on DPI, and that is the entire contract.
+
+Displaying wattage means generating the icon bitmap at runtime with the number drawn into it, which is what Core Temp and similar utilities do.
+That brings in DPI queries, GDI bitmap rendering, font auto-sizing to fit roughly three glyphs, `HICON` lifetime management to avoid leaking a GDI handle every second for weeks, taskbar theme detection from the registry because the taskbar does not follow the app theme, and re-rendering on `WM_SETTINGCHANGE`.
+
+The result is about 770 lines across `TrayIcon.cs`, `TrayIconRenderer.cs` and `NativeMethods.cs`, roughly 29% of the GUI, to do what macOS does in about five lines.
+
+There is also an adoption problem with no macOS equivalent: Windows 11 hides newly registered tray icons in the overflow flyout by default, so a first-run app is invisible until the user pins it.
+
+## Enumerating processes cheaply
+
+**macOS:** the coalition data arrives pre-aggregated, so there is no per-sample enumeration cost at all.
+
+**Windows:** the obvious approach, `Process.GetProcesses()` plus a `PerformanceCounter` per GPU engine instance, opens a handle per process and allocates several hundred counter objects on every sample.
+The development machine has over 500 GPU engine instances.
+
+For a background utility that is self-defeating, since the monitor would rank in its own top energy users.
+Both halves had to be replaced with bulk APIs: one `NtQuerySystemInformation` call for the entire process table with no handles, and one PDH wildcard query for every GPU engine instance.
+
+## Sampling without costing battery
+
+**macOS and Windows both:** the same insight applies, and it is the thing that makes a low duty cycle safe.
+
+Hardware energy counters are cumulative, so energy accrues whether or not the app is looking.
+A longer polling interval costs resolution but never accuracy, and daily totals are identical at a one second and a sixty second cadence.
+
+That means fast sampling is only needed while a human is watching a live number.
+Per-process sampling has no such accumulator and degrades with longer intervals, so it needs its own slower cadence and is dropped entirely when the display is off.
+
+## Packaging
+
+**macOS:** one signed `.app` bundle, one DMG, one notarization step, one universal binary covering both architectures.
+
+**Windows:** MSIX is per architecture.
+`winapp package` produces one `.msix` each for x64 and ARM64, which then have to be combined with `makeappx bundle` into a `.msixbundle`, and the bundle signed separately.
+
+ARM64 matters more here than it usually does, because Snapdragon X Copilot+ PCs are among the machines most likely to carry the EMI device the hardware power source depends on.
+
+Two more wrinkles with no macOS counterpart.
+Self-contained means two different runtimes, the .NET runtime via `dotnet publish --self-contained` and the Windows App SDK via `WindowsAppSDKSelfContained`, and setting only one still leaves the app unable to start on a clean machine.
+And the Microsoft Store reserves the fourth version component, so versions must be `major.minor.build.0` or the submitted and published versions disagree.
+
+## Getting the user's region
+
+**macOS:** `Locale.current.region` and nothing else to think about.
+
+**Windows:** `RegionInfo.CurrentRegion` works, but returns useless data when the app is built with `InvariantGlobalization=true`, which is a common default for trimmed CLI tools and was the initial setting here.
+The symptom was a silently wrong electricity price rather than an exception, which is the kind of failure that survives review.
+
+## Still open
+
+Charts.
+The macOS app has three, and CONTRIBUTING.md guards them harder than anything else in the repo: axes pinned to the requested window, recording gaps rendered as gaps, no interpolation across missing data.
+
+The obstacle is not drawing them, it is that there is nothing to plot until the local store exists, because history has to outlive a single process lifetime.
+The dependency chain is store, then history, then charts.

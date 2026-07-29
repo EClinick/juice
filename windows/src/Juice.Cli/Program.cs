@@ -1,6 +1,6 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using Juice.Core.Attribution;
+using Juice.Core.Contracts;
 using Juice.Core.Cost;
 using Juice.Core.Power;
 using Juice.Platform.Windows;
@@ -12,33 +12,33 @@ namespace Juice.Cli;
 /// </summary>
 /// <remarks>
 /// <para>
-/// This exists for two reasons. It gives scripts and AI tooling a machine-readable view
-/// of the same measurements the GUI shows, via <c>--json</c> on every command. And it is
-/// the audit path required by the repository rule that displayed numbers must be
-/// verified against the raw source: <c>juice verify</c> re-derives energy independently
-/// and reports the disagreement.
+/// There are two modes. The default is a human-readable terminal view. The
+/// <c>--json</c> switch selects tools mode for scripts and AI agents, where stdout is
+/// entirely machine-readable, including failures, so a caller never has to parse two
+/// formats or scrape stderr to find out what went wrong.
+/// </para>
+/// <para>
+/// The shape of that output is defined by <see cref="JuiceSchema"/> and versioned
+/// independently of the command set, because the schema is the contract.
 /// </para>
 /// </remarks>
 public static class Program
 {
-    private static readonly JsonSerializerOptions Json = new()
-    {
-        WriteIndented = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-    };
-
-    /// <summary>
-    /// Below this, a battery is maintaining charge rather than charging. A full battery
-    /// on AC trickles a few tens of milliwatts, and reporting that as "charging at 0.0 W"
-    /// is worse than saying nothing.
-    /// </summary>
-    private const double ChargingThresholdWatts = 0.5;
+    private const int ExitOk = 0;
+    private const int ExitFailed = 1;
+    private const int ExitUsage = 2;
 
     /// <summary>Entry point.</summary>
     public static int Main(string[] args)
     {
-        var json = args.Contains("--json", StringComparer.OrdinalIgnoreCase);
         var command = args.FirstOrDefault(a => !a.StartsWith('-'))?.ToLowerInvariant() ?? "now";
+
+        if (!TryReadJsonMode(args, out var json, out var requested))
+        {
+            return Fail(true, command, "schemaUnsupported",
+                $"Schema '{requested}' is not supported. This build emits {JuiceSchema.Version}.",
+                ExitUsage);
+        }
 
         try
         {
@@ -49,38 +49,160 @@ public static class Program
                 "sources" => Sources(json),
                 "verify" => Verify(args, json),
                 "help" or "--help" or "-h" => Help(),
-                _ => Unknown(command),
+                _ => Fail(json, command, "unknownCommand", $"Unknown command '{command}'.", ExitUsage),
             };
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"juice: {ex.Message}");
-            return 1;
+            return Fail(json, command, "unexpected", ex.Message, ExitFailed);
         }
+    }
+
+    /// <summary>
+    /// Parses <c>--json</c>, optionally pinned as <c>--json=0.1</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The switch is named for the encoding because that is what the ecosystem
+    /// standardised on, but what a consumer actually depends on is the shape being
+    /// stable. Allowing the version to be pinned lets a tool state the contract it was
+    /// written against and be told immediately when this build cannot honour it, rather
+    /// than silently misreading a changed document.
+    /// </para>
+    /// <para>
+    /// The precedent is <c>git --porcelain=v2</c> rather than anything AI specific.
+    /// Only the major version has to match: additive changes within a major version are
+    /// backwards compatible by definition, since unknown properties are ignorable and
+    /// absent ones were already optional.
+    /// </para>
+    /// </remarks>
+    private static bool TryReadJsonMode(string[] args, out bool json, out string? requested)
+    {
+        json = false;
+        requested = null;
+
+        foreach (var arg in args)
+        {
+            if (arg.Equals("--json", StringComparison.OrdinalIgnoreCase))
+            {
+                json = true;
+                continue;
+            }
+
+            if (!arg.StartsWith("--json=", StringComparison.OrdinalIgnoreCase)) continue;
+
+            json = true;
+            requested = arg["--json=".Length..];
+
+            var wanted = requested.Split('.', 2)[0];
+            var have = JuiceSchema.Version.Split('.', 2)[0];
+
+            if (!wanted.Equals(have, StringComparison.Ordinal)) return false;
+        }
+
+        return true;
+    }
+
+    private static void Emit<T>(T document) where T : JuiceDocument
+        => Console.WriteLine(JsonSerializer.Serialize(document, typeof(T), JuiceSchema.Options));
+
+    /// <summary>
+    /// Reports a failure in whichever form the caller asked for.
+    /// </summary>
+    /// <remarks>
+    /// In tools mode the error goes to stdout inside the standard envelope so that a
+    /// consumer can branch on <c>ok</c>. In human mode it goes to stderr as prose.
+    /// </remarks>
+    private static int Fail(bool json, string command, string code, string message, int exitCode)
+    {
+        if (json)
+        {
+            Emit(new ErrorDocument
+            {
+                Command = command,
+                Ok = false,
+                Error = new JuiceError(code, message),
+            });
+        }
+        else
+        {
+            Console.Error.WriteLine($"juice: {message}");
+        }
+
+        return exitCode;
     }
 
     private static int Help()
     {
-        Console.WriteLine("""
+        Console.WriteLine($"""
             juice - what is eating your battery, and what it costs
 
             Usage:
-              juice now                 Current system power draw
-              juice top [--seconds N]   Top energy users over a sampling window
-              juice sources             Power sources available on this machine
+              juice now                  Current system power draw
+              juice top [--seconds N]    Top energy users over a sampling window
+              juice sources              Power sources available on this machine
               juice verify [--seconds N] Audit energy accumulators against integrated power
 
             Options:
-              --json                    Machine-readable output
-              --seconds N               Sampling window length (default 10)
+              --json[=VERSION]           Tools mode. All output machine-readable.
+                                         Pin the contract with --json={JuiceSchema.Version} to be told
+                                         immediately if this build cannot honour it.
+              --seconds N                Sampling window length
+
+            Exit codes:
+              0  success
+              1  the command ran but could not produce a result
+              2  usage error
             """);
-        return 0;
+        return ExitOk;
     }
 
-    private static int Unknown(string command)
+    private static MeasurementConfidence ConfidenceOf(PowerSourceTier tier) => tier switch
     {
-        Console.Error.WriteLine($"juice: unknown command '{command}'. Try 'juice help'.");
-        return 2;
+        PowerSourceTier.HardwareRail or PowerSourceTier.Battery => MeasurementConfidence.Measured,
+        PowerSourceTier.Modelled => MeasurementConfidence.Estimated,
+        _ => MeasurementConfidence.Unavailable,
+    };
+
+    private static string TierName(PowerSourceTier tier) => tier switch
+    {
+        PowerSourceTier.HardwareRail => "hardwareRail",
+        PowerSourceTier.Battery => "battery",
+        PowerSourceTier.Modelled => "modelled",
+        _ => "none",
+    };
+
+    /// <summary>
+    /// Builds the rail block, returning null when nothing was metered so the property is
+    /// omitted rather than serialised as an object full of nulls.
+    /// </summary>
+    private static RailsDto? RailsOf(PowerSample sample)
+    {
+        var cpu = sample.WattsFor(PowerRail.Cpu);
+        var gpu = sample.WattsFor(PowerRail.Gpu);
+        var npu = sample.WattsFor(PowerRail.Npu);
+        var supply = sample.WattsFor(PowerRail.Supply);
+
+        if (cpu is null && gpu is null && npu is null && supply is null) return null;
+
+        return new RailsDto { Cpu = cpu, Gpu = gpu, Npu = npu, Supply = supply };
+    }
+
+    private static BatteryDto BatteryOf(PowerSample sample)
+    {
+        if (sample.BatteryPercent is null) return new BatteryDto { Present = false };
+
+        var charging = sample.ChargeWatts is { } cw && cw >= PowerFormatter.ChargingThresholdWatts;
+
+        return new BatteryDto
+        {
+            Present = true,
+            Percent = sample.BatteryPercent,
+            Flow = sample.OnAc
+                ? charging ? BatteryFlow.Charging : BatteryFlow.PluggedIn
+                : BatteryFlow.Discharging,
+            ChargeWatts = charging ? sample.ChargeWatts : null,
+        };
     }
 
     private static int Now(bool json)
@@ -89,32 +211,31 @@ public static class Program
 
         // The hardware power counters average since the previous read, so a one-shot
         // command has to establish a baseline and let a measurable interval elapse.
-        source.Prime(TimeSpan.FromMilliseconds(700));
+        source.Prime(TimeSpan.FromMilliseconds(1200));
 
         if (source.Read() is not { } sample)
         {
-            if (json) Console.WriteLine("""{"available":false}""");
-            else Console.Error.WriteLine("juice: no power source available on this machine.");
-            return 1;
+            return Fail(json, "now", "noPowerSource",
+                "No power source is available on this machine.", ExitFailed);
         }
 
         if (json)
         {
-            Console.WriteLine(JsonSerializer.Serialize(new
+            Emit(new NowDocument
             {
-                available = true,
-                timestamp = sample.Timestamp,
-                tier = sample.Tier.ToString(),
-                systemWatts = sample.SystemWatts,
-                cpuWatts = sample.WattsFor(PowerRail.Cpu),
-                gpuWatts = sample.WattsFor(PowerRail.Gpu),
-                npuWatts = sample.WattsFor(PowerRail.Npu),
-                supplyWatts = sample.WattsFor(PowerRail.Supply),
-                onAc = sample.OnAc,
-                batteryPercent = sample.BatteryPercent,
-                chargeWatts = sample.ChargeWatts,
-            }, Json));
-            return 0;
+                Command = "now",
+                Measurement = new MeasurementDto
+                {
+                    Confidence = sample.SystemWatts is null
+                        ? MeasurementConfidence.Unavailable
+                        : ConfidenceOf(sample.Tier),
+                    Source = TierName(sample.Tier),
+                    SystemWatts = sample.SystemWatts,
+                    Rails = RailsOf(sample),
+                },
+                Battery = BatteryOf(sample),
+            });
+            return ExitOk;
         }
 
         Console.WriteLine($"Draw       {PowerFormatter.Watts(sample.SystemWatts)}   ({sample.Tier})");
@@ -126,14 +247,14 @@ public static class Program
         if (sample.BatteryPercent is { } percent)
         {
             var state = sample.OnAc
-                ? sample.ChargeWatts is { } cw && cw >= ChargingThresholdWatts
+                ? sample.ChargeWatts is { } cw && cw >= PowerFormatter.ChargingThresholdWatts
                     ? $"charging at {cw:0.0} W"
                     : "plugged in"
                 : "on battery";
             Console.WriteLine($"Battery    {percent:0}%   ({state})");
         }
 
-        return 0;
+        return ExitOk;
     }
 
     private static void WriteRail(string label, double? watts)
@@ -146,30 +267,37 @@ public static class Program
         using var composite = CompositePowerSource.CreateDefault();
         using var processes = new ProcessSampler();
 
-        var entries = composite.Sources
-            .Select(s => new { tier = s.Tier.ToString(), available = s.IsAvailable, description = s.Description })
-            .ToList();
-
         if (json)
         {
-            Console.WriteLine(JsonSerializer.Serialize(new
+            Emit(new SourcesDocument
             {
-                selected = composite.Tier.ToString(),
-                sources = entries,
-                gpuPerProcess = processes.GpuCountersAvailable,
-                nativeProcessTable = processes.UsingNativeProcessTable,
-            }, Json));
-            return 0;
+                Command = "sources",
+                Selected = TierName(composite.Tier),
+                Sources = composite.Sources.Select(s => new SourceDto
+                {
+                    Name = TierName(s.Tier),
+                    Confidence = ConfidenceOf(s.Tier),
+                    Available = s.IsAvailable,
+                    Description = s.Description,
+                }).ToList(),
+                Capabilities = new Dictionary<string, bool>
+                {
+                    ["perProcessGpu"] = processes.GpuCountersAvailable,
+                    ["nativeProcessTable"] = processes.UsingNativeProcessTable,
+                },
+            });
+            return ExitOk;
         }
 
         Console.WriteLine($"Selected tier: {composite.Tier}");
-        foreach (var e in entries)
+        foreach (var s in composite.Sources)
         {
-            Console.WriteLine($"  [{(e.available ? "x" : " ")}] {e.tier,-13} {e.description}");
+            Console.WriteLine($"  [{(s.IsAvailable ? "x" : " ")}] {s.Tier,-13} {s.Description}");
         }
 
         Console.WriteLine($"  [{(processes.GpuCountersAvailable ? "x" : " ")}] per-process GPU utilisation");
-        return 0;
+        Console.WriteLine($"  [{(processes.UsingNativeProcessTable ? "x" : " ")}] bulk process table");
+        return ExitOk;
     }
 
     private static int Top(string[] args, bool json)
@@ -179,9 +307,14 @@ public static class Program
         using var source = CompositePowerSource.CreateDefault();
         using var sampler = new ProcessSampler();
 
-        // Prime both: PDH rate counters yield nothing until collected twice.
+        // Both the rail counters and the PDH rate counters need a baseline before they
+        // return anything meaningful.
         sampler.Sample();
+        source.Prime(TimeSpan.FromMilliseconds(1200));
+
         var first = source.Read();
+
+        // ProcessSampler reuses its buffer between calls, so this has to be copied.
         var firstProcesses = sampler.Sample().ToList();
 
         Thread.Sleep(TimeSpan.FromSeconds(seconds));
@@ -191,36 +324,51 @@ public static class Program
 
         if (first is null || second is null)
         {
-            Console.Error.WriteLine("juice: could not measure power on this machine.");
-            return 1;
+            return Fail(json, "top", "noPowerSource",
+                "Could not measure power on this machine.", ExitFailed);
         }
 
         var result = new EnergyAttributor().Attribute(first, second, firstProcesses, secondProcesses);
         var rate = new BundledRateTable().ResolveFor(RegionResolver.CurrentRegionCode());
-
+        var hours = (result.End - result.Start).TotalHours;
         var top = result.Apps.Take(15).ToList();
 
         if (json)
         {
-            Console.WriteLine(JsonSerializer.Serialize(new
+            Emit(new TopDocument
             {
-                start = result.Start,
-                end = result.End,
-                systemWattHours = result.SystemWattHours,
-                platformWattHours = result.PlatformWattHours,
-                rate = new { rate.PricePerKwh, rate.Currency, rate.RegionCode, estimate = rate.IsEstimate },
-                apps = top.Select(a => new
+                Command = "top",
+                Window = new WindowDto { Start = result.Start, End = result.End },
+                Energy = new EnergyTotalsDto
                 {
-                    a.AppId,
-                    a.DisplayName,
-                    a.Watts,
-                    a.TotalWattHours,
-                    a.CpuWattHours,
-                    a.GpuWattHours,
-                    annualCost = CostCalculator.AnnualCostOfSustainedWatts(a.Watts, rate),
-                }),
-            }, Json));
-            return 0;
+                    SystemWattHours = result.SystemWattHours,
+                    AttributedWattHours = result.Apps.Sum(a => a.TotalWattHours),
+                    PlatformWattHours = result.PlatformWattHours,
+                },
+                Rate = new RateDto
+                {
+                    PricePerKwh = rate.PricePerKwh,
+                    Currency = rate.Currency,
+                    RegionCode = rate.RegionCode,
+                    RegionName = rate.RegionName,
+                    IsEstimate = rate.IsEstimate,
+                },
+                Apps = top.Select(a => new AppEnergyDto
+                {
+                    AppId = a.AppId,
+                    DisplayName = a.DisplayName,
+                    Watts = a.Watts,
+                    WattHours = a.TotalWattHours,
+                    Components = new RailsDto
+                    {
+                        Cpu = a.CpuWattHours,
+                        Gpu = a.GpuWattHours,
+                    },
+                    ProcessIds = a.ProcessIds,
+                    AnnualCost = CostCalculator.AnnualCostOfSustainedWatts(a.Watts, rate),
+                }).ToList(),
+            });
+            return ExitOk;
         }
 
         Console.WriteLine($"Measured {PowerFormatter.Energy(result.SystemWattHours)} over {seconds}s");
@@ -231,14 +379,15 @@ public static class Program
         foreach (var app in top)
         {
             var annual = CostCalculator.AnnualCostOfSustainedWatts(app.Watts, rate);
-            var cpuW = app.CpuWattHours / ((result.End - result.Start).TotalHours);
-            var gpuW = app.GpuWattHours / ((result.End - result.Start).TotalHours);
+            var cpuW = hours > 0 ? app.CpuWattHours / hours : 0;
+            var gpuW = hours > 0 ? app.GpuWattHours / hours : 0;
             Console.WriteLine($"{Truncate(app.DisplayName, 27),-28}{app.Watts,8:0.00}{cpuW,10:0.00}{gpuW,10:0.00}{annual,10:0.00}");
         }
 
         Console.WriteLine();
-        Console.WriteLine($"{"System and display",-28}{result.PlatformWattHours / (result.End - result.Start).TotalHours,8:0.00}");
-        return 0;
+        var platformWatts = hours > 0 ? result.PlatformWattHours / hours : 0;
+        Console.WriteLine($"{"System and display",-28}{platformWatts,8:0.00}");
+        return ExitOk;
     }
 
     private static int Verify(string[] args, bool json)
@@ -248,16 +397,32 @@ public static class Program
         using var meter = new EnergyMeterPowerSource(new WmiBatteryStateReader());
         if (!meter.IsAvailable)
         {
-            Console.Error.WriteLine("juice: this machine has no hardware energy meter to verify.");
-            return 1;
+            return Fail(json, "verify", "noHardwareMeter",
+                "This machine has no hardware energy meter to verify.", ExitFailed);
         }
 
+        meter.Prime(TimeSpan.FromMilliseconds(1200));
         var audit = EnergyAudit.Run(meter, TimeSpan.FromSeconds(seconds));
 
         if (json)
         {
-            Console.WriteLine(JsonSerializer.Serialize(audit, Json));
-            return 0;
+            Emit(new VerifyDocument
+            {
+                Command = "verify",
+                Ok = audit.Passed,
+                Error = audit.Passed
+                    ? null
+                    : new JuiceError("auditFailed",
+                        "The energy accumulator and the integrated power counter disagree beyond tolerance."),
+                Seconds = audit.Seconds,
+                AccumulatorWattHours = audit.AccumulatorWattHours,
+                IntegratedWattHours = audit.IntegratedWattHours,
+                PercentDifference = audit.PercentDifference,
+                TolerancePercent = audit.TolerancePercent,
+                SampleCount = audit.SampleCount,
+                Passed = audit.Passed,
+            });
+            return audit.Passed ? ExitOk : ExitFailed;
         }
 
         Console.WriteLine($"Window            {audit.Seconds:0.0} s");
@@ -269,7 +434,7 @@ public static class Program
             ? "PASS - the energy accumulator and the power counter agree."
             : "FAIL - the two derivations disagree by more than the tolerance.");
 
-        return audit.Passed ? 0 : 1;
+        return audit.Passed ? ExitOk : ExitFailed;
     }
 
     private static int ReadSeconds(string[] args, int fallback)

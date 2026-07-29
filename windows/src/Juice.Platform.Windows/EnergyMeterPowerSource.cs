@@ -32,6 +32,16 @@ public sealed class EnergyMeterPowerSource : IPowerSource, IDisposable
     /// <summary>Name of the PDH counter category.</summary>
     public const string CategoryName = "Energy Meter";
 
+    /// <summary>
+    /// Shortest interval over which power will be derived from the energy accumulator.
+    /// </summary>
+    /// <remarks>
+    /// The EMI driver refreshes roughly once a second. Deriving watts across an interval
+    /// much shorter than that divides a possibly-zero energy delta by a tiny elapsed
+    /// time, which produces noise rather than a measurement.
+    /// </remarks>
+    private static readonly TimeSpan MinimumDerivationInterval = TimeSpan.FromMilliseconds(250);
+
     private readonly List<RailCounters> _rails = [];
     private readonly IBatteryStateReader? _batteryState;
     private bool _disposed;
@@ -84,6 +94,8 @@ public sealed class EnergyMeterPowerSource : IPowerSource, IDisposable
     {
         foreach (var rail in _rails) rail.TryRead(out _);
 
+        // Long enough that the EMI driver, which refreshes about once a second, is
+        // guaranteed to have advanced the accumulators before the first real read.
         if (settle > TimeSpan.Zero) Thread.Sleep(settle);
     }
 
@@ -208,6 +220,9 @@ public sealed class EnergyMeterPowerSource : IPowerSource, IDisposable
         private readonly PerformanceCounter _power;
         private readonly PerformanceCounter? _energy;
 
+        private double _lastEnergyWattHours = double.NaN;
+        private long _lastTimestamp;
+
         public RailCounters(string instance, PowerRail rail)
         {
             Instance = instance;
@@ -245,23 +260,45 @@ public sealed class EnergyMeterPowerSource : IPowerSource, IDisposable
             reading = default;
             try
             {
-                var milliwatts = _power.NextValue();
                 double? cumulativeWh = null;
+                var derivedWatts = double.NaN;
+                var now = Stopwatch.GetTimestamp();
 
                 if (_energy is not null)
                 {
                     var picowattHours = _energy.NextValue();
                     if (picowattHours > 0)
                     {
-                        cumulativeWh = EnergyUnits.PicowattHoursToWattHours(picowattHours);
+                        var wattHours = EnergyUnits.PicowattHoursToWattHours(picowattHours);
+                        cumulativeWh = wattHours;
+
+                        // Prefer deriving power from the accumulator. The Power counter is
+                        // an AverageCount64 over the interval between reads, and the EMI
+                        // driver only refreshes about once a second, so a short interval
+                        // can land entirely between refreshes and average to exactly zero.
+                        // The accumulator has no such failure mode: it is monotonic, so
+                        // any elapsed energy shows up in the delta whenever it is read.
+                        if (!double.IsNaN(_lastEnergyWattHours))
+                        {
+                            var elapsed = Stopwatch.GetElapsedTime(_lastTimestamp, now);
+                            var delta = wattHours - _lastEnergyWattHours;
+
+                            if (delta >= 0 && elapsed >= MinimumDerivationInterval)
+                            {
+                                derivedWatts = EnergyUnits.AverageWatts(delta, elapsed);
+                            }
+                        }
+
+                        _lastEnergyWattHours = wattHours;
+                        _lastTimestamp = now;
                     }
                 }
 
-                reading = new RailReading(
-                    Rail,
-                    Instance,
-                    EnergyUnits.MilliwattsToWatts(milliwatts),
-                    cumulativeWh);
+                var watts = double.IsNaN(derivedWatts)
+                    ? EnergyUnits.MilliwattsToWatts(_power.NextValue())
+                    : derivedWatts;
+
+                reading = new RailReading(Rail, Instance, watts, cumulativeWh);
                 return true;
             }
             catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)

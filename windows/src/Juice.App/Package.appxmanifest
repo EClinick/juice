@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap5 desktop rescap">
+
+  <!--
+    Version is major.minor.build.0 and is rewritten from $(JuiceVersion) at pack time by
+    windows/build/pack.ps1. The revision field stays 0 because the Microsoft Store
+    reserves it and rewrites it when it repackages a submission.
+  -->
+  <Identity
+    Name="Juice.Juice"
+    Publisher="CN=Juice"
+    Version="0.1.0.0" />
+
+  <Properties>
+    <DisplayName>Juice</DisplayName>
+    <PublisherDisplayName>Juice</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>See what is eating your battery, what it costs, and how much power your PC is drawing right now.</Description>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="App"
+      Executable="$targetnametoken$.exe"
+      EntryPoint="$targetentrypoint$">
+
+      <uap:VisualElements
+        DisplayName="Juice"
+        Description="See what is eating your battery, what it costs, and how much power your PC is drawing right now."
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+        <uap:SplashScreen Image="Assets\SplashScreen.png" />
+      </uap:VisualElements>
+
+      <Extensions>
+        <!--
+          Puts `juice` on the PATH for any terminal, so the same package serves the tray
+          app and the command line front end that AI tooling drives with the json switch.
+          Executable has to name a binary that is actually in the package, so it points at
+          Juice.App.exe and the alias itself supplies the `juice` name.
+          The alias only resolves once the package is installed and the user has run the
+          app at least once, which is a Windows behaviour and not something we control.
+        -->
+        <uap5:Extension
+          Category="windows.appExecutionAlias"
+          Executable="Juice.App.exe"
+          EntryPoint="Windows.FullTrustApplication">
+          <uap5:AppExecutionAlias>
+            <uap5:ExecutionAlias Alias="juice.exe" />
+          </uap5:AppExecutionAlias>
+        </uap5:Extension>
+
+        <!--
+          Juice is a tray utility, so it starts with Windows but is disabled by default.
+          The user enables it from Settings, and Windows also lets them revoke it from
+          Task Manager's Startup tab.
+        -->
+        <uap5:Extension Category="windows.startupTask" Executable="Juice.App.exe" EntryPoint="Windows.FullTrustApplication">
+          <uap5:StartupTask TaskId="JuiceStartup" Enabled="false" DisplayName="Juice" />
+        </uap5:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!--
+      runFullTrust is required for a packaged desktop app.
+      Juice reads performance counters and WMI battery data, both of which are available
+      to a normal user process. There is deliberately no location capability: the region
+      used for electricity pricing comes from the Windows user region, which needs no
+      permission prompt and no network access.
+    -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+</Package>
