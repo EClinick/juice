@@ -270,6 +270,19 @@ Comparing against a similar application suggested the Windows App SDK had grown 
 `Microsoft.WinUI.dll` is 7 MB in every cached version from 1.8 through 2.3, so that was never true either.
 The 63 MB file was the command line tool's own precompiled, self-contained output being read as if it belonged to the application.
 
+One more thing follows from all this, and it is the part that generalises furthest.
+
+ReadyToRun looks like a per-project setting, and it is not.
+An MSIX layout is a single flat folder, so the application's build supplies every shared assembly in the package, and the command line tool contributes only its own four files on top.
+Whether the command line project precompiles therefore decides the content of `juice.dll`, 0.03 MB of it, and nothing else, while the packaged `juice.exe` loads the application's precompiled assemblies out of the shared folder and gets the benefit regardless.
+Turning it off there changed the bundle by zero bytes, which is what made this visible.
+
+It is a package-wide decision that happens to be spelled as a project property, and the project it belongs to is whichever one supplies the shared payload.
+
+That also corrected a wrong attribution made on the way here.
+The 63 MB Windows API projection in the package is the application's, precompiled under a self-contained .NET build, not the command line tool's.
+An earlier measurement had put the application's cost at 21.8 MB, but that was taken framework-dependent on .NET, which precompiles far less.
+Only the comparison of the packages this script actually produces is trustworthy, because it is the only one where every other variable is held where it ships.
 The lesson is not about ReadyToRun.
 It is that a build feature which quietly writes its output somewhere other than the build output will defeat measurement by inspection, and that a measurement which cannot fail is not a measurement.
 ## Showing an app's icon

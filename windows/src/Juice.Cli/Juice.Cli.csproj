@@ -12,7 +12,31 @@
       makes RegionInfo.CurrentRegion useless, which breaks electricity rate lookup.
     -->
     <InvariantGlobalization>false</InvariantGlobalization>
-    <PublishReadyToRun>true</PublishReadyToRun>
+    <!--
+      ReadyToRun is off here, but this setting has almost no effect on the shipped package,
+      and that is worth explaining because the obvious reading is wrong.
+
+      An MSIX layout is a single flat folder. The tray application's build supplies every
+      shared assembly in it, the .NET runtime and the Windows API projection included, and
+      pack.ps1 copies only four files out of this project's publish on top: juice.exe,
+      juice.dll and the two json files. So whether this project precompiles decides the
+      size and content of juice.dll alone, 0.03 MB of it, and nothing else.
+
+      ReadyToRun is therefore a package-wide decision made by Juice.App, not a per-project
+      one. It is enabled there. The packaged juice.exe loads that application's precompiled
+      assemblies out of the shared folder and gets the benefit either way.
+
+      Off is still the right setting, for two reasons that apply outside the package.
+      Publishing this project standalone with it on costs 43 MB, the Windows API projection
+      growing from 25 MB to 63 MB, which pack.ps1 pays for on every architecture and then
+      discards. And it buys nothing measurable: median wall time for juice now is 2040 ms
+      with it and 2050 ms without, over twelve interleaved runs of each with warm-up runs
+      discarded, and the ranges overlap completely. Even the lightest command, sources,
+      moves only from 933 ms to 907 ms. This tool is not startup bound. Every command
+      samples hardware energy counters over a real time window, and that window dwarfs the
+      jit work precompiling avoids.
+    -->
+    <PublishReadyToRun>false</PublishReadyToRun>
   </PropertyGroup>
 
   <ItemGroup>
