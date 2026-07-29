@@ -18,7 +18,7 @@
     products on this account.
   -->
   <Identity
-    Name="Clinick.Juice"
+    Name="Clinick.JuicePower"
     Publisher="CN=46604BD4-AFD9-4B23-8EB3-10EAF66872A5"
     Version="0.1.0.0" />
 
