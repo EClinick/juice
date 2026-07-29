@@ -3,17 +3,25 @@ import Testing
 
 @Suite("Stats range visibility")
 struct StatsRangeVisibilityTests {
-    @Test("all tabs are visible by default")
+    @Test("compact tabs are visible by default")
     func defaultVisibility() {
         #expect(
             StatsRangeVisibility.visibleRanges(
                 from: StatsRangeVisibility.defaultStorageValue
+            ) == [.session, .today, .week, .allTime])
+    }
+
+    @Test("show-all storage includes every tab")
+    func allVisibility() {
+        #expect(
+            StatsRangeVisibility.visibleRanges(
+                from: StatsRangeVisibility.allStorageValue
             ) == EnergyRange.allCases)
     }
 
     @Test("hidden tabs stay hidden in their original order")
     func customVisibility() {
-        var storage = StatsRangeVisibility.defaultStorageValue
+        var storage = StatsRangeVisibility.allStorageValue
         storage = StatsRangeVisibility.updating(
             .threeDays,
             isVisible: false,
@@ -39,11 +47,11 @@ struct StatsRangeVisibilityTests {
         #expect(StatsRangeVisibility.visibleRanges(from: updated) == [.today])
     }
 
-    @Test("invalid stored settings recover to all tabs")
+    @Test("invalid stored settings recover to compact defaults")
     func invalidStorageFallsBack() {
         #expect(
             StatsRangeVisibility.visibleRanges(from: "removed-range")
-                == EnergyRange.allCases)
+                == [.session, .today, .week, .allTime])
     }
 
     @Test("a hidden preferred tab falls back to the first visible tab")

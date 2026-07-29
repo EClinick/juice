@@ -6,12 +6,22 @@ import Foundation
 /// copy can change without resetting a user's choices.
 enum StatsRangeVisibility {
     static let storageKey = "stats.visibleRanges.v1"
-    static let defaultStorageValue = storageValue(for: EnergyRange.allCases)
+    /// Keep the compact popover readable on a fresh install. Three Days remains
+    /// available through Customize Tabs, but the default avoids squeezing five
+    /// segments into the menu-bar panel.
+    static let defaultRanges: [EnergyRange] = [
+        .session,
+        .today,
+        .week,
+        .allTime,
+    ]
+    static let defaultStorageValue = storageValue(for: defaultRanges)
+    static let allStorageValue = storageValue(for: EnergyRange.allCases)
 
     static func visibleRanges(from storageValue: String) -> [EnergyRange] {
         let storedKeys = Set(storageValue.split(separator: ",").map(String.init))
         let ranges = EnergyRange.allCases.filter { storedKeys.contains($0.storageKey) }
-        return ranges.isEmpty ? EnergyRange.allCases : ranges
+        return ranges.isEmpty ? defaultRanges : ranges
     }
 
     static func storageValue(for ranges: some Collection<EnergyRange>) -> String {
