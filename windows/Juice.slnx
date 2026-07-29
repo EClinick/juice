@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Juice.Cli/Juice.Cli.csproj" />
+    <Project Path="src/Juice.Core/Juice.Core.csproj" />
+    <Project Path="src/Juice.Platform.Windows/Juice.Platform.Windows.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Juice.Core.Tests/Juice.Core.Tests.csproj" />
+  </Folder>
+</Solution>

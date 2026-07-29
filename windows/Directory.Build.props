@@ -1,0 +1,42 @@
+<Project>
+
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Product>Juice</Product>
+    <Company>Juice</Company>
+  </PropertyGroup>
+
+  <!--
+    Version scheme is major.minor.build.0.
+    The fourth component is deliberately always 0: the Microsoft Store reserves the
+    revision field and rewrites it when it repackages a submission, so shipping a
+    non-zero revision makes the submitted and published versions disagree.
+    Bump JuiceBuild for every packaged build; MSIX requires a strictly increasing
+    version for each submission.
+  -->
+  <PropertyGroup>
+    <JuiceMajor>0</JuiceMajor>
+    <JuiceMinor>1</JuiceMinor>
+    <JuiceBuild>0</JuiceBuild>
+    <JuiceVersion>$(JuiceMajor).$(JuiceMinor).$(JuiceBuild).0</JuiceVersion>
+
+    <Version>$(JuiceMajor).$(JuiceMinor).$(JuiceBuild)</Version>
+    <AssemblyVersion>$(JuiceVersion)</AssemblyVersion>
+    <FileVersion>$(JuiceVersion)</FileVersion>
+  </PropertyGroup>
+
+  <!--
+    Juice measures background energy use, so it must not become a meaningful consumer
+    itself. Workstation, non-concurrent GC keeps the resident set small for a process
+    that lives in the tray for weeks at a time.
+  -->
+  <PropertyGroup>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <TieredPGO>true</TieredPGO>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+</Project>

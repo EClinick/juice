@@ -5,6 +5,19 @@ assets/icon-variants/
 *.xcodeproj
 .DS_Store
 
+# .NET / Windows port
+[Bb]in/
+[Oo]bj/
+*.user
+.vs/
+windows/**/AppPackages/
+windows/**/BundleArtifacts/
+windows/artifacts/
+*.msix
+*.msixbundle
+*.appinstaller
+*.pfx
+
 # Node / Next.js
 node_modules/
 .next/

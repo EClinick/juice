@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <RootNamespace>Juice.Cli</RootNamespace>
+    <AssemblyName>juice</AssemblyName>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <!--
+      Region and currency resolution depend on real globalization data: invariant mode
+      makes RegionInfo.CurrentRegion useless, which breaks electricity rate lookup.
+    -->
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <PublishReadyToRun>true</PublishReadyToRun>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Juice.Core\Juice.Core.csproj" />
+    <ProjectReference Include="..\Juice.Platform.Windows\Juice.Platform.Windows.csproj" />
+  </ItemGroup>
+
+</Project>
