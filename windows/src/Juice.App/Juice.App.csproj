@@ -68,7 +68,27 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <PublishReadyToRun Condition="'$(Configuration)' != 'Debug'">true</PublishReadyToRun>
+    <!--
+
+      ReadyToRun is deliberately off. It precompiles IL to native code, which roughly
+
+      doubles the size of every assembly it touches: the Windows API projection grows from
+
+      25 MB to 56 MB and the WinUI assembly from 7 MB to 16 MB, adding around 41 MB per
+
+      architecture to the package.
+
+    
+
+      The trade it offers is faster startup, which matters least for exactly this kind of
+
+      application. Juice is launched once and then sits in the tray for weeks, so it pays
+
+      the download and disk cost on every machine to save a fraction of a second, once.
+
+    -->
+
+    <PublishReadyToRun>false</PublishReadyToRun>
     <!--
       Trimming is off deliberately. The tray icon path goes through GDI+ and the settings
       page through WinRT projections, both of which the trimmer cannot see through, and a
