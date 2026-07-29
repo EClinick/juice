@@ -6,6 +6,7 @@ using Juice.Core.Monitoring;
 using Juice.App.Services;
 using Juice.Core.Attribution;
 using Juice.Core.Cost;
+using Juice.Core.Insights;
 using Juice.Core.Power;
 using Juice.Core.Presentation;
 
@@ -152,6 +153,42 @@ public sealed partial class FlyoutViewModel : ObservableObject
     /// <summary>True when there is a charge timeline worth drawing.</summary>
     [ObservableProperty]
     public partial bool HasCharge { get; set; }
+
+    /// <summary>
+    /// Generated observations, most severe first.
+    /// </summary>
+    /// <remarks>
+    /// This is the part of the macOS version that makes it feel like it has an opinion
+    /// rather than just a readout, and the engine behind it has been written and tested in
+    /// Core since early on without anything ever showing its output.
+    /// </remarks>
+    public ObservableCollection<InsightRowViewModel> Insights { get; } = [];
+
+    /// <summary>True when there is at least one observation worth showing.</summary>
+    [ObservableProperty]
+    public partial bool HasInsights { get; set; }
+
+    /// <summary>
+    /// Applies a freshly generated set of observations.
+    /// </summary>
+    /// <remarks>
+    /// Capped, because the flyout is a glance surface and an unbounded list of advice would
+    /// push the app ranking, which is why most people opened it, below the fold. The engine
+    /// returns them most severe first, so the cap keeps the ones that matter.
+    /// </remarks>
+    public void UpdateInsights(IReadOnlyList<Insight> insights)
+    {
+        Insights.Clear();
+        foreach (var insight in insights.Take(MaximumInsights))
+        {
+            Insights.Add(new InsightRowViewModel(insight));
+        }
+
+        HasInsights = Insights.Count > 0;
+    }
+
+    /// <summary>How many observations the flyout will show at once.</summary>
+    private const int MaximumInsights = 3;
 
     /// <summary>
     /// Applies a freshly built charge timeline.

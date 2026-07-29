@@ -72,6 +72,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <!-- Header -->
@@ -272,8 +273,76 @@
             TextWrapping="Wrap"
             Visibility="{x:Bind local:FlyoutWindow.ToVisibilityInverse(ViewModel.HasHistory), Mode=OneWay}" />
 
+        <!--
+            Observations.
+
+            Cards rather than a plain list, following the Recommendations pattern in the
+            Windows 11 Settings app, because these are the one part of the flyout that
+            offers an opinion rather than a measurement and they should read differently
+            from the numbers around them.
+
+            Placed above the app ranking rather than below it because an observation is
+            usually about one of the apps in that ranking, so it reads as a lead-in. The
+            whole section disappears when there is nothing to say, which on a freshly
+            installed machine is most of the first fortnight.
+        -->
+        <ItemsControl
+            Grid.Row="5"
+            AutomationProperties.AutomationId="FlyoutInsights"
+            AutomationProperties.Name="Observations"
+            ItemsSource="{x:Bind ViewModel.Insights, Mode=OneWay}"
+            Visibility="{x:Bind local:FlyoutWindow.ToVisibility(ViewModel.HasInsights), Mode=OneWay}">
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <StackPanel Spacing="4" />
+                </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:InsightRowViewModel">
+                    <Border
+                        Padding="12,10"
+                        AutomationProperties.Name="{x:Bind local:FlyoutWindow.InsightAnnouncement(Title, Detail)}"
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1"
+                        CornerRadius="{StaticResource ControlCornerRadius}">
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <!--
+                                Tinted by severity, so a warning is distinguishable at a
+                                glance without colouring the text itself, which would hurt
+                                legibility and fail contrast in high contrast themes.
+                            -->
+                            <FontIcon
+                                Grid.Column="0"
+                                VerticalAlignment="Top"
+                                FontSize="16"
+                                Foreground="{x:Bind local:FlyoutWindow.InsightBrush(Severity)}"
+                                Glyph="{x:Bind Glyph}" />
+
+                            <StackPanel Grid.Column="1" Spacing="2">
+                                <TextBlock
+                                    Style="{StaticResource BodyStrongTextBlockStyle}"
+                                    Text="{x:Bind Title}"
+                                    TextWrapping="Wrap" />
+                                <TextBlock
+                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                    Style="{StaticResource CaptionTextBlockStyle}"
+                                    Text="{x:Bind Detail}"
+                                    TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+
         <!-- Top energy users -->
-        <Grid Grid.Row="5" RowSpacing="4">
+        <Grid Grid.Row="6" RowSpacing="4">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
@@ -436,7 +505,7 @@
         </Grid>
 
         <!-- Rate provenance -->
-        <StackPanel Grid.Row="6" Spacing="4">
+        <StackPanel Grid.Row="7" Spacing="4">
             <Border
                 Height="1"
                 Background="{ThemeResource DividerStrokeColorDefaultBrush}" />

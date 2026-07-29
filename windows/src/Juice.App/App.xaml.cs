@@ -4,6 +4,7 @@ using Juice.App.Services;
 using Juice.App.Tray;
 using Juice.App.ViewModels;
 using Juice.App.Views;
+using Juice.Core.Insights;
 using Juice.Core.Power;
 using Juice.Core.Presentation;
 using Juice.Core.Storage;
@@ -221,6 +222,7 @@ public partial class App : Application
         {
             _flyoutViewModel.UpdateHistory(null);
             _flyoutViewModel.UpdateCharge(null);
+            _flyoutViewModel.UpdateInsights(BuildInsights());
             return;
         }
 
@@ -232,12 +234,39 @@ public partial class App : Application
             _flyoutViewModel.UpdateHistory(EnergyChartBuilder.Build(buckets, from, to));
             _flyoutViewModel.UpdateCharge(
                 ChargeTimelineBuilder.Build(_store.BatteryBetween(from, to), from, to));
+            _flyoutViewModel.UpdateInsights(BuildInsights());
         }
         catch (Exception ex) when (ex is Microsoft.Data.Sqlite.SqliteException or IOException or InvalidOperationException)
         {
             // History is a nicety; a failure to read it must not stop the flyout opening.
             _flyoutViewModel.UpdateHistory(null);
             _flyoutViewModel.UpdateCharge(null);
+            _flyoutViewModel.UpdateInsights([]);
+        }
+    }
+
+    /// <summary>
+    /// Generates the observations shown above the app ranking.
+    /// </summary>
+    /// <remarks>
+    /// Reads a fortnight rather than the day the charts show, because the engine judges an
+    /// app against its own earlier behaviour and a single day gives it nothing to compare
+    /// against. Live draw and the session's idle baseline are passed in so that the drain
+    /// observation works even on a machine with no history at all.
+    /// </remarks>
+    private IReadOnlyList<Insight> BuildInsights()
+    {
+        try
+        {
+            return InsightsReport.Build(
+                _store,
+                DateTimeOffset.Now,
+                _latest?.Sample?.SystemWatts,
+                _latest?.IdleBaselineWatts);
+        }
+        catch (Exception ex) when (ex is Microsoft.Data.Sqlite.SqliteException or IOException or InvalidOperationException)
+        {
+            return [];
         }
     }
 

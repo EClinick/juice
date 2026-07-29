@@ -1,6 +1,7 @@
 using System.Runtime.Versioning;
 using Juice.App.Interop;
 using Juice.App.ViewModels;
+using Juice.Core.Insights;
 using Juice.Core.Power;
 using Juice.Core.Presentation;
 using Juice.Platform.Windows;
@@ -215,6 +216,31 @@ public sealed partial class FlyoutWindow : Window
     /// <summary>Shows an element only when there is something for it to display.</summary>
     public static Visibility ToVisibilityIfPresent(object? value)
         => value is null ? Visibility.Collapsed : Visibility.Visible;
+
+    /// <summary>
+    /// Accent for an observation's icon, keyed to how much attention it deserves.
+    /// </summary>
+    /// <remarks>
+    /// Only the icon is tinted. Colouring the text would cost legibility, and in a high
+    /// contrast theme these brushes resolve to system colours that are not guaranteed to
+    /// read against the card behind them.
+    /// </remarks>
+    public static Brush InsightBrush(InsightSeverity severity) => severity switch
+    {
+        InsightSeverity.Warning => (Brush)Application.Current.Resources["SystemFillColorCautionBrush"],
+        InsightSeverity.Notice => (Brush)Application.Current.Resources["SystemFillColorAttentionBrush"],
+        _ => (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+    };
+
+    /// <summary>
+    /// One sentence per observation for screen readers.
+    /// </summary>
+    /// <remarks>
+    /// The card is two text blocks and an icon, which a screen reader would otherwise read
+    /// as three unrelated fragments. The glyph carries no information the words do not.
+    /// </remarks>
+    public static string InsightAnnouncement(string title, string detail)
+        => string.IsNullOrWhiteSpace(detail) ? title : $"{title}. {detail}";
 
     /// <summary>
     /// Foreground for the hero readout, keyed to how hard the machine is drawing so the
