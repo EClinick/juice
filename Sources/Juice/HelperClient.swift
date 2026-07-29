@@ -278,12 +278,14 @@ final class HelperClient: @unchecked Sendable {
                 guard setState(newState, ifCurrent: context) else { continue }
                 return newState
             } catch {
-                state = .unavailable
+                // The failure may arrive after this connection was replaced
+                // and a newer check published its state. Retry against the
+                // replacement instead of overwriting that newer result.
+                guard setState(.unavailable, ifCurrent: context) else { continue }
                 return .unavailable
             }
         }
-        state = .unavailable
-        return .unavailable
+        return state
     }
 
     /// Fetches all energy intervals starting at or after `since`.

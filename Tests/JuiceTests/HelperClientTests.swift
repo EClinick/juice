@@ -99,6 +99,49 @@ struct HelperClientTests {
         #expect(secondHelper.handshakeCount == 1)
     }
 
+    @Test("A stale checkState failure cannot overwrite replacement readiness")
+    func checkStateIgnoresAStaleFailure() async {
+        let firstHandshakeStarted = AsyncTestSignal()
+        let firstHelper = MockHelper(
+            protocolVersion: JuiceXPC.protocolVersion,
+            repliesToHandshake: false)
+        firstHelper.onHandshake = {
+            firstHandshakeStarted.signal()
+        }
+        let secondHelper = MockHelper(protocolVersion: JuiceXPC.protocolVersion)
+        let firstConnection = MockHelperConnection(helper: firstHelper)
+        let secondConnection = MockHelperConnection(helper: secondHelper)
+        let client = makeClient(connections: [firstConnection, secondConnection])
+
+        let staleCheck = Task {
+            await client.checkState()
+        }
+        await firstHandshakeStarted.wait()
+        firstConnection.invalidateFromRemote()
+
+        let replacementState = await client.checkState()
+        guard case .ready = replacementState else {
+            Issue.record("Expected replacement helper to publish ready")
+            firstConnection.fail(TestConnectionError.expected)
+            _ = await staleCheck.value
+            return
+        }
+
+        firstConnection.fail(TestConnectionError.expected)
+        let staleResult = await staleCheck.value
+
+        guard case .ready = staleResult else {
+            Issue.record("Expected stale check to observe replacement readiness")
+            return
+        }
+        guard case .ready = client.state else {
+            Issue.record("Expected stale failure not to overwrite ready state")
+            return
+        }
+        #expect(firstHelper.handshakeCount == 1)
+        #expect(secondHelper.handshakeCount == 2)
+    }
+
     @Test("An interruption clears the cache on the retained connection")
     func interruptionRequiresRevalidation() async throws {
         let helper = MockHelper(protocolVersion: 3)
@@ -269,6 +312,37 @@ private enum TestConnectionError: Error {
     case expected
 }
 
+private final class AsyncTestSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var signaled = false
+    private var waiter: CheckedContinuation<Void, Never>?
+
+    func signal() {
+        lock.lock()
+        if let waiter {
+            self.waiter = nil
+            lock.unlock()
+            waiter.resume()
+        } else {
+            signaled = true
+            lock.unlock()
+        }
+    }
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if signaled {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                waiter = continuation
+                lock.unlock()
+            }
+        }
+    }
+}
+
 private final class MockConnectionFactory: @unchecked Sendable {
     private let lock = NSLock()
     private var connections: [MockHelperConnection]
@@ -344,6 +418,7 @@ private final class MockHelper: NSObject, HelperProtocol, @unchecked Sendable {
     private var _protocolVersion: Int
     private let repliesToHandshake: Bool
     private let repliesToLiveSample: Bool
+    private var _onHandshake: (() -> Void)?
     private var _beforeHandshakeReply: (() -> Void)?
     private var _handshakeCount = 0
     private var _batteryLevelCount = 0
@@ -371,6 +446,19 @@ private final class MockHelper: NSObject, HelperProtocol, @unchecked Sendable {
         set {
             lock.lock()
             _beforeHandshakeReply = newValue
+            lock.unlock()
+        }
+    }
+
+    var onHandshake: (() -> Void)? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _onHandshake
+        }
+        set {
+            lock.lock()
+            _onHandshake = newValue
             lock.unlock()
         }
     }
@@ -407,9 +495,11 @@ private final class MockHelper: NSObject, HelperProtocol, @unchecked Sendable {
         lock.lock()
         _handshakeCount += 1
         let version = _protocolVersion
+        let onHandshake = _onHandshake
         let beforeReply = _beforeHandshakeReply
         _beforeHandshakeReply = nil
         lock.unlock()
+        onHandshake?()
         if repliesToHandshake {
             beforeReply?()
             reply(version, "mock-helper")
