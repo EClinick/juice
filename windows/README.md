@@ -161,9 +161,12 @@ windows\build\pack.ps1 -CertPath .\prod.pfx -Timestamp http://timestamp.digicert
 `winapp package` produces one `.msix` per architecture, so the script publishes and packages x64 and ARM64 separately and combines them with `winapp tool makeappx bundle`.
 ARM64 matters more than usual here: Snapdragon X Copilot+ PCs are among the machines most likely to carry the ACPI Energy Meter device that the hardware rail power source depends on.
 
-Packages are self-contained by default.
-Two separate runtimes have to be carried, the .NET runtime via `dotnet publish --self-contained` and the Windows App SDK via `WindowsAppSDKSelfContained` and `winapp package --self-contained`, and setting only one of them still leaves the app unable to start on a clean machine.
-Pass `-FrameworkDependent` for a smaller package that requires both runtimes to already be present.
+Packages are framework dependent on the Windows App SDK by default, which the Store resolves and installs, and carry the .NET runtime, which it does not.
+Pass `-DotNetFrameworkDependent` for a smaller package that also requires the matching .NET desktop runtime, which is only appropriate for sideloading onto machines you control.
+
+`ReadyToRun` is deliberately disabled.
+It roughly doubles every assembly it precompiles, which added around 41 MB per architecture, and it trades size for startup time in an application that is launched once and then runs for weeks.
+Turning it off cut the bundle by a quarter with no measurable change in startup, and dropped the idle working set from 24 MB to 4.5 MB.
 
 The package declares an `AppExecutionAlias`, so installing it puts `juice` on the PATH for any terminal.
 One bundle therefore serves both the tray application and the command line.

@@ -233,6 +233,31 @@ Worth setting only `Kind`.
 Setting `TintOpacity` and `LuminosityOpacity` without also setting `TintColor` and `FallbackColor` opts the controller out of its theme-derived colours, and the result was a light panel on a fully dark system.
 That failure is easy to misread as the theme being wrong somewhere, when the real cause is having partially overridden a set of values that are only coherent together.
 
+## ReadyToRun doubles what it touches
+
+**macOS:** Swift compiles ahead of time by default.
+There is no equivalent decision, and no equivalent surprise.
+
+**Windows:** the WinUI project template enables `PublishReadyToRun` for non-Debug builds, and it roughly doubles every assembly it precompiles.
+The Windows API projection grew from 25 MB to 56 MB and the WinUI assembly from 7 MB to 16 MB, adding around 41 MB per architecture.
+
+It is a fair default for many applications and a poor one here.
+ReadyToRun trades size for startup time, and it is the wrong trade for something launched once that then sits in the notification area for weeks.
+Juice was paying a download and disk cost on every machine to save a fraction of a second, once, in an application whose entire subject is background resource waste.
+
+Two things made this hard to find, and both are worth knowing.
+
+The precompiled copies live in an `R2R` folder under `obj` and are substituted at packaging time, so the build output still shows the original sizes.
+Inspecting the folder that was packaged shows 7 MB while the package contains 16 MB, which looks impossible.
+
+The natural explanation is also wrong in a convincing way.
+Comparing against a similar application suggested the Windows App SDK had simply grown between versions, since that application shipped 25 MB where this one shipped 56 MB of the same file.
+Checking the cached packages disproved it: `Microsoft.WinUI.dll` is 7 MB in every version from 1.8 through 2.3.
+The difference was never the SDK.
+
+Turning it off cut the bundle from 153.7 MB to 93.4 MB with no measurable change in startup, and reduced the idle working set from 24 MB to 4.5 MB.
+That last part is not a rounding error: precompiled native code is faulted in as mapped pages, whereas IL is jitted lazily, so only the code that actually runs is ever materialised.
+
 ## Showing an app's icon
 
 **macOS:** `NSWorkspace.icon(forFile:)`.
