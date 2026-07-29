@@ -26,6 +26,20 @@
 
   <Dependencies>
     <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+
+    <!--
+      Declared explicitly rather than relying on the build to inject it. A packaged app
+      that is framework dependent on the Windows App SDK must name that dependency, or it
+      installs cleanly and then dies on launch with REGDB_E_CLASSNOTREG when the first
+      WinRT activation finds nothing registered.
+
+      MinVersion is the major the app is built against. The Store resolves and installs
+      the matching framework package, so depending on it costs the user nothing.
+    -->
+    <PackageDependency
+      Name="Microsoft.WindowsAppRuntime.2"
+      MinVersion="2.0.0.0"
+      Publisher="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US" />
   </Dependencies>
 
   <Resources>

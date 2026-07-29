@@ -203,14 +203,28 @@ foreach ($arch in $Architectures) {
     }
 
     # The manifest declares an AppExecutionAlias for juice.exe, so the CLI has to be inside
-    # the package or the alias resolves to nothing. It is published into the same folder,
-    # which is what makes one bundle serve both the tray app and the command line.
+    # the package or the alias resolves to nothing.
+    #
+    # Only the command line's own files are copied in. Publishing it into the application
+    # folder would drop a second complete copy of the .NET runtime on top of the first,
+    # since both are self-contained, which inflates the package for no benefit. Everything
+    # the CLI shares with the application, the runtime and the Juice libraries, is already
+    # present.
+    $cliStage = Join-Path $artifacts "cli\$arch"
+    Remove-Item $cliStage -Recurse -Force -ErrorAction SilentlyContinue
+
     dotnet publish $cliProject `
         -c $Configuration `
         -r $rid `
         --self-contained $dotnetFlag `
-        -o $layout
+        -o $cliStage
     if ($LASTEXITCODE -ne 0) { throw "CLI publish failed for $arch" }
+
+    foreach ($name in 'juice.exe', 'juice.dll', 'juice.deps.json', 'juice.runtimeconfig.json') {
+        $src = Join-Path $cliStage $name
+        if (-not (Test-Path $src)) { throw "CLI artifact missing: $src" }
+        Copy-Item $src -Destination $layout -Force
+    }
 
     if (-not (Test-Path (Join-Path $layout 'juice.exe'))) {
         throw "juice.exe missing from the $arch layout; the AppExecutionAlias would be dead."
