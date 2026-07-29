@@ -42,7 +42,7 @@ param(
     [string] $CertPassword = 'password',
     [string] $Timestamp,
     [switch] $FrameworkDependent,
-    [string[]] $Architectures = @('x64', 'arm64')
+    [string[]] $Architectures
 )
 
 $ErrorActionPreference = 'Stop'
@@ -72,8 +72,18 @@ function Assert-Tool {
 
 Assert-Tool
 
+# Build the host architecture first so a compilation failure surfaces on the slice that
+# can actually be run and debugged here. Cross-compiled slices still ship, they are just
+# not what you verify against: an x64 build executed on an ARM64 machine runs under
+# emulation, and since Juice attributes energy by share of processor time, an emulated
+# build measures the emulator rather than the app.
+if (-not $Architectures) {
+    $Architectures = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { @('arm64', 'x64') } else { @('x64', 'arm64') }
+}
+
 $version = Get-JuiceVersion
 Write-Host "Juice $version" -ForegroundColor Cyan
+Write-Host ("Architectures: {0} (host {1} first)" -f ($Architectures -join ', '), $env:PROCESSOR_ARCHITECTURE)
 
 if (Test-Path $artifacts) { Remove-Item $artifacts -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $packagesDir | Out-Null
@@ -92,7 +102,9 @@ if (-not $CertPath) {
 # and winapp's --self-contained. Setting only one of them still leaves the app unable
 # to start on a clean machine.
 $selfContained = -not $FrameworkDependent
-Write-Host ("Deployment: {0}" -f ($selfContained ? 'self-contained' : 'framework-dependent'))
+$selfContainedFlag = if ($selfContained) { 'true' } else { 'false' }
+$deploymentLabel = if ($selfContained) { 'self-contained' } else { 'framework-dependent' }
+Write-Host ("Deployment: {0}" -f $deploymentLabel)
 
 foreach ($arch in $Architectures) {
     Write-Host "`nPublishing $arch" -ForegroundColor Cyan
@@ -103,9 +115,9 @@ foreach ($arch in $Architectures) {
     dotnet publish $appProject `
         -c $Configuration `
         -r $rid `
-        --self-contained $selfContained.ToString().ToLowerInvariant() `
+        --self-contained $selfContainedFlag `
         -p:Platform=$arch `
-        -p:WindowsAppSDKSelfContained=$($selfContained.ToString().ToLowerInvariant()) `
+        -p:WindowsAppSDKSelfContained=$selfContainedFlag `
         -p:PublishReadyToRun=true `
         -o $layout
     if ($LASTEXITCODE -ne 0) { throw "publish failed for $arch" }
@@ -116,7 +128,7 @@ foreach ($arch in $Architectures) {
     dotnet publish $cliProject `
         -c $Configuration `
         -r $rid `
-        --self-contained $selfContained.ToString().ToLowerInvariant() `
+        --self-contained $selfContainedFlag `
         -p:PublishReadyToRun=true `
         -o $layout
     if ($LASTEXITCODE -ne 0) { throw "CLI publish failed for $arch" }
