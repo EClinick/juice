@@ -17,15 +17,18 @@
             context menus, Mica for the base layer of long-lived windows. This flyout is
             transient, so acrylic is correct here and Mica is correct in settings.
 
-            Thin rather than the default base acrylic, because this surface sits directly
-            over whatever the user was working in and is meant to read as an extension of
-            the taskbar. Base acrylic is opaque enough that the window behind it stops
-            being legible, which made the flyout read as a flat panel. The declarative
-            DesktopAcrylicBackdrop element has no Kind property in this SDK, so the thin
-            variant is reached through a SystemBackdrop subclass that owns the controller.
-            See ThinAcrylicBackdrop for why nothing else about the material is set there.
+            Base acrylic, which is the material the volume and network flyouts use and the
+            one that reads as the taskbar's own translucent grey. An earlier version used
+            the thin variant, reasoning that a surface sitting over the user's work should
+            let it read through. That inverted the guidance: thin acrylic is for transient
+            surfaces layered over app content, such as tooltips and menus, and against a
+            bright desktop it left this panel washed out and its text competing with
+            whatever happened to be behind it. The declarative DesktopAcrylicBackdrop
+            element has no Kind property in this SDK, so the variant is reached through a
+            SystemBackdrop subclass that owns the controller. See FlyoutAcrylicBackdrop for
+            why nothing else about the material is set there.
         -->
-        <local:ThinAcrylicBackdrop />
+        <local:FlyoutAcrylicBackdrop />
     </Window.SystemBackdrop>
 
 

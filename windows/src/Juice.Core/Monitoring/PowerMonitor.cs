@@ -49,7 +49,7 @@ public sealed class PowerMonitor : IDisposable
     private readonly Func<IProcessSampler> _processFactory;
     private readonly IBatteryRuntimeReader? _runtime;
     private readonly Action<Action> _post;
-    private readonly EnergyAttributor _attributor = new();
+    private readonly EnergyAttributor _attributor;
     private readonly Lock _gate = new();
     private readonly Timer _timer;
     private readonly JuiceStore? _store;
@@ -90,18 +90,24 @@ public sealed class PowerMonitor : IDisposable
     /// as the tray agent or a headless collector, passes nothing and the event is raised
     /// inline.
     /// </param>
+    /// <param name="displayNameSelector">
+    /// Turns a process into the name shown to a person. Optional, and without it the
+    /// ranking shows raw process names, which are accurate and hard to read.
+    /// </param>
     public PowerMonitor(
         Func<IPowerSource> sourceFactory,
         Func<IProcessSampler> processFactory,
         IBatteryRuntimeReader? runtime = null,
         JuiceStore? store = null,
-        Action<Action>? post = null)
+        Action<Action>? post = null,
+        Func<ProcessSample, string>? displayNameSelector = null)
     {
         _sourceFactory = sourceFactory;
         _processFactory = processFactory;
         _runtime = runtime;
         _store = store;
         _post = post ?? (action => action());
+        _attributor = new EnergyAttributor(displayNameSelector: displayNameSelector);
         _timer = new Timer(_ => Tick(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
     }
 

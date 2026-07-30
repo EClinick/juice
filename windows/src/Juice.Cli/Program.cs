@@ -51,6 +51,7 @@ public static class Program
                 "battery" => Battery(json),
                 "verify" => Verify(args, json),
                 "trayicons" => TrayIcons(args),
+                "appicons" => AppIcons(args),
                 "help" or "--help" or "-h" => Help(),
                 _ => Fail(json, command, "unknownCommand", $"Unknown command '{command}'.", ExitUsage),
             };
@@ -546,6 +547,62 @@ public static class Program
         Console.WriteLine(path);
         return ExitOk;
     }
+
+    /// <summary>
+    /// Writes the package's visual assets from the application mark.
+    /// </summary>
+    /// <remarks>
+    /// MSIX wants the mark at around thirty sizes, across scale factors, target sizes and
+    /// their unplated variants. Hand exporting that many files guarantees they drift, so
+    /// they are generated. Run this after changing anything in
+    /// <see cref="AppIconRenderer"/> and commit the result.
+    /// </remarks>
+    private static int AppIcons(string[] args)
+    {
+        var index = Array.FindIndex(args, a => a.Equals("--out", StringComparison.OrdinalIgnoreCase));
+        var directory = index >= 0 && index + 1 < args.Length
+            ? args[index + 1]
+            : Path.Combine(Directory.GetCurrentDirectory(), "Assets");
+
+        Directory.CreateDirectory(directory);
+
+        var written = 0;
+
+        void Write(string name, int size, bool plated)
+        {
+            using var bitmap = AppIconRenderer.Render(size, plated);
+            bitmap.Save(Path.Combine(directory, name), System.Drawing.Imaging.ImageFormat.Png);
+            written++;
+        }
+
+        // Scale factors. Windows picks by the display's scaling, so a machine at 125 per
+        // cent with only a 200 per cent asset gets a downscaled and slightly soft icon.
+        foreach (var scale in new[] { 100, 125, 150, 200, 400 })
+        {
+            Write($"Square44x44Logo.scale-{scale}.png", Scaled(44, scale), plated: true);
+            Write($"Square150x150Logo.scale-{scale}.png", Scaled(150, scale), plated: true);
+            Write($"Wide310x150Logo.scale-{scale}.png", Scaled(150, scale), plated: true);
+            Write($"StoreLogo.scale-{scale}.png", Scaled(50, scale), plated: true);
+            Write($"SplashScreen.scale-{scale}.png", Scaled(300, scale), plated: true);
+            Write($"LockScreenLogo.scale-{scale}.png", Scaled(24, scale), plated: false);
+        }
+
+        // Target sizes. These are the ones the Start menu list, the taskbar, Alt+Tab and
+        // search results actually use, and the unplated forms are what keep the taskbar
+        // from showing a coloured square instead of an icon.
+        foreach (var target in new[] { 16, 24, 32, 48, 256 })
+        {
+            Write($"Square44x44Logo.targetsize-{target}.png", target, plated: true);
+            Write($"Square44x44Logo.targetsize-{target}_altform-unplated.png", target, plated: false);
+            Write($"Square44x44Logo.targetsize-{target}_altform-lightunplated.png", target, plated: false);
+        }
+
+        Console.WriteLine($"{written} assets written to {directory}");
+        return ExitOk;
+    }
+
+    private static int Scaled(int baseSize, int scalePercent)
+        => (int)Math.Round(baseSize * scalePercent / 100.0);
     private static int ReadSeconds(string[] args, int fallback)
     {
         var index = Array.FindIndex(args, a => a.Equals("--seconds", StringComparison.OrdinalIgnoreCase));

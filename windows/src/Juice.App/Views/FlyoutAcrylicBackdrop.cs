@@ -6,16 +6,24 @@ using Microsoft.UI.Xaml.Media;
 namespace Juice.App.Views;
 
 /// <summary>
-/// Desktop acrylic in its thin variant, for surfaces that should let the window behind
-/// them read through the way the shell's own flyouts do.
+/// Desktop acrylic for surfaces that sit above the taskbar the way the shell's own
+/// flyouts do.
 /// </summary>
 /// <remarks>
 /// The declarative <c>DesktopAcrylicBackdrop</c> element has no <c>Kind</c> property in
-/// Windows App SDK 2.3, so the only route to thin acrylic is
+/// Windows App SDK 2.3, so the only route to choosing a variant is
 /// <see cref="DesktopAcrylicController"/>, which does. Wrapping that in a
 /// <see cref="SystemBackdrop"/> keeps the choice declarative at the point of use: the
 /// window still says which material it wants in XAML, and no window code-behind carries
 /// colour or opacity values.
+///
+/// The variant is <see cref="DesktopAcrylicKind.Base"/>, which is what the volume and
+/// network flyouts use and is the material that reads as the taskbar's dark translucent
+/// grey. An earlier version used <see cref="DesktopAcrylicKind.Thin"/> on the reasoning
+/// that a flyout should let the window behind it read through. That was the wrong reading
+/// of the guidance: thin acrylic is for transient surfaces layered over app content, such
+/// as tooltips and context menus, and against a bright desktop it left the panel washed
+/// out and the text fighting whatever happened to be behind it.
 ///
 /// Only <see cref="DesktopAcrylicController.Kind"/> is set. Setting tint and luminosity
 /// opacities by hand, as an earlier attempt did, silently opts the controller out of its
@@ -24,7 +32,7 @@ namespace Juice.App.Views;
 /// keeps the material correct in light, dark and high contrast without a table of
 /// hand-tuned constants to maintain.
 /// </remarks>
-public sealed class ThinAcrylicBackdrop : SystemBackdrop
+public sealed class FlyoutAcrylicBackdrop : SystemBackdrop
 {
     private DesktopAcrylicController? _controller;
     private SystemBackdropConfiguration? _configuration;
@@ -51,7 +59,7 @@ public sealed class ThinAcrylicBackdrop : SystemBackdrop
             return;
         }
 
-        _controller ??= new DesktopAcrylicController { Kind = DesktopAcrylicKind.Thin };
+        _controller ??= new DesktopAcrylicController { Kind = DesktopAcrylicKind.Base };
         _controller.SetSystemBackdropConfiguration(_configuration);
         _controller.AddSystemBackdropTarget(connectedTarget);
     }

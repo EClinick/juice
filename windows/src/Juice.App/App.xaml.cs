@@ -72,12 +72,14 @@ public partial class App : Application
         _flyoutViewModel = new FlyoutViewModel(_icons);
 
         _store = HistoryStoreFactory.TryOpen();
+        var displayNames = new AppDisplayNameResolver();
         _monitor = new PowerMonitor(
             CompositePowerSource.CreateDefault,
             () => new ProcessSampler(),
             new SystemPowerStatusReader(),
             _store,
-            action => _ui.TryEnqueue(() => action()));
+            action => _ui.TryEnqueue(() => action()),
+            p => displayNames.Resolve(p.ProcessId, p.ProcessName));
         _monitor.SnapshotReady += OnSnapshotReady;
 
         _activity.StateChanged += (_, state) =>
