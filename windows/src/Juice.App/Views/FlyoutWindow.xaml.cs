@@ -307,6 +307,53 @@ public sealed partial class FlyoutWindow : Window
         => new(1 - Math.Clamp(fraction, 0, 1), GridUnitType.Star);
 
     /// <summary>
+    /// Star width of whatever the stacked breakdown bar's segments did not fill.
+    /// </summary>
+    /// <remarks>
+    /// Only ever a sliver, produced when a remainder too small to print is dropped.
+    /// Without it star sizing would scale the segments up to fill the bar and every width
+    /// on it would be slightly overstated, which is a small lie about a measurement rather
+    /// than a rendering detail.
+    /// </remarks>
+    public static GridLength BarTrackLength(double a, double b, double c, double d)
+        => new(Math.Clamp(1 - (a + b + c + d), 0, 1), GridUnitType.Star);
+
+    /// <summary>
+    /// Maps the measurement notice's severity onto the InfoBar's.
+    /// </summary>
+    /// <remarks>
+    /// The two enumerations are kept apart deliberately. The decision about how much
+    /// attention a limitation deserves is made in Core, where it is covered by tests and
+    /// where nothing knows what an InfoBar is; this is the only line that needs to.
+    /// </remarks>
+    public static InfoBarSeverity ToInfoBarSeverity(MeasurementNoticeSeverity severity)
+        => severity == MeasurementNoticeSeverity.Warning
+            ? InfoBarSeverity.Warning
+            : InfoBarSeverity.Informational;
+
+    /// <summary>
+    /// Builds what a screen reader says for the stacked breakdown bar.
+    /// </summary>
+    /// <remarks>
+    /// The bar itself is four coloured rectangles, which carry nothing to a reader. The
+    /// legend rows beneath it announce each rail and its wattage, so this says only what
+    /// the bar adds up to and what it covers, and the segments are hidden from the
+    /// accessibility tree by being unnamed children of a named element.
+    /// </remarks>
+    public static string RailBarAnnouncement(string total, string caption)
+        => $"Power by component, {total} in total. {caption}";
+
+    /// <summary>One sentence per legend row, so a key and a figure do not read as two.</summary>
+    public static string RailAnnouncement(string label, string watts)
+        => $"{label}, {watts}";
+
+    /// <summary>
+    /// Builds what a screen reader says for the disclosure holding the rest of the apps.
+    /// </summary>
+    public static string MoreAppsAnnouncement(string header, string value)
+        => string.IsNullOrEmpty(value) ? header : $"{header}, {value}";
+
+    /// <summary>
     /// Builds what a screen reader says for the hero readout.
     /// </summary>
     /// <remarks>

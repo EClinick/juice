@@ -49,6 +49,35 @@ public sealed record EnergyRanking
     /// <summary>Rows in descending order, with the platform row last when present.</summary>
     public IReadOnlyList<EnergyRankingRow> Rows { get; init; } = [];
 
+    /// <summary>
+    /// The apps ranked immediately below <see cref="Rows"/>, for the disclosure the
+    /// flyout hides them behind.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Kept apart from the visible rows rather than merged into a longer list, because
+    /// the two are read differently. The top rows answer "what is using my battery"; the
+    /// rest exist so that a user who suspects something specific can check whether it is
+    /// there, which is a question worth answering but not worth spending a glance surface
+    /// on.
+    /// </para>
+    /// <para>
+    /// It is a continuation, not a total. Whatever the caller did not ask for is not
+    /// counted here and is not claimed anywhere else, so the flyout never states how many
+    /// apps ran in a period it only partially fetched.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<EnergyRankingRow> OverflowRows { get; init; } = [];
+
+    /// <summary>Energy across <see cref="OverflowRows"/>.</summary>
+    public double OverflowWattHours { get; init; }
+
+    /// <summary>Average draw across <see cref="OverflowRows"/>.</summary>
+    public double OverflowWatts { get; init; }
+
+    /// <summary>True when there are further apps to disclose.</summary>
+    public bool HasOverflow => OverflowRows.Count > 0;
+
     /// <summary>Total system energy measured across the period.</summary>
     public double SystemWattHours { get; init; }
 
@@ -129,6 +158,20 @@ public static class EnergyRankingBuilder
     public const int DefaultAppLimit = 5;
 
     /// <summary>
+    /// Further app rows kept behind the flyout's disclosure.
+    /// </summary>
+    /// <remarks>
+    /// Bounded rather than unbounded. The macOS version summarises the tail as a count of
+    /// apps and stops there; a Windows disclosure is expected to actually open, so the
+    /// tail has to be a list somebody can read rather than the two hundred rows a busy
+    /// machine accumulates in a week.
+    /// </remarks>
+    public const int DefaultOverflowLimit = 10;
+
+    /// <summary>Rows a caller should fetch to fill both the list and its disclosure.</summary>
+    public const int FetchLimit = DefaultAppLimit + DefaultOverflowLimit;
+
+    /// <summary>
     /// Identity used for the platform row.
     /// </summary>
     /// <remarks>
@@ -144,8 +187,12 @@ public static class EnergyRankingBuilder
     /// <param name="result">
     /// The most recent completed attribution, or null before the first one closes.
     /// </param>
-    /// <param name="appLimit">How many app rows to keep.</param>
-    public static EnergyRanking FromLive(AttributionResult? result, int appLimit = DefaultAppLimit)
+    /// <param name="appLimit">How many app rows to show.</param>
+    /// <param name="overflowLimit">How many further app rows to keep for the disclosure.</param>
+    public static EnergyRanking FromLive(
+        AttributionResult? result,
+        int appLimit = DefaultAppLimit,
+        int overflowLimit = DefaultOverflowLimit)
     {
         if (result is null || result.End <= result.Start) return EnergyRanking.Empty;
 
@@ -154,22 +201,27 @@ public static class EnergyRankingBuilder
         if (hours <= 0) return EnergyRanking.Empty;
 
         var apps = new List<EnergyRankingRow>();
+        var overflow = new List<EnergyRankingRow>();
 
-        foreach (var app in result.Apps.Take(appLimit))
+        foreach (var app in result.Apps.Take(appLimit + Math.Max(overflowLimit, 0)))
         {
             if (app.TotalWattHours <= 0) continue;
 
-            apps.Add(new EnergyRankingRow
+            var row = new EnergyRankingRow
             {
                 AppId = app.AppId,
                 DisplayName = app.DisplayName,
                 WattHours = app.TotalWattHours,
                 Watts = app.Watts,
                 ProcessIds = app.ProcessIds,
-            });
+            };
+
+            // The split is by position in the ranking, so a row that drew nothing and was
+            // skipped above does not cost the list a visible row.
+            (apps.Count < appLimit ? apps : overflow).Add(row);
         }
 
-        return Assemble(apps, result.PlatformWattHours, result.SystemWattHours, window, hours, coverage: 1);
+        return Assemble(apps, overflow, result.PlatformWattHours, result.SystemWattHours, window, hours, coverage: 1);
     }
 
     /// <summary>Ranks a stored period.</summary>
@@ -179,12 +231,14 @@ public static class EnergyRankingBuilder
     /// what makes the coverage figure meaningful.
     /// </param>
     /// <param name="window">The period the caller asked for, not the extent of the data.</param>
-    /// <param name="appLimit">How many app rows to keep.</param>
+    /// <param name="appLimit">How many app rows to show.</param>
+    /// <param name="overflowLimit">How many further app rows to keep for the disclosure.</param>
     public static EnergyRanking FromHistory(
         IReadOnlyList<DailyAppEnergy> apps,
         IReadOnlyList<HourBucket> buckets,
         TimeSpan window,
-        int appLimit = DefaultAppLimit)
+        int appLimit = DefaultAppLimit,
+        int overflowLimit = DefaultOverflowLimit)
     {
         ArgumentNullException.ThrowIfNull(apps);
         ArgumentNullException.ThrowIfNull(buckets);
@@ -206,21 +260,24 @@ public static class EnergyRankingBuilder
             : 0;
 
         var rows = new List<EnergyRankingRow>();
+        var overflow = new List<EnergyRankingRow>();
 
-        foreach (var app in apps.Take(appLimit))
+        foreach (var app in apps.Take(appLimit + Math.Max(overflowLimit, 0)))
         {
             if (app.WattHours <= 0) continue;
 
-            rows.Add(new EnergyRankingRow
+            var row = new EnergyRankingRow
             {
                 AppId = app.AppId,
                 DisplayName = app.DisplayName,
                 WattHours = app.WattHours,
                 Watts = coveredHours > 0 ? app.WattHours / coveredHours : 0,
-            });
+            };
+
+            (rows.Count < appLimit ? rows : overflow).Add(row);
         }
 
-        return Assemble(rows, platformWattHours, systemWattHours, window, coveredHours, coverage);
+        return Assemble(rows, overflow, platformWattHours, systemWattHours, window, coveredHours, coverage);
     }
 
     /// <summary>
@@ -229,6 +286,7 @@ public static class EnergyRankingBuilder
     /// </summary>
     private static EnergyRanking Assemble(
         List<EnergyRankingRow> apps,
+        List<EnergyRankingRow> overflow,
         double platformWattHours,
         double systemWattHours,
         TimeSpan window,
@@ -260,9 +318,26 @@ public static class EnergyRankingBuilder
             });
         }
 
+        // Disclosed rows are scaled against the same heaviest app as the visible ones, so
+        // opening the disclosure continues the ranking rather than restarting it at full
+        // width on whatever happens to lead the tail.
+        var hidden = new List<EnergyRankingRow>(overflow.Count);
+        var hiddenWattHours = 0.0;
+        var hiddenWatts = 0.0;
+
+        foreach (var app in overflow)
+        {
+            hidden.Add(app with { BarFraction = RankingShare.Of(app.WattHours, heaviestApp) });
+            hiddenWattHours += app.WattHours;
+            hiddenWatts += app.Watts;
+        }
+
         return new EnergyRanking
         {
             Rows = rows,
+            OverflowRows = hidden,
+            OverflowWattHours = hiddenWattHours,
+            OverflowWatts = hiddenWatts,
             SystemWattHours = systemWattHours,
             Window = window,
             Coverage = coverage,

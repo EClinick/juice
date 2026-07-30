@@ -169,6 +169,120 @@ public class EnergyRangeTests
     }
 
     /// <summary>
+    /// Apps past the visible top go to the disclosure rather than being discarded, so a
+    /// user who suspects something specific can check whether it is there.
+    /// </summary>
+    [Fact]
+    public void Ranking_KeepsTheAppsPastTheTopForTheDisclosure()
+    {
+        var ranking = EnergyRankingBuilder.FromLive(
+            LiveApps(8),
+            appLimit: 2,
+            overflowLimit: 4);
+
+        Assert.Equal(2, ranking.Rows.Count);
+        Assert.True(ranking.HasOverflow);
+        Assert.Equal(4, ranking.OverflowRows.Count);
+        Assert.Equal("app3", ranking.OverflowRows[0].AppId);
+
+        // Sixth, seventh and eighth were not asked for and are not counted anywhere.
+        Assert.Equal(3 + 1.5 + 0.75 + 0.375, ranking.OverflowWattHours, 9);
+    }
+
+    /// <summary>
+    /// Opening the disclosure continues the ranking rather than restarting it, so the
+    /// bars stay comparable with the rows above them.
+    /// </summary>
+    [Fact]
+    public void Ranking_ScalesDisclosedBarsAgainstTheSameHeaviestApp()
+    {
+        var ranking = EnergyRankingBuilder.FromLive(
+            LiveApps(4),
+            appLimit: 1,
+            overflowLimit: 4);
+
+        Assert.Equal(1.0, ranking.Rows[0].BarFraction, 9);
+        Assert.Equal(0.5, ranking.OverflowRows[0].BarFraction, 9);
+        Assert.Equal(0.25, ranking.OverflowRows[1].BarFraction, 9);
+    }
+
+    [Fact]
+    public void Ranking_HasNoDisclosureWhenEveryAppIsAlreadyVisible()
+    {
+        var ranking = EnergyRankingBuilder.FromLive(LiveApps(3));
+
+        Assert.False(ranking.HasOverflow);
+        Assert.Empty(ranking.OverflowRows);
+        Assert.Equal(0, ranking.OverflowWattHours, 9);
+    }
+
+    /// <summary>
+    /// A stored period is disclosed the same way, so the two sources cannot drift apart
+    /// in what the disclosure contains.
+    /// </summary>
+    [Fact]
+    public void HistoricalRanking_DisclosesTheSameWayTheLiveOneDoes()
+    {
+        var hour = DateTimeOffset.UnixEpoch;
+
+        var buckets = new List<HourBucket>
+        {
+            Bucket(hour, systemWh: 10, platformWh: 0, coveredSeconds: 3600),
+        };
+
+        var apps = new List<DailyAppEnergy>
+        {
+            new() { Day = "1970-01-01", AppId = "a", DisplayName = "A", WattHours = 4 },
+            new() { Day = "1970-01-01", AppId = "b", DisplayName = "B", WattHours = 2 },
+            new() { Day = "1970-01-01", AppId = "c", DisplayName = "C", WattHours = 1 },
+        };
+
+        var ranking = EnergyRankingBuilder.FromHistory(
+            apps,
+            buckets,
+            TimeSpan.FromHours(1),
+            appLimit: 1,
+            overflowLimit: 2);
+
+        Assert.Single(ranking.Rows);
+        Assert.Equal(2, ranking.OverflowRows.Count);
+        Assert.Equal(3, ranking.OverflowWattHours, 9);
+        Assert.Equal(3, ranking.OverflowWatts, 9);
+    }
+
+    /// <summary>
+    /// An attribution result with a known number of apps, each drawing half of the one
+    /// above it, so both the split and the bar scaling are checkable by hand.
+    /// </summary>
+    private static AttributionResult LiveApps(int count)
+    {
+        var start = DateTimeOffset.UnixEpoch;
+        var apps = new List<AppEnergy>();
+        var watts = 12.0;
+
+        for (var i = 1; i <= count; i++)
+        {
+            apps.Add(new AppEnergy
+            {
+                AppId = $"app{i}",
+                DisplayName = $"App {i}",
+                CpuWattHours = watts,
+                Watts = watts,
+            });
+
+            watts /= 2;
+        }
+
+        return new AttributionResult
+        {
+            Start = start,
+            End = start.AddHours(1),
+            SystemWattHours = 100,
+            Apps = apps,
+        };
+    }
+
+    /// <summary>
     /// A period Juice only saw part of must not report every app at a fraction of its real
     /// draw, so the average is taken over the time recorded rather than over the period.
     /// </summary>

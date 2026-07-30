@@ -247,7 +247,7 @@ public partial class App : Application
 
             var ranking = window.HasRecords
                 ? EnergyRankingBuilder.FromHistory(
-                    _store.TopApps(window.From, window.To, EnergyRankingBuilder.DefaultAppLimit),
+                    _store.TopApps(window.From, window.To, EnergyRankingBuilder.FetchLimit),
                     _store.SystemEnergyBetween(window.From, window.To),
                     window.Duration)
                 : EnergyRanking.Empty;

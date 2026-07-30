@@ -43,11 +43,19 @@ public sealed partial class FlyoutViewModel : ObservableObject
         // reading yet rather than showing a zero that would look like a measurement.
         WattsText = "Unknown";
         SourceText = "Waiting for a reading";
+        HasSourceLine = true;
         BatteryText = string.Empty;
         PowerStateText = string.Empty;
         EnergyWindowText = "Collecting the first sampling window.";
         EnergyCoverageText = string.Empty;
         RateFooterText = string.Empty;
+        RailTotalText = string.Empty;
+        RailCaptionText = string.Empty;
+        SupplyText = string.Empty;
+        NoticeTitle = string.Empty;
+        NoticeMessage = string.Empty;
+        OverflowHeaderText = string.Empty;
+        OverflowValueText = string.Empty;
 
         // Reserved from the outset rather than on the first snapshot, because the flyout
         // can be opened before any snapshot has been delivered and that is exactly the
@@ -107,6 +115,14 @@ public sealed partial class FlyoutViewModel : ObservableObject
     [ObservableProperty]
     public partial string SourceText { get; set; }
 
+    /// <summary>True while the source line is what explains the reading.</summary>
+    /// <remarks>
+    /// False whenever a notice is shown, because the notice explains the same thing at
+    /// greater length and directly underneath.
+    /// </remarks>
+    [ObservableProperty]
+    public partial bool HasSourceLine { get; set; }
+
     /// <summary>Battery charge as a percentage, when there is a battery.</summary>
     [ObservableProperty]
     public partial string BatteryText { get; set; }
@@ -122,6 +138,81 @@ public sealed partial class FlyoutViewModel : ObservableObject
     /// <summary>True when at least one rail was metered.</summary>
     [ObservableProperty]
     public partial bool HasRails { get; set; }
+
+    /// <summary>
+    /// What the stacked breakdown bar adds up to, formatted.
+    /// </summary>
+    /// <remarks>
+    /// Stated next to the bar because a stacked bar looks like a whole whatever it is
+    /// drawn from, and on a machine where the rails do not account for the system reading
+    /// this total is the rails alone.
+    /// </remarks>
+    [ObservableProperty]
+    public partial string RailTotalText { get; set; }
+
+    /// <summary>A sentence saying what the breakdown covers.</summary>
+    [ObservableProperty]
+    public partial string RailCaptionText { get; set; }
+
+    /// <summary>Processor rails as a fraction of the breakdown total, from 0 to 1.</summary>
+    /// <remarks>
+    /// The four fractions below are the widths of the stacked bar's columns. They are
+    /// separate properties rather than a collection because a stacked bar needs star
+    /// sizing, and an items panel has no way to give one item four tenths of the width.
+    /// The set of rails is fixed and small, so four columns in markup costs less than a
+    /// custom panel would.
+    /// </remarks>
+    [ObservableProperty]
+    public partial double CpuFraction { get; set; }
+
+    /// <summary>Graphics rail as a fraction of the breakdown total.</summary>
+    [ObservableProperty]
+    public partial double GpuFraction { get; set; }
+
+    /// <summary>Neural engine rail as a fraction of the breakdown total.</summary>
+    [ObservableProperty]
+    public partial double NpuFraction { get; set; }
+
+    /// <summary>Whatever the rails did not account for, as a fraction of the total.</summary>
+    [ObservableProperty]
+    public partial double RemainderFraction { get; set; }
+
+    /// <summary>
+    /// What the external supply is delivering, or nothing when it is not metered.
+    /// </summary>
+    /// <remarks>
+    /// Kept out of the breakdown bar deliberately. It is what comes in from the charger,
+    /// which while charging is larger than what the machine consumes, because the
+    /// difference is going into the battery. Putting it in a bar of consumers would count
+    /// every watt in it twice.
+    /// </remarks>
+    [ObservableProperty]
+    public partial string SupplyText { get; set; }
+
+    /// <summary>True when the supply rail is metered.</summary>
+    [ObservableProperty]
+    public partial bool HasSupply { get; set; }
+
+    /// <summary>Headline of the status message about the measurement, when there is one.</summary>
+    [ObservableProperty]
+    public partial string NoticeTitle { get; set; }
+
+    /// <summary>The explanation behind <see cref="NoticeTitle"/>.</summary>
+    [ObservableProperty]
+    public partial string NoticeMessage { get; set; }
+
+    /// <summary>How much attention the status message deserves.</summary>
+    [ObservableProperty]
+    public partial MeasurementNoticeSeverity NoticeSeverity { get; set; }
+
+    /// <summary>True when the flyout owes the user a status message about its numbers.</summary>
+    /// <remarks>
+    /// Only ever true when something is genuinely limiting the measurement. Metered
+    /// hardware is the case the app is built for, and a bar that says everything is
+    /// normal teaches the user to ignore the one place a real caveat appears.
+    /// </remarks>
+    [ObservableProperty]
+    public partial bool HasNotice { get; set; }
 
     /// <summary>True once an attribution window has produced rows.</summary>
     [ObservableProperty]
@@ -171,6 +262,34 @@ public sealed partial class FlyoutViewModel : ObservableObject
 
     /// <summary>Top energy users, with the platform row last.</summary>
     public ObservableCollection<EnergyRowViewModel> EnergyRows { get; } = [];
+
+    /// <summary>
+    /// The apps ranked below the visible list, shown only when the user asks for them.
+    /// </summary>
+    /// <remarks>
+    /// The flyout is a glance surface, and the question it answers in one look is "what is
+    /// using my battery". The tail answers a different question, "is this particular thing
+    /// running", which is worth answering but not worth the height, so it goes behind a
+    /// disclosure that opens in place.
+    /// </remarks>
+    public ObservableCollection<EnergyRowViewModel> OverflowRows { get; } = [];
+
+    /// <summary>True when there are further apps to disclose.</summary>
+    [ObservableProperty]
+    public partial bool HasOverflowRows { get; set; }
+
+    /// <summary>How the disclosure describes what is inside it.</summary>
+    /// <remarks>
+    /// It counts the rows it holds and claims nothing beyond them. The macOS version can
+    /// say "+169 more apps" because it has the whole tail in memory; here the tail is
+    /// fetched with a limit, so a total would be a number nobody counted.
+    /// </remarks>
+    [ObservableProperty]
+    public partial string OverflowHeaderText { get; set; }
+
+    /// <summary>What those apps drew between them, in the unit the period uses.</summary>
+    [ObservableProperty]
+    public partial string OverflowValueText { get; set; }
 
     /// <summary>
     /// Recent energy history, or null when nothing has been recorded yet.
@@ -290,10 +409,11 @@ public sealed partial class FlyoutViewModel : ObservableObject
         WattsText = PowerFormatter.Watts(sample?.SystemWatts);
         SourceText = sample is null
             ? "Waiting for a reading"
-            : SentenceCase(DiagnosticsReport.TierName(sample.Tier));
+            : MeasurementSource.Label(sample.Tier, sample.OnAc);
 
         UpdateBattery(sample, snapshot.Remaining);
         UpdateRails(sample);
+        UpdateNotice(sample);
 
         if (IsLiveRange)
         {
@@ -337,24 +457,79 @@ public sealed partial class FlyoutViewModel : ObservableObject
 
     private void UpdateRails(PowerSample? sample)
     {
-        // Only rails the hardware actually metered are listed. A machine with no GPU
-        // rail should show three entries, not a fourth reading zero watts.
-        var present = new List<(PowerRail Rail, string Name, string Value)>();
+        // The split itself is decided in Core, where it is covered by tests: which rails
+        // count as consumers, what to do when they add up to more than the system reading,
+        // and how small a remainder has to be before stating it would be noise.
+        var breakdown = RailBreakdownBuilder.Build(sample);
 
-        foreach (var (rail, label) in RailLabels)
+        SyncRows(Rails, breakdown.Segments.Count, () => new RailRowViewModel(), (row, index) =>
         {
-            if (sample?.WattsFor(rail) is not { } watts) continue;
-            present.Add((rail, label, PowerFormatter.Watts(watts)));
-        }
+            var segment = breakdown.Segments[index];
 
-        SyncRows(Rails, present.Count, () => new RailRowViewModel(), (row, index) =>
-        {
-            row.Rail = present[index].Rail;
-            row.Name = present[index].Name;
-            row.WattsText = present[index].Value;
+            row.Rail = segment.Rail;
+            row.Label = segment.Label;
+            row.WattsText = PowerFormatter.Watts(segment.Watts);
         });
 
-        HasRails = present.Count > 0;
+        // Each column of the bar is set from the segment that is there, and zeroed when
+        // that rail was not metered. A rail the hardware does not report is absent, not
+        // zero watts, and the legend above says which is which; the fraction is only the
+        // width of a column that will not be drawn at all.
+        CpuFraction = FractionOf(breakdown, PowerRail.Cpu);
+        GpuFraction = FractionOf(breakdown, PowerRail.Gpu);
+        NpuFraction = FractionOf(breakdown, PowerRail.Npu);
+        RemainderFraction = FractionOf(breakdown, PowerRail.System);
+
+        RailTotalText = breakdown.IsEmpty ? string.Empty : PowerFormatter.Watts(breakdown.TotalWatts);
+        RailCaptionText = breakdown.Caption();
+
+        HasSupply = breakdown.SupplyWatts is not null;
+        SupplyText = breakdown.SupplyWatts is { } supply
+            ? $"Charger is delivering {PowerFormatter.Watts(supply)}"
+            : string.Empty;
+
+        HasRails = !breakdown.IsEmpty;
+    }
+
+    /// <summary>Width of one column of the stacked bar, or zero when that rail is absent.</summary>
+    private static double FractionOf(RailBreakdown breakdown, PowerRail rail)
+    {
+        foreach (var segment in breakdown.Segments)
+        {
+            if (segment.Rail == rail) return segment.Fraction;
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Decides whether the flyout owes the user a status message about where its numbers
+    /// came from.
+    /// </summary>
+    /// <remarks>
+    /// The measurement tier is the reason this port exists: on hardware with an energy
+    /// meter the wattage is measured while plugged in, which is precisely what the macOS
+    /// version cannot do. Where that is not available the difference is a caveat, and a
+    /// caveat about the headline number belongs next to it rather than in a diagnostics
+    /// report nobody opens.
+    /// </remarks>
+    private void UpdateNotice(PowerSample? sample)
+    {
+        // No sample at all is the opening state rather than a broken machine, and the
+        // readout already says it is waiting for a reading.
+        var notice = sample is null
+            ? MeasurementNotice.None
+            : MeasurementNotice.For(sample.Tier, sample.OnAc);
+
+        NoticeTitle = notice.Title;
+        NoticeMessage = notice.Message;
+        NoticeSeverity = notice.Severity;
+        HasNotice = notice.IsPresent;
+
+        // The source line and the notice say the same thing from opposite ends: one
+        // states what was measured, the other what was not. Showing both would print the
+        // caveat twice under a single number.
+        HasSourceLine = !notice.IsPresent;
     }
 
     /// <summary>
@@ -383,6 +558,7 @@ public sealed partial class FlyoutViewModel : ObservableObject
         if (ranking.IsEmpty)
         {
             ReservePlaceholderRows();
+            ClearOverflow();
             HasEnergyRows = false;
             EnergyWindowText = EmptyCaptionFor(range);
             EnergyCoverageText = ranking.CoverageCaption();
@@ -392,24 +568,23 @@ public sealed partial class FlyoutViewModel : ObservableObject
 
         SyncRows(EnergyRows, ranking.Rows.Count, () => new EnergyRowViewModel(), (row, index) =>
         {
-            var source = ranking.Rows[index];
-
-            row.AppId = source.AppId;
-            row.DisplayName = source.DisplayName;
-            row.ValueText = isLive
-                ? PowerFormatter.Watts(source.Watts)
-                : PowerFormatter.Energy(source.WattHours);
-            row.CostText = isLive
-                ? MoneyFormatter.Format(
-                    CostCalculator.AnnualCostOfSustainedWatts(source.Watts, rate), rate.Currency) + " a year"
-                : MoneyFormatter.Format(CostCalculator.CostOf(source.WattHours, rate), rate.Currency);
-            row.IsPlatform = source.IsPlatform;
-            row.IsPlaceholder = false;
-            row.IsFirstRow = index == 0;
-            row.BarFraction = source.BarFraction;
-
-            UpdateIcon(row, source.AppId, source.IsPlatform, source.ProcessIds);
+            ApplyRow(row, ranking.Rows[index], isLive, rate, isFirstRow: index == 0);
         });
+
+        SyncRows(OverflowRows, ranking.OverflowRows.Count, () => new EnergyRowViewModel(), (row, index) =>
+        {
+            // The disclosed rows are their own grouped list, so the first of them is the
+            // one drawn without a divider above it.
+            ApplyRow(row, ranking.OverflowRows[index], isLive, rate, isFirstRow: index == 0);
+        });
+
+        HasOverflowRows = ranking.HasOverflow;
+        OverflowHeaderText = ranking.OverflowRows.Count == 1
+            ? "1 more app"
+            : $"{ranking.OverflowRows.Count} more apps";
+        OverflowValueText = isLive
+            ? PowerFormatter.Watts(ranking.OverflowWatts)
+            : PowerFormatter.Energy(ranking.OverflowWattHours);
 
         HasEnergyRows = true;
         EnergyWindowText = isLive
@@ -421,17 +596,48 @@ public sealed partial class FlyoutViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Capitalises the first letter of a phrase for use as a standalone caption.
+    /// Fills one list row from one ranking row.
     /// </summary>
     /// <remarks>
-    /// The tier names come from <see cref="DiagnosticsReport"/>, where they are written
-    /// lower case because they appear mid line after a "Source:" label. Under the hero
-    /// reading the same phrase is a sentence of its own, and Windows writes those in
-    /// sentence case. Fixing it here rather than in the report keeps the diagnostics text
-    /// reading as prose, which is what a support log wants.
+    /// Shared by the visible list and the disclosure so the two are filled by identical
+    /// rules. A disclosed row that formatted its figures differently would look like a
+    /// different measurement rather than the continuation of one ranking.
     /// </remarks>
-    private static string SentenceCase(string text)
-        => text.Length == 0 ? text : char.ToUpperInvariant(text[0]) + text[1..];
+    private void ApplyRow(
+        EnergyRowViewModel row,
+        EnergyRankingRow source,
+        bool isLive,
+        ElectricityRate rate,
+        bool isFirstRow)
+    {
+        row.AppId = source.AppId;
+        row.DisplayName = source.DisplayName;
+        row.ValueText = isLive
+            ? PowerFormatter.Watts(source.Watts)
+            : PowerFormatter.Energy(source.WattHours);
+        row.CostText = isLive
+            ? MoneyFormatter.Format(
+                CostCalculator.AnnualCostOfSustainedWatts(source.Watts, rate), rate.Currency) + " a year"
+            : MoneyFormatter.Format(CostCalculator.CostOf(source.WattHours, rate), rate.Currency);
+        row.IsPlatform = source.IsPlatform;
+        row.IsPlaceholder = false;
+        row.IsFirstRow = isFirstRow;
+        row.BarFraction = source.BarFraction;
+
+        UpdateIcon(row, source.AppId, source.IsPlatform, source.ProcessIds);
+    }
+
+    /// <summary>
+    /// Empties the disclosure, so a period with nothing behind it does not offer to show
+    /// the previous period's tail.
+    /// </summary>
+    private void ClearOverflow()
+    {
+        OverflowRows.Clear();
+        HasOverflowRows = false;
+        OverflowHeaderText = string.Empty;
+        OverflowValueText = string.Empty;
+    }
 
     /// <summary>How a populated stored period introduces itself.</summary>
     private static string CaptionFor(EnergyRange range) => range switch    {
@@ -525,12 +731,4 @@ public sealed partial class FlyoutViewModel : ObservableObject
 
         for (var i = 0; i < count; i++) apply(rows[i], i);
     }
-
-    private static readonly (PowerRail Rail, string Label)[] RailLabels =
-    [
-        (PowerRail.Cpu, "CPU"),
-        (PowerRail.Gpu, "GPU"),
-        (PowerRail.Npu, "NPU"),
-        (PowerRail.Supply, "Supply"),
-    ];
 }

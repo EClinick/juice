@@ -78,6 +78,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <!--
@@ -95,10 +96,12 @@
             place: the markup below asks for "the fill that means measured data" and this
             dictionary decides what that is in each scheme.
 
-            The four rail colours deliberately collapse onto a single high contrast
+            The three rail colours deliberately collapse onto a single high contrast
             colour. High contrast offers no palette to distinguish them with, and the
-            strips are decoration beside a text label that already names the rail, so
-            losing the distinction costs nothing that was load-bearing.
+            segments are decoration beside a legend that already names each rail, so
+            losing the distinction costs nothing that was load-bearing. The stacked bar
+            keeps a gap between its segments for the same reason: it is the separation
+            that survives when the colours do not.
         -->
         <Grid.Resources>
             <ResourceDictionary>
@@ -113,7 +116,6 @@
                         <StaticResource x:Key="JuiceRailCpuBrush" ResourceKey="AccentFillColorDefaultBrush" />
                         <StaticResource x:Key="JuiceRailGpuBrush" ResourceKey="SystemFillColorSuccessBrush" />
                         <StaticResource x:Key="JuiceRailNpuBrush" ResourceKey="SystemFillColorCautionBrush" />
-                        <StaticResource x:Key="JuiceRailSupplyBrush" ResourceKey="TextFillColorTertiaryBrush" />
                         <x:Double x:Key="JuiceChargingBandOpacity">0.1</x:Double>
                     </ResourceDictionary>
 
@@ -127,7 +129,6 @@
                         <StaticResource x:Key="JuiceRailCpuBrush" ResourceKey="AccentFillColorDefaultBrush" />
                         <StaticResource x:Key="JuiceRailGpuBrush" ResourceKey="SystemFillColorSuccessBrush" />
                         <StaticResource x:Key="JuiceRailNpuBrush" ResourceKey="SystemFillColorCautionBrush" />
-                        <StaticResource x:Key="JuiceRailSupplyBrush" ResourceKey="TextFillColorTertiaryBrush" />
                         <x:Double x:Key="JuiceChargingBandOpacity">0.1</x:Double>
                     </ResourceDictionary>
 
@@ -141,10 +142,204 @@
                         <StaticResource x:Key="JuiceRailCpuBrush" ResourceKey="SystemColorHighlightColorBrush" />
                         <StaticResource x:Key="JuiceRailGpuBrush" ResourceKey="SystemColorHighlightColorBrush" />
                         <StaticResource x:Key="JuiceRailNpuBrush" ResourceKey="SystemColorHighlightColorBrush" />
-                        <StaticResource x:Key="JuiceRailSupplyBrush" ResourceKey="SystemColorHighlightColorBrush" />
                         <x:Double x:Key="JuiceChargingBandOpacity">0</x:Double>
                     </ResourceDictionary>
                 </ResourceDictionary.ThemeDictionaries>
+
+                <!--
+                    One row of an energy list, shared by the visible ranking and by the
+                    disclosure that holds the apps ranked below it.
+
+                    Shared rather than duplicated because the disclosure is a continuation
+                    of the same ranking, and two templates would eventually disagree about
+                    something the user reads as a difference in the measurement rather than
+                    a difference in the markup.
+                -->
+                <DataTemplate x:Key="EnergyRowTemplate" x:DataType="vm:EnergyRowViewModel">
+                    <!--
+                        MinHeight pins the row to the height of a populated row,
+                        which is a name over its share bar on one side and a
+                        figure over its cost on the other. It is what keeps a
+                        placeholder row and a real row exactly the same height, so
+                        the list does not resize the window when the first
+                        measurement lands.
+                    -->
+                    <Grid
+                        MinHeight="52"
+                        AutomationProperties.Name="{x:Bind local:FlyoutWindow.RowAnnouncement(IsPlaceholder, DisplayName, ValueText, CostText), Mode=OneWay}">
+                        <!--
+                            Hairline between rows, suppressed on the first so it
+                            does not sit on the container's own top edge. This is
+                            the grouped list Settings draws everywhere, and it is
+                            what makes six rows read as one object rather than six.
+                        -->
+                        <Border
+                            Height="1"
+                            VerticalAlignment="Top"
+                            Background="{ThemeResource DividerStrokeColorDefaultBrush}"
+                            Visibility="{x:Bind local:FlyoutWindow.ToVisibilityInverse(IsFirstRow), Mode=OneWay}" />
+
+                        <Grid Padding="12,8" ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="16" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <!--
+                                The app's own icon, per CONTRIBUTING.md. The column
+                                is a fixed width rather than Auto so the names stay
+                                aligned whether or not an icon could be extracted,
+                                and sixteen rather than the twenty Settings uses
+                                because AppIconService extracts at thirty two, so
+                                sixteen is the largest size that stays sharp at
+                                200%.
+                            -->
+                            <Image
+                                Grid.Column="0"
+                                Width="16"
+                                Height="16"
+                                VerticalAlignment="Center"
+                                Source="{x:Bind Icon, Mode=OneWay}"
+                                Visibility="{x:Bind local:FlyoutWindow.ToVisibilityIfPresent(Icon), Mode=OneWay}" />
+
+                            <FontIcon
+                                Grid.Column="0"
+                                VerticalAlignment="Center"
+                                FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                FontSize="16"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                Glyph="&#xE7F4;"
+                                Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsPlatform), Mode=OneWay}" />
+
+                            <!--
+                                Name over its share bar, figure over its cost. The
+                                arrangement is lifted from the storage breakdown in
+                                Windows 11 Settings, which is the closest thing the
+                                system ships to this list: a label with a
+                                proportional bar beneath it on the left, and the
+                                quantity with its qualifier on the right.
+
+                                An earlier revision drew the bar as a tinted fill
+                                behind the whole row. It was rejected on sight in
+                                the flyout, because at a fraction of one the fill
+                                covers the row edge to edge and reads as a
+                                selection highlight, and at a small fraction it
+                                reads as a stray block sitting behind the icon.
+                                A bar that is unmistakably a bar cannot be misread
+                                as either.
+                            -->
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="6">
+                                <TextBlock
+                                    Text="{x:Bind DisplayName, Mode=OneWay}"
+                                    TextTrimming="CharacterEllipsis" />
+
+                                <!--
+                                    Four pixels tall with a two pixel radius, the
+                                    same proportions as the ProgressBar track, so
+                                    it reads as part of the system's vocabulary
+                                    rather than as a bespoke graphic. It is hidden
+                                    outright on a placeholder row: an empty track
+                                    would be a claim that the share is zero.
+
+                                    The two fills are separate Borders toggled by
+                                    IsPlatform rather than one Border taking a
+                                    brush from the row, for the same reason as the
+                                    rail strips above. A brush chosen in a view
+                                    model is the instance from the theme dictionary
+                                    that was active when the row was built, and a
+                                    binding inside a DataTemplate is not reachable
+                                    from Bindings.Update(), so it would keep the
+                                    old theme's colour after a light or dark
+                                    switch. Only the theme independent values, the
+                                    GridLengths and the Visibilities, come from
+                                    function bindings here.
+                                -->
+                                <Grid
+                                    Height="4"
+                                    Visibility="{x:Bind local:FlyoutWindow.ToVisibilityInverse(IsPlaceholder), Mode=OneWay}">
+                                    <Border
+                                        Background="{ThemeResource JuiceDataTrackBrush}"
+                                        CornerRadius="2" />
+
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="{x:Bind local:FlyoutWindow.BarLength(BarFraction), Mode=OneWay}" />
+                                            <ColumnDefinition Width="{x:Bind local:FlyoutWindow.BarRemainderLength(BarFraction), Mode=OneWay}" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <Border
+                                            Grid.Column="0"
+                                            Background="{ThemeResource JuiceDataFillBrush}"
+                                            CornerRadius="2"
+                                            Visibility="{x:Bind local:FlyoutWindow.ToVisibilityInverse(IsPlatform), Mode=OneWay}" />
+
+                                        <Border
+                                            Grid.Column="0"
+                                            Background="{ThemeResource JuicePlatformFillBrush}"
+                                            CornerRadius="2"
+                                            Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsPlatform), Mode=OneWay}" />
+                                    </Grid>
+                                </Grid>
+                            </StackPanel>
+
+                            <StackPanel
+                                Grid.Column="2"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Center">
+                                <TextBlock
+                                    HorizontalAlignment="Right"
+                                    Style="{StaticResource BodyStrongTextBlockStyle}"
+                                    Text="{x:Bind ValueText, Mode=OneWay}" />
+                                <TextBlock
+                                    HorizontalAlignment="Right"
+                                    Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                    Style="{StaticResource CaptionTextBlockStyle}"
+                                    Text="{x:Bind CostText, Mode=OneWay}" />
+                            </StackPanel>
+
+                            <!--
+                                Placeholder blocks, shown only until the first
+                                attribution window closes. They are blank on
+                                purpose: a zero or a dash in these positions would
+                                read as a measurement, and there is not one yet.
+                                They occupy the same three columns as the real
+                                content so nothing shifts sideways when the row
+                                fills in.
+                            -->
+                            <Border
+                                Grid.Column="0"
+                                Width="16"
+                                Height="16"
+                                VerticalAlignment="Center"
+                                Background="{ThemeResource TextFillColorTertiaryBrush}"
+                                CornerRadius="{StaticResource ControlCornerRadius}"
+                                Opacity="0.15"
+                                Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsPlaceholder), Mode=OneWay}" />
+
+                            <Border
+                                Grid.Column="1"
+                                Width="112"
+                                Height="8"
+                                HorizontalAlignment="Left"
+                                VerticalAlignment="Center"
+                                Background="{ThemeResource TextFillColorTertiaryBrush}"
+                                CornerRadius="{StaticResource ControlCornerRadius}"
+                                Opacity="0.15"
+                                Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsPlaceholder), Mode=OneWay}" />
+
+                            <Border
+                                Grid.Column="2"
+                                Width="40"
+                                Height="8"
+                                VerticalAlignment="Center"
+                                Background="{ThemeResource TextFillColorTertiaryBrush}"
+                                CornerRadius="{StaticResource ControlCornerRadius}"
+                                Opacity="0.15"
+                                Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsPlaceholder), Mode=OneWay}" />
+                        </Grid>
+                    </Grid>
+                </DataTemplate>
             </ResourceDictionary>
         </Grid.Resources>
 
@@ -259,10 +454,20 @@
                     Visibility="{x:Bind local:FlyoutWindow.WhenSeverity(ViewModel.Severity, 'Unknown'), Mode=OneWay}" />
             </Grid>
 
+            <!--
+                What the number above was measured from, in words.
+
+                Shown only when there is no notice below, because a notice explains the
+                same thing at greater length and immediately underneath. Two statements
+                about one measurement would read as two different caveats.
+            -->
             <TextBlock
+                AutomationProperties.AutomationId="FlyoutSourceLine"
                 Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                 Style="{StaticResource CaptionTextBlockStyle}"
-                Text="{x:Bind ViewModel.SourceText, Mode=OneWay}" />
+                Text="{x:Bind ViewModel.SourceText, Mode=OneWay}"
+                TextWrapping="Wrap"
+                Visibility="{x:Bind local:FlyoutWindow.ToVisibility(ViewModel.HasSourceLine), Mode=OneWay}" />
 
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <!-- Same declarative colour selection, keyed to how low the battery is. -->
@@ -298,80 +503,241 @@
         </StackPanel>
 
         <!--
+            Status of the measurement itself.
+
+            An InfoBar rather than another caption, because this is the one place on the
+            panel where something is genuinely wrong with the number above it: the machine
+            has no meter, or it has one that cannot see past the charger. That is what the
+            control is for, and it arrives with the severity icon, the wrapping and the
+            live region announcement already correct.
+
+            It is absent whenever the hardware is metering properly, which on the machines
+            this port targets is the normal case. A bar that says everything is fine
+            teaches the user to stop reading it.
+        -->
+        <InfoBar
+            Grid.Row="2"
+            AutomationProperties.AutomationId="FlyoutMeasurementNotice"
+            IsClosable="False"
+            IsOpen="{x:Bind ViewModel.HasNotice, Mode=OneWay}"
+            Message="{x:Bind ViewModel.NoticeMessage, Mode=OneWay}"
+            Severity="{x:Bind local:FlyoutWindow.ToInfoBarSeverity(ViewModel.NoticeSeverity), Mode=OneWay}"
+            Title="{x:Bind ViewModel.NoticeTitle, Mode=OneWay}"
+            Visibility="{x:Bind local:FlyoutWindow.ToVisibility(ViewModel.HasNotice), Mode=OneWay}" />
+
+        <!--
             Per-rail breakdown.
 
             The one thing this port can do that the macOS original cannot: the hardware
             meters the rails separately, so the split between the processor clusters, the
-            graphics and the neural engine is measured rather than apportioned.
+            graphics and the neural engine is measured rather than apportioned. It is
+            given a heading and the width of the panel for that reason, rather than the
+            row of small cards it used to be.
+
+            Drawn as the stacked usage bar with a legend beneath it that Windows 11
+            Settings uses for storage. That idiom already means "this whole thing, split
+            into the parts it is made of" to anyone who has opened Settings, which is
+            exactly the claim being made, and it puts the four figures in a column where
+            they can be compared instead of side by side where they cannot.
         -->
-        <ItemsControl
-            Grid.Row="2"
-            AutomationProperties.AutomationId="FlyoutRails"
-            AutomationProperties.Name="Metered power rails"
-            ItemsSource="{x:Bind ViewModel.Rails, Mode=OneWay}"
+        <StackPanel
+            Grid.Row="3"
+            Spacing="8"
             Visibility="{x:Bind local:FlyoutWindow.ToVisibility(ViewModel.HasRails), Mode=OneWay}">
-            <ItemsControl.ItemsPanel>
-                <ItemsPanelTemplate>
-                    <StackPanel Orientation="Horizontal" Spacing="8" />
-                </ItemsPanelTemplate>
-            </ItemsControl.ItemsPanel>
-            <ItemsControl.ItemTemplate>
-                <DataTemplate x:DataType="vm:RailRowViewModel">
-                    <Border
-                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                        BorderThickness="1"
-                        CornerRadius="{StaticResource ControlCornerRadius}">
-                        <Grid>
+            <Grid ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock
+                    Grid.Column="0"
+                    Style="{StaticResource BodyStrongTextBlockStyle}"
+                    Text="Where the power is going" />
+
+                <!--
+                    What the bar adds up to, stated rather than left to be inferred from
+                    its width. A stacked bar looks like a whole whatever it was drawn
+                    from, and on a machine whose rails do not account for the system
+                    reading this total is the rails alone.
+                -->
+                <TextBlock
+                    Grid.Column="1"
+                    AutomationProperties.AutomationId="FlyoutRailTotal"
+                    Style="{StaticResource BodyStrongTextBlockStyle}"
+                    Text="{x:Bind ViewModel.RailTotalText, Mode=OneWay}" />
+            </Grid>
+
+            <!--
+                The stacked bar.
+
+                Fixed columns rather than an items panel, because a stacked bar needs star
+                widths and an items panel has no way to give one item four tenths of the
+                width. The set of rails is fixed and small, so four columns of markup cost
+                less than a custom panel would, and each segment can then take its brush
+                declaratively with ThemeResource, which is what makes the bar follow a
+                light or dark switch and survive high contrast.
+
+                The trailing column is what the segments did not fill. It is only ever a
+                sliver, produced when a remainder too small to print is dropped, but
+                without it star sizing would quietly scale the remaining segments up to
+                fill the bar and every width on it would be slightly overstated.
+
+                Two pixel gaps between segments. High contrast collapses the three rail
+                colours onto one, and the gap is what keeps the segments distinguishable
+                when the colour cannot.
+            -->
+            <Grid
+                Height="8"
+                AutomationProperties.AutomationId="FlyoutRailBar"
+                AutomationProperties.Name="{x:Bind local:FlyoutWindow.RailBarAnnouncement(ViewModel.RailTotalText, ViewModel.RailCaptionText), Mode=OneWay}"
+                ColumnSpacing="2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="{x:Bind local:FlyoutWindow.BarLength(ViewModel.CpuFraction), Mode=OneWay}" />
+                    <ColumnDefinition Width="{x:Bind local:FlyoutWindow.BarLength(ViewModel.GpuFraction), Mode=OneWay}" />
+                    <ColumnDefinition Width="{x:Bind local:FlyoutWindow.BarLength(ViewModel.NpuFraction), Mode=OneWay}" />
+                    <ColumnDefinition Width="{x:Bind local:FlyoutWindow.BarLength(ViewModel.RemainderFraction), Mode=OneWay}" />
+                    <ColumnDefinition Width="{x:Bind local:FlyoutWindow.BarTrackLength(ViewModel.CpuFraction, ViewModel.GpuFraction, ViewModel.NpuFraction, ViewModel.RemainderFraction), Mode=OneWay}" />
+                </Grid.ColumnDefinitions>
+
+                <Border
+                    Grid.Column="0"
+                    Background="{ThemeResource JuiceRailCpuBrush}"
+                    CornerRadius="4" />
+                <Border
+                    Grid.Column="1"
+                    Background="{ThemeResource JuiceRailGpuBrush}"
+                    CornerRadius="4" />
+                <Border
+                    Grid.Column="2"
+                    Background="{ThemeResource JuiceRailNpuBrush}"
+                    CornerRadius="4" />
+
+                <!--
+                    The remainder takes the same key the app ranking gives the energy no
+                    process owns, because it is the same quantity measured the same way.
+                -->
+                <Border
+                    Grid.Column="3"
+                    Background="{ThemeResource JuicePlatformFillBrush}"
+                    CornerRadius="4" />
+            </Grid>
+
+            <!--
+                Legend.
+
+                One row per metered rail, each with the colour key from the bar, the name
+                of the rail and what it drew. The name is what carries the identification;
+                the key is a convenience that high contrast is allowed to take away.
+            -->
+            <ItemsControl
+                AutomationProperties.AutomationId="FlyoutRails"
+                AutomationProperties.Name="Metered power rails"
+                ItemsSource="{x:Bind ViewModel.Rails, Mode=OneWay}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <StackPanel Spacing="4" />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:RailRowViewModel">
+                        <Grid
+                            ColumnSpacing="8"
+                            AutomationProperties.Name="{x:Bind local:FlyoutWindow.RailAnnouncement(Label, WattsText), Mode=OneWay}">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="4" />
+                                <ColumnDefinition Width="8" />
+                                <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
 
                             <!--
-                                One strip per rail, with only the matching one shown.
+                                One key per rail, with only the matching one shown.
 
                                 Do not replace these with a single Border bound to a brush
                                 property on the row. A Brush handed over by a view model is
                                 the instance from whichever theme dictionary was active
                                 when the row was built, and bindings inside a DataTemplate
                                 are not reachable from the window's Bindings.Update(), so
-                                on a light or dark switch the strip would keep painting the
+                                on a light or dark switch the key would keep painting the
                                 old theme's colour. Selecting the brush declaratively with
                                 ThemeResource is what makes it follow the system theme,
                                 including high contrast.
                             -->
                             <Border
                                 Grid.Column="0"
+                                Width="8"
+                                Height="8"
+                                VerticalAlignment="Center"
                                 Background="{ThemeResource JuiceRailCpuBrush}"
+                                CornerRadius="4"
                                 Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsCpu), Mode=OneWay}" />
                             <Border
                                 Grid.Column="0"
+                                Width="8"
+                                Height="8"
+                                VerticalAlignment="Center"
                                 Background="{ThemeResource JuiceRailGpuBrush}"
+                                CornerRadius="4"
                                 Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsGpu), Mode=OneWay}" />
                             <Border
                                 Grid.Column="0"
+                                Width="8"
+                                Height="8"
+                                VerticalAlignment="Center"
                                 Background="{ThemeResource JuiceRailNpuBrush}"
+                                CornerRadius="4"
                                 Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsNpu), Mode=OneWay}" />
                             <Border
                                 Grid.Column="0"
-                                Background="{ThemeResource JuiceRailSupplyBrush}"
-                                Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsSupply), Mode=OneWay}" />
+                                Width="8"
+                                Height="8"
+                                VerticalAlignment="Center"
+                                Background="{ThemeResource JuicePlatformFillBrush}"
+                                CornerRadius="4"
+                                Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsRemainder), Mode=OneWay}" />
 
-                            <StackPanel Grid.Column="1" Margin="12,8">
-                                <TextBlock
-                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                    Style="{StaticResource CaptionTextBlockStyle}"
-                                    Text="{x:Bind Name, Mode=OneWay}" />
-                                <TextBlock
-                                    Style="{StaticResource BodyStrongTextBlockStyle}"
-                                    Text="{x:Bind WattsText, Mode=OneWay}" />
-                            </StackPanel>
+                            <TextBlock
+                                Grid.Column="1"
+                                AutomationProperties.AccessibilityView="Raw"
+                                Style="{StaticResource CaptionTextBlockStyle}"
+                                Text="{x:Bind Label, Mode=OneWay}"
+                                TextTrimming="CharacterEllipsis"
+                                VerticalAlignment="Center" />
+
+                            <TextBlock
+                                Grid.Column="2"
+                                AutomationProperties.AccessibilityView="Raw"
+                                Style="{StaticResource CaptionTextBlockStyle}"
+                                Text="{x:Bind WattsText, Mode=OneWay}"
+                                VerticalAlignment="Center" />
                         </Grid>
-                    </Border>
-                </DataTemplate>
-            </ItemsControl.ItemTemplate>
-        </ItemsControl>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <!--
+                What the charger is delivering, when anything meters it.
+
+                Deliberately a line of its own rather than a segment of the bar above. It
+                is what comes in from the wall, which while the battery is filling is
+                larger than what the machine consumes, so adding it to a bar of consumers
+                would count every watt in it twice.
+            -->
+            <TextBlock
+                AutomationProperties.AutomationId="FlyoutSupply"
+                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                Style="{StaticResource CaptionTextBlockStyle}"
+                Text="{x:Bind ViewModel.SupplyText, Mode=OneWay}"
+                TextWrapping="Wrap"
+                Visibility="{x:Bind local:FlyoutWindow.ToVisibility(ViewModel.HasSupply), Mode=OneWay}" />
+
+            <TextBlock
+                AutomationProperties.AutomationId="FlyoutRailCaption"
+                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                Style="{StaticResource CaptionTextBlockStyle}"
+                Text="{x:Bind ViewModel.RailCaptionText, Mode=OneWay}"
+                TextWrapping="Wrap" />
+        </StackPanel>
 
         <!--
             Period switcher.
@@ -392,7 +758,7 @@
         -->
         <SelectorBar
             x:Name="RangeSelector"
-            Grid.Row="3"
+            Grid.Row="4"
             AutomationProperties.AutomationId="FlyoutRangeSelector"
             AutomationProperties.Name="Period covered by the energy list"
             SelectionChanged="OnRangeSelectionChanged">
@@ -428,7 +794,7 @@
             Settings is worth more here than looking original, because someone who has
             read that page already knows how to read this one.
         -->
-        <StackPanel Grid.Row="4" Spacing="4">
+        <StackPanel Grid.Row="5" Spacing="4">
             <TextBlock
                 AutomationProperties.AutomationId="FlyoutEnergyWindow"
                 Foreground="{ThemeResource TextFillColorSecondaryBrush}"
@@ -457,196 +823,59 @@
                 <ItemsControl
                     AutomationProperties.AutomationId="FlyoutEnergyList"
                     AutomationProperties.Name="Top energy users"
-                    ItemsSource="{x:Bind ViewModel.EnergyRows, Mode=OneWay}">
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate x:DataType="vm:EnergyRowViewModel">
-                            <!--
-                                MinHeight pins the row to the height of a populated row,
-                                which is a name over its share bar on one side and a
-                                figure over its cost on the other. It is what keeps a
-                                placeholder row and a real row exactly the same height, so
-                                the list does not resize the window when the first
-                                measurement lands.
-                            -->
-                            <Grid
-                                MinHeight="52"
-                                AutomationProperties.Name="{x:Bind local:FlyoutWindow.RowAnnouncement(IsPlaceholder, DisplayName, ValueText, CostText), Mode=OneWay}">
-                                <!--
-                                    Hairline between rows, suppressed on the first so it
-                                    does not sit on the container's own top edge. This is
-                                    the grouped list Settings draws everywhere, and it is
-                                    what makes six rows read as one object rather than six.
-                                -->
-                                <Border
-                                    Height="1"
-                                    VerticalAlignment="Top"
-                                    Background="{ThemeResource DividerStrokeColorDefaultBrush}"
-                                    Visibility="{x:Bind local:FlyoutWindow.ToVisibilityInverse(IsFirstRow), Mode=OneWay}" />
-
-                                <Grid Padding="12,8" ColumnSpacing="12">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="16" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-
-                                    <!--
-                                        The app's own icon, per CONTRIBUTING.md. The column
-                                        is a fixed width rather than Auto so the names stay
-                                        aligned whether or not an icon could be extracted,
-                                        and sixteen rather than the twenty Settings uses
-                                        because AppIconService extracts at thirty two, so
-                                        sixteen is the largest size that stays sharp at
-                                        200%.
-                                    -->
-                                    <Image
-                                        Grid.Column="0"
-                                        Width="16"
-                                        Height="16"
-                                        VerticalAlignment="Center"
-                                        Source="{x:Bind Icon, Mode=OneWay}"
-                                        Visibility="{x:Bind local:FlyoutWindow.ToVisibilityIfPresent(Icon), Mode=OneWay}" />
-
-                                    <FontIcon
-                                        Grid.Column="0"
-                                        VerticalAlignment="Center"
-                                        FontFamily="{ThemeResource SymbolThemeFontFamily}"
-                                        FontSize="16"
-                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                        Glyph="&#xE7F4;"
-                                        Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsPlatform), Mode=OneWay}" />
-
-                                    <!--
-                                        Name over its share bar, figure over its cost. The
-                                        arrangement is lifted from the storage breakdown in
-                                        Windows 11 Settings, which is the closest thing the
-                                        system ships to this list: a label with a
-                                        proportional bar beneath it on the left, and the
-                                        quantity with its qualifier on the right.
-
-                                        An earlier revision drew the bar as a tinted fill
-                                        behind the whole row. It was rejected on sight in
-                                        the flyout, because at a fraction of one the fill
-                                        covers the row edge to edge and reads as a
-                                        selection highlight, and at a small fraction it
-                                        reads as a stray block sitting behind the icon.
-                                        A bar that is unmistakably a bar cannot be misread
-                                        as either.
-                                    -->
-                                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="6">
-                                        <TextBlock
-                                            Text="{x:Bind DisplayName, Mode=OneWay}"
-                                            TextTrimming="CharacterEllipsis" />
-
-                                        <!--
-                                            Four pixels tall with a two pixel radius, the
-                                            same proportions as the ProgressBar track, so
-                                            it reads as part of the system's vocabulary
-                                            rather than as a bespoke graphic. It is hidden
-                                            outright on a placeholder row: an empty track
-                                            would be a claim that the share is zero.
-
-                                            The two fills are separate Borders toggled by
-                                            IsPlatform rather than one Border taking a
-                                            brush from the row, for the same reason as the
-                                            rail strips above. A brush chosen in a view
-                                            model is the instance from the theme dictionary
-                                            that was active when the row was built, and a
-                                            binding inside a DataTemplate is not reachable
-                                            from Bindings.Update(), so it would keep the
-                                            old theme's colour after a light or dark
-                                            switch. Only the theme independent values, the
-                                            GridLengths and the Visibilities, come from
-                                            function bindings here.
-                                        -->
-                                        <Grid
-                                            Height="4"
-                                            Visibility="{x:Bind local:FlyoutWindow.ToVisibilityInverse(IsPlaceholder), Mode=OneWay}">
-                                            <Border
-                                                Background="{ThemeResource JuiceDataTrackBrush}"
-                                                CornerRadius="2" />
-
-                                            <Grid>
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="{x:Bind local:FlyoutWindow.BarLength(BarFraction), Mode=OneWay}" />
-                                                    <ColumnDefinition Width="{x:Bind local:FlyoutWindow.BarRemainderLength(BarFraction), Mode=OneWay}" />
-                                                </Grid.ColumnDefinitions>
-
-                                                <Border
-                                                    Grid.Column="0"
-                                                    Background="{ThemeResource JuiceDataFillBrush}"
-                                                    CornerRadius="2"
-                                                    Visibility="{x:Bind local:FlyoutWindow.ToVisibilityInverse(IsPlatform), Mode=OneWay}" />
-
-                                                <Border
-                                                    Grid.Column="0"
-                                                    Background="{ThemeResource JuicePlatformFillBrush}"
-                                                    CornerRadius="2"
-                                                    Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsPlatform), Mode=OneWay}" />
-                                            </Grid>
-                                        </Grid>
-                                    </StackPanel>
-
-                                    <StackPanel
-                                        Grid.Column="2"
-                                        HorizontalAlignment="Right"
-                                        VerticalAlignment="Center">
-                                        <TextBlock
-                                            HorizontalAlignment="Right"
-                                            Style="{StaticResource BodyStrongTextBlockStyle}"
-                                            Text="{x:Bind ValueText, Mode=OneWay}" />
-                                        <TextBlock
-                                            HorizontalAlignment="Right"
-                                            Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                                            Style="{StaticResource CaptionTextBlockStyle}"
-                                            Text="{x:Bind CostText, Mode=OneWay}" />
-                                    </StackPanel>
-
-                                    <!--
-                                        Placeholder blocks, shown only until the first
-                                        attribution window closes. They are blank on
-                                        purpose: a zero or a dash in these positions would
-                                        read as a measurement, and there is not one yet.
-                                        They occupy the same three columns as the real
-                                        content so nothing shifts sideways when the row
-                                        fills in.
-                                    -->
-                                    <Border
-                                        Grid.Column="0"
-                                        Width="16"
-                                        Height="16"
-                                        VerticalAlignment="Center"
-                                        Background="{ThemeResource TextFillColorTertiaryBrush}"
-                                        CornerRadius="{StaticResource ControlCornerRadius}"
-                                        Opacity="0.15"
-                                        Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsPlaceholder), Mode=OneWay}" />
-
-                                    <Border
-                                        Grid.Column="1"
-                                        Width="112"
-                                        Height="8"
-                                        HorizontalAlignment="Left"
-                                        VerticalAlignment="Center"
-                                        Background="{ThemeResource TextFillColorTertiaryBrush}"
-                                        CornerRadius="{StaticResource ControlCornerRadius}"
-                                        Opacity="0.15"
-                                        Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsPlaceholder), Mode=OneWay}" />
-
-                                    <Border
-                                        Grid.Column="2"
-                                        Width="40"
-                                        Height="8"
-                                        VerticalAlignment="Center"
-                                        Background="{ThemeResource TextFillColorTertiaryBrush}"
-                                        CornerRadius="{StaticResource ControlCornerRadius}"
-                                        Opacity="0.15"
-                                        Visibility="{x:Bind local:FlyoutWindow.ToVisibility(IsPlaceholder), Mode=OneWay}" />
-                                </Grid>
-                            </Grid>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
+                    ItemTemplate="{StaticResource EnergyRowTemplate}"
+                    ItemsSource="{x:Bind ViewModel.EnergyRows, Mode=OneWay}" />
             </Border>
+
+            <!--
+                The apps ranked below the visible list.
+
+                An Expander, which is the Windows 11 control for exactly this: content that
+                belongs on the surface but not in the first look at it. The macOS version
+                shows a "+169 more apps" row that cannot be opened, because a menu bar
+                panel has nowhere to put the rest. A Windows disclosure is expected to
+                actually open, so this one holds real rows and opens in place, and the
+                window grows to fit them.
+
+                It counts the rows it holds and claims nothing beyond them. The tail is
+                fetched with a limit, so a total would be a number nobody counted.
+            -->
+            <Expander
+                HorizontalAlignment="Stretch"
+                HorizontalContentAlignment="Stretch"
+                Padding="0"
+                AutomationProperties.AutomationId="FlyoutMoreApps"
+                AutomationProperties.Name="{x:Bind local:FlyoutWindow.MoreAppsAnnouncement(ViewModel.OverflowHeaderText, ViewModel.OverflowValueText), Mode=OneWay}"
+                Visibility="{x:Bind local:FlyoutWindow.ToVisibility(ViewModel.HasOverflowRows), Mode=OneWay}">
+                <Expander.Header>
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock
+                            Grid.Column="0"
+                            AutomationProperties.AccessibilityView="Raw"
+                            Text="{x:Bind ViewModel.OverflowHeaderText, Mode=OneWay}"
+                            VerticalAlignment="Center" />
+
+                        <TextBlock
+                            Grid.Column="1"
+                            AutomationProperties.AccessibilityView="Raw"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            Text="{x:Bind ViewModel.OverflowValueText, Mode=OneWay}"
+                            VerticalAlignment="Center" />
+                    </Grid>
+                </Expander.Header>
+
+                <ItemsControl
+                    AutomationProperties.AutomationId="FlyoutMoreAppsList"
+                    AutomationProperties.Name="Further energy users"
+                    ItemTemplate="{StaticResource EnergyRowTemplate}"
+                    ItemsSource="{x:Bind ViewModel.OverflowRows, Mode=OneWay}" />
+            </Expander>
         </StackPanel>
 
         <!--
@@ -663,7 +892,7 @@
             freshly installed machine is most of the first fortnight.
         -->
         <ItemsControl
-            Grid.Row="5"
+            Grid.Row="6"
             AutomationProperties.AutomationId="FlyoutInsights"
             AutomationProperties.Name="Observations"
             ItemsSource="{x:Bind ViewModel.Insights, Mode=OneWay}"
@@ -776,7 +1005,7 @@
             Gaps are rendered as gaps; see EnergyChartBuilder.
         -->
         <StackPanel
-            Grid.Row="6"
+            Grid.Row="7"
             Spacing="4"
             Visibility="{x:Bind local:FlyoutWindow.ToVisibility(ViewModel.HasHistory), Mode=OneWay}">
             <TextBlock
@@ -803,15 +1032,71 @@
                 Text="Battery level, last 24 hours"
                 Visibility="{x:Bind local:FlyoutWindow.ToVisibility(ViewModel.HasCharge), Mode=OneWay}" />
 
-            <controls:ChargeTimelineChart
-                Height="56"
-                AutomationProperties.AutomationId="FlyoutChargeTimeline"
-                ChargingBandBrush="{ThemeResource JuiceDataFillBrush}"
-                ChargingBandOpacity="{ThemeResource JuiceChargingBandOpacity}"
-                GridLineBrush="{ThemeResource JuiceDataGridLineBrush}"
-                LineBrush="{ThemeResource JuiceDataFillBrush}"
-                Timeline="{x:Bind ViewModel.Charge, Mode=OneWay}"
-                Visibility="{x:Bind local:FlyoutWindow.ToVisibility(ViewModel.HasCharge), Mode=OneWay}" />
+            <!--
+                The charge timeline with a percentage scale beside it.
+
+                Labels rather than the macOS version's four key legend. Windows already has
+                an idiom for this exact chart, the battery level graph in Settings, and it
+                carries a scale down the side and no legend at all. A legend would also
+                have had to key the shaded on-power bands, which high contrast turns off
+                for legibility, leaving a key for something not drawn.
+
+                The labels are markup rather than part of the control so they take the
+                type ramp and the theme brushes like everything else on the panel, and so
+                the chart itself stays a plotter of one series.
+            -->
+            <Grid
+                ColumnSpacing="4"
+                Visibility="{x:Bind local:FlyoutWindow.ToVisibility(ViewModel.HasCharge), Mode=OneWay}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <controls:ChargeTimelineChart
+                    Grid.Column="0"
+                    Height="56"
+                    AutomationProperties.AutomationId="FlyoutChargeTimeline"
+                    ChargingBandBrush="{ThemeResource JuiceDataFillBrush}"
+                    ChargingBandOpacity="{ThemeResource JuiceChargingBandOpacity}"
+                    GridLineBrush="{ThemeResource JuiceDataGridLineBrush}"
+                    LineBrush="{ThemeResource JuiceDataFillBrush}"
+                    Timeline="{x:Bind ViewModel.Charge, Mode=OneWay}" />
+
+                <!--
+                    Rows of star, auto, star put the middle label's own centre on the
+                    chart's middle, and the outer two flush with its top and bottom edges.
+                    Two equal rows with the labels pinned to their edges looked correct in
+                    arithmetic and wrong on screen, because a label is sixteen pixels tall
+                    against a fifty six pixel plot, so the lower two ended up twelve pixels
+                    apart and read as one smudge.
+                -->
+                <Grid Grid.Column="1" AutomationProperties.AccessibilityView="Raw">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <TextBlock
+                        Grid.Row="0"
+                        VerticalAlignment="Top"
+                        Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Text="100%" />
+                    <TextBlock
+                        Grid.Row="1"
+                        Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Text="50%" />
+                    <TextBlock
+                        Grid.Row="2"
+                        VerticalAlignment="Bottom"
+                        Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Text="0%" />
+                </Grid>
+            </Grid>
 
             <TextBlock
                 Foreground="{ThemeResource TextFillColorTertiaryBrush}"
@@ -823,7 +1108,7 @@
 
         <!-- Recording status, shown only while there is not yet enough history to chart. -->
         <TextBlock
-            Grid.Row="6"
+            Grid.Row="7"
             Foreground="{ThemeResource TextFillColorTertiaryBrush}"
             Style="{StaticResource CaptionTextBlockStyle}"
             Text="{x:Bind local:FlyoutWindow.HistoryCaption(ViewModel.History), Mode=OneWay}"
@@ -831,7 +1116,7 @@
             Visibility="{x:Bind local:FlyoutWindow.ToVisibilityInverse(ViewModel.HasHistory), Mode=OneWay}" />
 
         <!-- Rate provenance -->
-        <StackPanel Grid.Row="7" Spacing="8">
+        <StackPanel Grid.Row="8" Spacing="8">
             <Border
                 Height="1"
                 Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
