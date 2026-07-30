@@ -233,6 +233,19 @@ Worth setting only `Kind`.
 Setting `TintOpacity` and `LuminosityOpacity` without also setting `TintColor` and `FallbackColor` opts the controller out of its theme-derived colours, and the result was a light panel on a fully dark system.
 That failure is easy to misread as the theme being wrong somewhere, when the real cause is having partially overridden a set of values that are only coherent together.
 
+That subclass comes with an obligation nobody tells you about.
+Calling `GetDefaultSystemBackdropConfiguration` signs you up to answer `OnDefaultSystemBackdropConfigurationChanged`, and if you leave that to the base implementation it fails with `E_INVALIDARG`, which arrives in .NET as an `ArgumentException` thrown across the WinRT boundary with nothing to catch it.
+The process dies.
+The documentation calls the override useful "if you're using a custom SystemBackdropConfiguration", which reads as optional and is not.
+
+The callback fires on a light or dark switch, on a high contrast switch and on an energy saver switch, so the failure only shows up on a machine where somebody actually changes one of those while the app is running.
+Juice carried it for months without noticing, because the flyout read the taskbar theme once at construction and never again.
+The day the flyout started following a live theme switch, every switch killed it.
+
+The override itself has a second trap.
+Passing the `target` it hands you straight back into `GetDefaultSystemBackdropConfiguration` fails with the same `E_INVALIDARG`, naming `target`.
+Keep the target and `XamlRoot` from `OnTargetConnected` and use those instead.
+
 ## ReadyToRun, and how to measure it without fooling yourself
 
 **macOS:** Swift compiles ahead of time by default.
@@ -333,6 +346,28 @@ Following the app theme instead produces a tray icon that is invisible against t
 There is a third switch as well.
 `ColorPrevalence` under `HKCU\Software\Microsoft\Windows\DWM` reports whether the user enabled "Show accent color on Start and taskbar", which determines whether the taskbar is accent-tinted or neutral, and the flyout has to match that too if it is to read as an extension of the taskbar rather than a window parked next to it.
 The accent itself is stored as a DWORD in ABGR order rather than the ARGB most Windows colour APIs use, so the red and blue channels have to be swapped back.
+
+Following the taskbar theme with `RequestedTheme` on the window's root element solves the surfaces and quietly breaks the colours.
+`Application.Current.Resources["AccentFillColorDefaultBrush"]` answers for the *process* theme, which follows `AppsUseLightTheme`.
+On a machine set to light apps and a dark taskbar, a flyout that had correctly gone dark drew its chart bars and its hero number in the light theme's accent, on a dark surface.
+Nothing in the code was obviously wrong, because the brush was fetched by name from a theme dictionary, in a function that was re-run on every `ActualThemeChanged`, and it was still the wrong dictionary every time.
+
+There is no element-scoped equivalent of that lookup.
+`{ThemeResource}` in markup resolves against the element it is set on, and code has no way to ask a `ResourceDictionary` for the entry belonging to a particular theme.
+So any colour that has to follow an element theme has to be chosen in markup, which in practice means one of two shapes:
+
+* Overlay one element per case and toggle visibility, each with its own `{ThemeResource}`. Used for the rail strips, the ranking bar fills and the hero readout.
+* Take the brush as a dependency property and let the usage site pass `{ThemeResource}`. Used for the charts, which build their elements in code.
+
+Both are more verbose than a `switch` returning a brush. Neither can be wrong.
+
+High contrast is the same problem one level further out.
+It is not a third colour scheme, it is a different contract: the accent colour is unavailable, the subtle fills collapse onto the surface colour, and opacity is overridden.
+Every chart on the Juice flyout was blank in High Contrast Black, because a bar painted `AccentFillColorDefaultBrush` on a `ControlStrongFillColorDisabledBrush` track came out as background on background.
+A translucent wash behind the battery line came out as a solid block over it.
+
+The fix is a set of role-named brushes in the window's own `ThemeDictionaries`, so the markup asks for "the fill that means measured data" and one place decides what that is per scheme.
+Anything that used opacity to be subtle needs the opacity itself to be a theme value, not a constant, so high contrast can turn it off.
 
 ## Showing a number in the menu bar
 

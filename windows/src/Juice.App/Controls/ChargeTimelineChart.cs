@@ -33,6 +33,12 @@ namespace Juice.App.Controls;
 /// reasons as the bar chart: no dependency, theme resources work, and the shapes are
 /// ordinary XAML elements that accessibility and tooltips already understand.
 /// </para>
+/// <para>
+/// The brushes arrive as dependency properties rather than being looked up by name here,
+/// for the reason given at length on <see cref="EnergyHistoryChart"/>: a code lookup
+/// resolves against the process theme, and this chart lives in a window that follows the
+/// taskbar theme instead.
+/// </para>
 /// </remarks>
 public sealed class ChargeTimelineChart : UserControl
 {
@@ -41,7 +47,35 @@ public sealed class ChargeTimelineChart : UserControl
         nameof(Timeline),
         typeof(ChargeTimeline),
         typeof(ChargeTimelineChart),
-        new PropertyMetadata(null, (d, _) => ((ChargeTimelineChart)d).Render()));
+        new PropertyMetadata(null, OnVisualPropertyChanged));
+
+    /// <summary>Identifies the <see cref="LineBrush"/> dependency property.</summary>
+    public static readonly DependencyProperty LineBrushProperty = DependencyProperty.Register(
+        nameof(LineBrush),
+        typeof(Brush),
+        typeof(ChargeTimelineChart),
+        new PropertyMetadata(null, OnVisualPropertyChanged));
+
+    /// <summary>Identifies the <see cref="GridLineBrush"/> dependency property.</summary>
+    public static readonly DependencyProperty GridLineBrushProperty = DependencyProperty.Register(
+        nameof(GridLineBrush),
+        typeof(Brush),
+        typeof(ChargeTimelineChart),
+        new PropertyMetadata(null, OnVisualPropertyChanged));
+
+    /// <summary>Identifies the <see cref="ChargingBandBrush"/> dependency property.</summary>
+    public static readonly DependencyProperty ChargingBandBrushProperty = DependencyProperty.Register(
+        nameof(ChargingBandBrush),
+        typeof(Brush),
+        typeof(ChargeTimelineChart),
+        new PropertyMetadata(null, OnVisualPropertyChanged));
+
+    /// <summary>Identifies the <see cref="ChargingBandOpacity"/> dependency property.</summary>
+    public static readonly DependencyProperty ChargingBandOpacityProperty = DependencyProperty.Register(
+        nameof(ChargingBandOpacity),
+        typeof(double),
+        typeof(ChargeTimelineChart),
+        new PropertyMetadata(1.0, OnVisualPropertyChanged));
 
     private readonly Grid _root = new();
 
@@ -51,7 +85,6 @@ public sealed class ChargeTimelineChart : UserControl
         MinHeight = 96;
         Content = _root;
         SizeChanged += (_, _) => Render();
-        ActualThemeChanged += (_, _) => Render();
     }
 
     /// <summary>The timeline to draw. Null renders nothing.</summary>
@@ -60,6 +93,57 @@ public sealed class ChargeTimelineChart : UserControl
         get => (ChargeTimeline?)GetValue(TimelineProperty);
         set => SetValue(TimelineProperty, value);
     }
+
+    /// <summary>
+    /// Stroke for the level line. Also the source colour for the area gradient under it
+    /// and for the bands marking time spent on external power.
+    /// </summary>
+    public Brush? LineBrush
+    {
+        get => (Brush?)GetValue(LineBrushProperty);
+        set => SetValue(LineBrushProperty, value);
+    }
+
+    /// <summary>Stroke for the reference lines at 50 and 100 percent.</summary>
+    public Brush? GridLineBrush
+    {
+        get => (Brush?)GetValue(GridLineBrushProperty);
+        set => SetValue(GridLineBrushProperty, value);
+    }
+
+    /// <summary>Fill for the bands marking time spent on external power.</summary>
+    public Brush? ChargingBandBrush
+    {
+        get => (Brush?)GetValue(ChargingBandBrushProperty);
+        set => SetValue(ChargingBandBrushProperty, value);
+    }
+
+    /// <summary>
+    /// How strongly the charging bands are drawn, from 0 for not at all to 1 for solid.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A property rather than a constant because high contrast has to be able to turn it
+    /// off. The band is a full-height wash behind the line, which works when it can be
+    /// laid on at a tenth of its strength, but high contrast overrides opacity, so the
+    /// same wash comes out as a solid block sitting over the measurement it was meant to
+    /// sit behind.
+    /// </para>
+    /// <para>
+    /// Dropping it there loses nothing a reader needs. A charging run is already visible
+    /// as a rising line, the coverage caption below the chart says what was recorded, and
+    /// the automation name carries the same. High contrast is a legibility mode, and this
+    /// band is the one thing on the chart that is atmosphere rather than measurement.
+    /// </para>
+    /// </remarks>
+    public double ChargingBandOpacity
+    {
+        get => (double)GetValue(ChargingBandOpacityProperty);
+        set => SetValue(ChargingBandOpacityProperty, value);
+    }
+
+    private static void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+        => ((ChargeTimelineChart)d).Render();
 
     private void Render()
     {
@@ -91,6 +175,8 @@ public sealed class ChargeTimelineChart : UserControl
     /// </remarks>
     private void DrawChargingBands(ChargeTimeline timeline, double width, double height)
     {
+        if (ChargingBandOpacity <= 0) return;
+
         foreach (var band in timeline.ChargingBands)
         {
             var left = band.StartX * width;
@@ -103,13 +189,18 @@ public sealed class ChargeTimelineChart : UserControl
                 HorizontalAlignment = HorizontalAlignment.Left,
                 VerticalAlignment = VerticalAlignment.Stretch,
                 Margin = new Thickness(left, 0, 0, 0),
-                Fill = Brush("AccentFillColorDefaultBrush"),
-                Opacity = 0.10,
+                Fill = ChargingBandBrush,
+                Opacity = ChargingBandOpacity,
             });
         }
     }
 
     /// <summary>Reference lines at 50% and 100%, matching the Settings chart.</summary>
+    /// <remarks>
+    /// No opacity is applied. The brush is already the subtle divider colour in light and
+    /// dark, and thinning it further with opacity would have taken the high contrast
+    /// mapping below the contrast floor that mode exists to guarantee.
+    /// </remarks>
     private void DrawGridLines(double width, double height)
     {
         foreach (var fraction in new[] { 1.0, 0.5 })
@@ -123,8 +214,7 @@ public sealed class ChargeTimelineChart : UserControl
                 Y1 = y,
                 Y2 = y,
                 StrokeThickness = 1,
-                Stroke = Brush("DividerStrokeColorDefaultBrush"),
-                Opacity = 0.6,
+                Stroke = GridLineBrush,
             });
         }
     }
@@ -162,7 +252,7 @@ public sealed class ChargeTimelineChart : UserControl
         _root.Children.Add(new XamlPath
         {
             Data = new PathGeometry { Figures = [line] },
-            Stroke = Brush("AccentFillColorDefaultBrush"),
+            Stroke = LineBrush,
             StrokeThickness = 1.5,
             StrokeLineJoin = PenLineJoin.Round,
         });
@@ -180,7 +270,7 @@ public sealed class ChargeTimelineChart : UserControl
     /// </remarks>
     private Brush AreaGradient()
     {
-        var accent = Brush("AccentFillColorDefaultBrush") is SolidColorBrush solid
+        var accent = LineBrush is SolidColorBrush solid
             ? solid.Color
             : Colors.SteelBlue;
 
@@ -195,7 +285,4 @@ public sealed class ChargeTimelineChart : UserControl
             ],
         };
     }
-
-    private Brush Brush(string themeResourceKey)
-        => (Brush)Application.Current.Resources[themeResourceKey];
 }

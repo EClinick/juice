@@ -131,7 +131,33 @@ public class EnergyChartBuilderTests
 
         Assert.Equal(0.5, series.Coverage, 9);
         Assert.True(series.HasGaps);
-        Assert.Contains("2 hours not recorded", series.CoverageCaption());
+        Assert.Contains("2 hours", series.CoverageCaption(), StringComparison.Ordinal);
+        Assert.Contains("not recorded", series.CoverageCaption(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The caption must not say "this period". The flyout's period switcher sits directly
+    /// above this chart and does not drive it, so "this period" would be read as a
+    /// statement about the switcher's selection rather than about the chart, and on an
+    /// empty store it contradicted the populated Session list immediately above it.
+    /// It must also not restate the window length, because the axis is aligned down to
+    /// the hour and so spans one more column than the requested window almost always.
+    /// </summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(3)]
+    [InlineData(6)]
+    public void CoverageCaption_RefersToTheChartRatherThanTheSelectedPeriod(int recordedHours)
+    {
+        var buckets = Enumerable
+            .Range(0, recordedHours)
+            .Select(h => Bucket(Noon.AddHours(h), 10))
+            .ToArray();
+
+        var caption = EnergyChartBuilder.Build(buckets, Noon, Noon.AddHours(6)).CoverageCaption();
+
+        Assert.DoesNotContain("this period", caption, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("the last", caption, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -144,7 +170,7 @@ public class EnergyChartBuilderTests
 
         Assert.False(series.HasGaps);
         Assert.Equal(1.0, series.Coverage, 9);
-        Assert.Contains("Complete recording", series.CoverageCaption());
+        Assert.Contains("Every charted hour recorded", series.CoverageCaption());
     }
 
     [Fact]
@@ -155,7 +181,7 @@ public class EnergyChartBuilderTests
         Assert.Equal(6, series.Bars.Count);
         Assert.True(series.IsEmpty);
         Assert.All(series.Bars, b => Assert.True(b.IsGap));
-        Assert.Contains("No data recorded", series.CoverageCaption());
+        Assert.Contains("No energy recorded", series.CoverageCaption());
     }
 
     [Fact]

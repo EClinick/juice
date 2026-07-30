@@ -75,7 +75,7 @@ public sealed class AppIconService : IDisposable
     {
         ArgumentNullException.ThrowIfNull(apply);
 
-        if (_disposed || processIds.Count == 0)
+        if (_disposed)
         {
             apply(null);
             return;
@@ -83,9 +83,26 @@ public sealed class AppIconService : IDisposable
 
         ExpireProcessPaths();
 
+        // The cache is consulted before the process id check, so a historical row can be
+        // decorated with an icon that a live row already paid for. Rows read back from
+        // the store carry no process ids, because the processes they describe ended hours
+        // or days ago, and extraction needs a live handle. Checking the cache first means
+        // an app that is running now, or that has been ranked at any point this session,
+        // keeps its icon when the period switcher moves to Today, Week or All, instead of
+        // the list losing half its icons the moment it stops being live.
         if (_byApp.TryGetValue(appId, out var cached))
         {
             apply(cached);
+            return;
+        }
+
+        // No live process and nothing cached means there is genuinely no way to obtain
+        // the icon: the executable path is not stored alongside the energy history, and
+        // guessing one from the app id would be inventing. The row falls back to the
+        // view's neutral treatment rather than showing another app's icon.
+        if (processIds.Count == 0)
+        {
+            apply(null);
             return;
         }
 

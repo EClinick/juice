@@ -95,6 +95,11 @@ public partial class App : Application
         _flyout.SettingsRequested += (_, _) => ShowSettings();
         _flyout.ShellVisibilityChanged += OnWindowVisibilityChanged;
 
+        // The view model has no store handle of its own, so choosing a period is a
+        // request rather than an action. Answering it here keeps every query on the
+        // thread that owns the connection.
+        _flyoutViewModel.RangeChanged += (_, _) => RefreshRanking();
+
         CreateTrayIcon();
 
         _monitor.Start();
@@ -196,6 +201,64 @@ public partial class App : Application
         if (isVisible && ReferenceEquals(sender, _flyout))
         {
             RefreshHistory();
+            RefreshRanking();
+        }
+    }
+
+    /// <summary>
+    /// Rebuilds the top energy users list for whichever period is selected.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The live session is served by the sampling loop and needs nothing from the store,
+    /// so it costs no query at all. A stored period costs two, and they run only when the
+    /// flyout is opened or the period is changed, never on a sampling tick: the answer is
+    /// hour-resolution and cannot visibly change more than once an hour.
+    /// </para>
+    /// <para>
+    /// The bounds come from the requested period rather than from the extent of the data,
+    /// which is what makes the coverage figure meaningful. A week that Juice only saw two
+    /// days of reports two days of energy and says so, instead of quietly reporting two
+    /// days of energy as a week's worth.
+    /// </para>
+    /// </remarks>
+    private void RefreshRanking()
+    {
+        var range = _flyoutViewModel.SelectedRange;
+
+        if (range == EnergyRange.Session)
+        {
+            _flyoutViewModel.ApplyRanking(
+                EnergyRankingBuilder.FromLive(_latest?.Attribution),
+                range,
+                _rates.Current);
+            return;
+        }
+
+        if (_store is null)
+        {
+            _flyoutViewModel.ApplyRanking(EnergyRanking.Empty, range, _rates.Current);
+            return;
+        }
+
+        try
+        {
+            var window = EnergyRanges.Resolve(range, DateTimeOffset.Now, _store.EarliestRecordedHour());
+
+            var ranking = window.HasRecords
+                ? EnergyRankingBuilder.FromHistory(
+                    _store.TopApps(window.From, window.To, EnergyRankingBuilder.DefaultAppLimit),
+                    _store.SystemEnergyBetween(window.From, window.To),
+                    window.Duration)
+                : EnergyRanking.Empty;
+
+            _flyoutViewModel.ApplyRanking(ranking, range, _rates.Current);
+        }
+        catch (Exception ex) when (ex is Microsoft.Data.Sqlite.SqliteException or IOException or InvalidOperationException)
+        {
+            // A period that cannot be read is reported as having nothing in it rather
+            // than as having zero energy in it, which are different claims.
+            _flyoutViewModel.ApplyRanking(EnergyRanking.Empty, range, _rates.Current);
         }
     }
 

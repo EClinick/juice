@@ -284,6 +284,25 @@ public sealed class JuiceStore : IDisposable
         return buckets;
     }
 
+    /// <summary>
+    /// Start of the oldest hour still held, or null when nothing has been recorded.
+    /// </summary>
+    /// <remarks>
+    /// Exists so the "all recorded" range has a real lower bound. Pruning removes hours
+    /// as they age out, so this moves forward over time and is not the date Juice was
+    /// installed; nothing should present it as one.
+    /// </remarks>
+    public DateTimeOffset? EarliestRecordedHour()
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = "SELECT MIN(hour_start) FROM system_energy_hours;";
+
+        var value = command.ExecuteScalar();
+        if (value is not long seconds) return null;
+
+        return DateTimeOffset.FromUnixTimeSeconds(seconds).ToLocalTime();
+    }
+
     /// <summary>Per-app energy by hour, for the app detail chart.</summary>
     public IReadOnlyList<HourlyAppEnergy> AppEnergyBetween(
         DateTimeOffset from, DateTimeOffset to, string? appId = null)

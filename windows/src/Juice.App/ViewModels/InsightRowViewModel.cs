@@ -6,8 +6,8 @@ namespace Juice.App.ViewModels;
 /// <summary>One generated observation, as the flyout draws it.</summary>
 /// <remarks>
 /// The engine produces insights with a severity and a stable id; this adds only what
-/// drawing needs. The glyph and the accent are derived here rather than in Core, because
-/// Core has no opinion about Segoe Fluent Icons and should not acquire one.
+/// drawing needs. The glyph and the severity flags are derived here rather than in Core,
+/// because Core has no opinion about Segoe Fluent Icons and should not acquire one.
 /// </remarks>
 public sealed partial class InsightRowViewModel : ObservableObject
 {
@@ -19,6 +19,7 @@ public sealed partial class InsightRowViewModel : ObservableObject
         Detail = insight.Detail;
         Severity = insight.Severity;
         Glyph = GlyphFor(insight.Kind);
+        SeverityLabel = LabelFor(insight.Severity);
     }
 
     /// <summary>Stable identifier, so a refresh can tell rows apart.</summary>
@@ -35,6 +36,38 @@ public sealed partial class InsightRowViewModel : ObservableObject
 
     /// <summary>Segoe Fluent Icons glyph describing the kind of observation.</summary>
     public string Glyph { get; }
+
+    /// <summary>
+    /// The severity in words, so it is not carried by colour alone.
+    /// </summary>
+    /// <remarks>
+    /// The tinted icon is the only visual signal of severity, and a tint is exactly the
+    /// signal that a colour blind user, a high contrast theme and a screen reader all
+    /// miss. Saying it in the automation name costs nothing and is the difference between
+    /// the severity being conveyed and merely being drawn.
+    /// </remarks>
+    public string SeverityLabel { get; }
+
+    /// <summary>
+    /// True when the observation is worth acting on.
+    /// </summary>
+    /// <remarks>
+    /// The three severities are exposed as flags rather than as a brush because a brush
+    /// chosen here is the instance from whichever theme dictionary happened to be active
+    /// when the row was built, and bindings inside a DataTemplate are not reachable from
+    /// the window's <c>Bindings.Update()</c>. A row that handed over a brush would keep
+    /// painting the old theme's colour after a light or dark switch. Flags let the
+    /// template pick the brush declaratively with ThemeResource, which is what makes it
+    /// follow the system theme, including high contrast. The rail strips and the ranking
+    /// bars are built the same way and for the same reason.
+    /// </remarks>
+    public bool IsWarning => Severity == InsightSeverity.Warning;
+
+    /// <summary>True when the observation is worth looking at.</summary>
+    public bool IsNotice => Severity == InsightSeverity.Notice;
+
+    /// <summary>True when the observation is merely worth knowing.</summary>
+    public bool IsInfo => Severity == InsightSeverity.Info;
 
     /// <summary>
     /// A glyph per kind, so the icon says something the text does not have to repeat.
@@ -60,5 +93,13 @@ public sealed partial class InsightRowViewModel : ObservableObject
         InsightKind.ChargingHabit => "\uE83E",
 
         _ => "\uE946",
+    };
+
+    /// <summary>The severity as a word a screen reader can read out.</summary>
+    private static string LabelFor(InsightSeverity severity) => severity switch
+    {
+        InsightSeverity.Warning => "Warning",
+        InsightSeverity.Notice => "Notice",
+        _ => "Note",
     };
 }

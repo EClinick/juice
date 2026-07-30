@@ -60,10 +60,15 @@ public sealed record ChargeTimeline
     public int PointCount => Segments.Sum(s => s.Points.Count);
 
     /// <summary>Caption stating what the timeline does and does not cover.</summary>
+    /// <remarks>
+    /// Refers to the charted window rather than "this period" for the same reason
+    /// <see cref="EnergyChartSeries.CoverageCaption"/> does: the period switcher above
+    /// governs the ranking, not this chart, and the heading already names the window.
+    /// </remarks>
     public string CoverageCaption()
     {
-        if (IsEmpty) return "No battery history recorded for this period.";
-        if (GapCount == 0) return "Continuous recording for this period.";
+        if (IsEmpty) return "No battery history in the charted hours.";
+        if (GapCount == 0) return "Continuous recording across the charted hours.";
 
         var breaks = GapCount == 1 ? "1 break" : $"{GapCount} breaks";
         return $"{breaks} in recording, shown as gaps in the line.";

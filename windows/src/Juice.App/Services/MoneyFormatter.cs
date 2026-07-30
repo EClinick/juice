@@ -35,15 +35,36 @@ public static class MoneyFormatter
     };
 
     /// <summary>Formats an amount, choosing a sensible number of decimal places.</summary>
+    /// <remarks>
+    /// <para>
+    /// Sub-cent amounts round to zero at two places, and "$0.00 a year" reads as "nothing"
+    /// when the honest answer is "less than a cent", so those get a third decimal.
+    /// </para>
+    /// <para>
+    /// A third decimal only moves the problem, it does not solve it. A period covering a
+    /// few minutes produces costs below a tenth of a cent, and those printed as "$0.000",
+    /// which reads as a broken formatter rather than as a very small number. Anything that
+    /// is genuinely non-zero but rounds away at the chosen precision is therefore printed
+    /// as a bound, "&lt;$0.001", which is the one statement that is both true and legible.
+    /// An amount that is exactly zero keeps "$0.00", because no energy really did cost
+    /// nothing and hedging that would be its own small lie.
+    /// </para>
+    /// </remarks>
     public static string Format(decimal amount, string currency)
     {
-        // Sub-cent amounts round to zero at two places, and "$0.00 a year" reads as
-        // "nothing" when the honest answer is "less than a cent".
         var digits = Math.Abs(amount) is > 0 and < 0.01m ? 3 : 2;
-        var number = amount.ToString("N" + digits, CultureInfo.InvariantCulture);
+
+        var rounded = Math.Round(amount, digits, MidpointRounding.AwayFromZero);
+        var vanished = amount != 0 && rounded == 0;
+
+        // The bound is the smallest magnitude the chosen precision can express, so it
+        // tracks the digit count rather than being spelled out twice.
+        var smallest = (decimal)Math.Pow(10, -digits);
+        var number = (vanished ? smallest : rounded).ToString("N" + digits, CultureInfo.InvariantCulture);
+        var prefix = vanished ? (amount < 0 ? ">-" : "<") : string.Empty;
 
         return Symbols.TryGetValue(currency, out var symbol)
-            ? symbol + number
-            : $"{number} {currency}";
+            ? prefix + symbol + number
+            : $"{prefix}{number} {currency}";
     }
 }

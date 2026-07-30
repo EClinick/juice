@@ -36,6 +36,15 @@ namespace Juice.App.Controls;
 /// element per column, which is why callers must aggregate longer ranges into days rather
 /// than asking for thousands of hours.
 /// </para>
+/// <para>
+/// The brushes arrive as dependency properties rather than being looked up by name here.
+/// A code lookup has to go through <c>Application.Current.Resources</c>, which resolves
+/// against the process theme, and this chart lives in a window that deliberately follows
+/// the taskbar theme instead. On a machine with light apps and a dark taskbar that gave a
+/// light-theme accent painted on a dark surface. Supplied from XAML with
+/// <c>{ThemeResource}</c>, the brushes follow the element they are set on, which is the
+/// only theme that matters for what the user actually sees.
+/// </para>
 /// </remarks>
 public sealed class EnergyHistoryChart : UserControl
 {
@@ -44,7 +53,28 @@ public sealed class EnergyHistoryChart : UserControl
         nameof(Series),
         typeof(EnergyChartSeries),
         typeof(EnergyHistoryChart),
-        new PropertyMetadata(null, (d, _) => ((EnergyHistoryChart)d).Render()));
+        new PropertyMetadata(null, OnVisualPropertyChanged));
+
+    /// <summary>Identifies the <see cref="BarBrush"/> dependency property.</summary>
+    public static readonly DependencyProperty BarBrushProperty = DependencyProperty.Register(
+        nameof(BarBrush),
+        typeof(Brush),
+        typeof(EnergyHistoryChart),
+        new PropertyMetadata(null, OnVisualPropertyChanged));
+
+    /// <summary>Identifies the <see cref="PartialBarBrush"/> dependency property.</summary>
+    public static readonly DependencyProperty PartialBarBrushProperty = DependencyProperty.Register(
+        nameof(PartialBarBrush),
+        typeof(Brush),
+        typeof(EnergyHistoryChart),
+        new PropertyMetadata(null, OnVisualPropertyChanged));
+
+    /// <summary>Identifies the <see cref="GapBrush"/> dependency property.</summary>
+    public static readonly DependencyProperty GapBrushProperty = DependencyProperty.Register(
+        nameof(GapBrush),
+        typeof(Brush),
+        typeof(EnergyHistoryChart),
+        new PropertyMetadata(null, OnVisualPropertyChanged));
 
     private readonly Grid _columns = new() { ColumnSpacing = 1 };
 
@@ -57,7 +87,6 @@ public sealed class EnergyHistoryChart : UserControl
         // Bar heights are in pixels, so the plot has to be rebuilt when the control is
         // resized. Re-rendering is cheap because the series is already computed.
         SizeChanged += (_, _) => Render();
-        ActualThemeChanged += (_, _) => Render();
     }
 
     /// <summary>The series to draw. Null renders nothing.</summary>
@@ -66,6 +95,30 @@ public sealed class EnergyHistoryChart : UserControl
         get => (EnergyChartSeries?)GetValue(SeriesProperty);
         set => SetValue(SeriesProperty, value);
     }
+
+    /// <summary>Fill for an hour that was recorded end to end.</summary>
+    public Brush? BarBrush
+    {
+        get => (Brush?)GetValue(BarBrushProperty);
+        set => SetValue(BarBrushProperty, value);
+    }
+
+    /// <summary>Fill for an hour that was only partly recorded.</summary>
+    public Brush? PartialBarBrush
+    {
+        get => (Brush?)GetValue(PartialBarBrushProperty);
+        set => SetValue(PartialBarBrushProperty, value);
+    }
+
+    /// <summary>Fill for the marker that stands in for an hour never observed.</summary>
+    public Brush? GapBrush
+    {
+        get => (Brush?)GetValue(GapBrushProperty);
+        set => SetValue(GapBrushProperty, value);
+    }
+
+    private static void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+        => ((EnergyHistoryChart)d).Render();
 
     private void Render()
     {
@@ -109,7 +162,7 @@ public sealed class EnergyHistoryChart : UserControl
             Height = barHeight,
             VerticalAlignment = VerticalAlignment.Bottom,
             CornerRadius = new CornerRadius(2, 2, 0, 0),
-            Background = Brush(bar.IsPartial ? "AccentFillColorTertiaryBrush" : "AccentFillColorDefaultBrush"),
+            Background = bar.IsPartial ? PartialBarBrush : BarBrush,
         };
     }
 
@@ -121,12 +174,9 @@ public sealed class EnergyHistoryChart : UserControl
             VerticalAlignment = VerticalAlignment.Bottom,
             RadiusX = 1,
             RadiusY = 1,
-            Fill = Brush("TextFillColorDisabledBrush"),
+            Fill = GapBrush,
         };
     }
-
-    private Brush Brush(string themeResourceKey)
-        => (Brush)Application.Current.Resources[themeResourceKey];
 
     private static string Describe(ChartBar bar)
     {

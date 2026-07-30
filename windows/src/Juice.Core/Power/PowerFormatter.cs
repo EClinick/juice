@@ -121,6 +121,29 @@ public static class PowerFormatter
 
         return hours > 0 ? $"{hours}h {minutes}m" : $"{minutes}m";
     }
+
+    /// <summary>
+    /// Compact elapsed time that keeps its meaning below a minute, for example "42s".
+    /// </summary>
+    /// <remarks>
+    /// <see cref="FormatDuration"/> is written for a battery estimate, where the smallest
+    /// figure worth stating is a minute and where the reading is a projection anyway. The
+    /// live session window is different: it starts at zero every time the sampling loop
+    /// starts, and rendering the first three quarters of a minute as "0m" told the user
+    /// that nothing had been measured at the exact moment the flyout was showing them the
+    /// measurement. A second is a real unit and this is the one place it is the right one.
+    ///
+    /// It hands off to <see cref="FormatDuration"/> at a minute rather than carrying
+    /// seconds any further, because "1h 12m 3s" is precision nobody asked for.
+    /// </remarks>
+    public static string FormatElapsed(TimeSpan elapsed)
+    {
+        if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
+
+        return elapsed < TimeSpan.FromMinutes(1)
+            ? $"{(int)elapsed.TotalSeconds}s"
+            : FormatDuration(elapsed);
+    }
 }
 
 /// <summary>How hard the machine is drawing, used to tint the tray icon.</summary>

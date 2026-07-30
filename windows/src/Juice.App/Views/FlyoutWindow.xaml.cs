@@ -1,12 +1,12 @@
 using System.Runtime.Versioning;
 using Juice.App.Interop;
 using Juice.App.ViewModels;
-using Juice.Core.Insights;
 using Juice.Core.Power;
 using Juice.Core.Presentation;
 using Juice.Platform.Windows;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Windows.Graphics;
 using Windows.UI;
@@ -105,16 +105,14 @@ public sealed partial class FlyoutWindow : Window
             0);
 
         ApplyRoundedCorners();
-        ApplyTaskbarTheme();
 
         // Closing the only window would end the process, and the flyout is opened and
         // dismissed dozens of times a day, so it is hidden instead and never closed.
         AppWindow.Closing += OnAppWindowClosing;
         Activated += OnActivated;
 
-        // The severity and battery colours are resolved by function bindings, which run
-        // once and keep whatever brush object the theme dictionary held at the time.
-        // Re-running them is what makes the flyout follow a light or dark switch.
+        // The accent tint layered over the backdrop is mixed against the surface, so it
+        // has to be recomputed whenever the surface changes colour.
         if (Content is FrameworkElement root) root.ActualThemeChanged += OnActualThemeChanged;
 
         // Subscribed permanently, not per show. RootGrid is top aligned with auto rows, so
@@ -126,11 +124,11 @@ public sealed partial class FlyoutWindow : Window
 
     private void OnActualThemeChanged(FrameworkElement sender, object args)
     {
-        Bindings.Update();
-
         // The tint is mixed against the surface underneath it, and that surface just
-        // changed colour.
-        RefreshSystemAppearance();
+        // changed colour. Only the tint: re-reading the theme here would be circular,
+        // since this event is what a theme change raises. Every brush in the markup is a
+        // ThemeResource, so nothing else needs re-evaluating by hand.
+        RefreshSurfaceTint();
     }
 
     /// <summary>
@@ -138,10 +136,15 @@ public sealed partial class FlyoutWindow : Window
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The flyout opens directly above the taskbar and reads as part of it. When the user
-    /// has "Show accent color on Start and taskbar" on, a neutral acrylic panel stops
-    /// looking like an extension of the shell and starts looking like a foreign window
-    /// parked on top of it, so the same accent is layered over the backdrop.
+    /// Both halves of "appearance" move together from the shell's point of view, so both
+    /// are refreshed here: the theme the content is drawn in, and the accent tint layered
+    /// over the backdrop.
+    /// </para>
+    /// <para>
+    /// The theme half used to be applied once in the constructor. Flipping
+    /// <c>SystemUsesLightTheme</c> while Juice was running then left a dark flyout hanging
+    /// off a freshly light taskbar until the process was restarted, which is exactly the
+    /// mismatch <see cref="ApplyTaskbarTheme"/> exists to prevent.
     /// </para>
     /// <para>
     /// Called again whenever the shell reports an appearance change, because the accent
@@ -150,6 +153,23 @@ public sealed partial class FlyoutWindow : Window
     /// </para>
     /// </remarks>
     public void RefreshSystemAppearance()
+    {
+        ApplyTaskbarTheme();
+        RefreshSurfaceTint();
+    }
+
+    /// <summary>
+    /// Layers the taskbar's accent tint over the backdrop, when the user has asked for one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The flyout opens directly above the taskbar and reads as part of it. When the user
+    /// has "Show accent color on Start and taskbar" on, a neutral acrylic panel stops
+    /// looking like an extension of the shell and starts looking like a foreign window
+    /// parked on top of it, so the same accent is layered over the backdrop.
+    /// </para>
+    /// </remarks>
+    private void RefreshSurfaceTint()
     {
         var appearance = TaskbarAppearanceReader.Read();
 
@@ -218,58 +238,65 @@ public sealed partial class FlyoutWindow : Window
         => value is null ? Visibility.Collapsed : Visibility.Visible;
 
     /// <summary>
-    /// Accent for an observation's icon, keyed to how much attention it deserves.
-    /// </summary>
-    /// <remarks>
-    /// Only the icon is tinted. Colouring the text would cost legibility, and in a high
-    /// contrast theme these brushes resolve to system colours that are not guaranteed to
-    /// read against the card behind them.
-    /// </remarks>
-    public static Brush InsightBrush(InsightSeverity severity) => severity switch
-    {
-        InsightSeverity.Warning => (Brush)Application.Current.Resources["SystemFillColorCautionBrush"],
-        InsightSeverity.Notice => (Brush)Application.Current.Resources["SystemFillColorAttentionBrush"],
-        _ => (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
-    };
-
-    /// <summary>
     /// One sentence per observation for screen readers.
     /// </summary>
     /// <remarks>
-    /// The card is two text blocks and an icon, which a screen reader would otherwise read
-    /// as three unrelated fragments. The glyph carries no information the words do not.
+    /// The card is two text blocks and a tinted icon, which a screen reader would
+    /// otherwise read as three unrelated fragments. The severity leads, because the tint
+    /// that carries it visually is the one part of the card a screen reader cannot see,
+    /// and the glyph carries nothing the words do not.
     /// </remarks>
-    public static string InsightAnnouncement(string title, string detail)
-        => string.IsNullOrWhiteSpace(detail) ? title : $"{title}. {detail}";
+    public static string InsightAnnouncement(string severity, string title, string detail)
+        => string.IsNullOrWhiteSpace(detail) ? $"{severity}. {title}" : $"{severity}. {title}. {detail}";
 
     /// <summary>
-    /// Foreground for the hero readout, keyed to how hard the machine is drawing so the
-    /// flyout and the tray icon agree at a glance.
+    /// Shows an element only when the drain severity matches the name it was given.
+    /// </summary>
+    /// <param name="severity">The severity the machine is currently at.</param>
+    /// <param name="match">The <see cref="DrainSeverity"/> name this element stands for.</param>
+    /// <remarks>
+    /// <para>
+    /// This exists so that the hero readout's colour can be chosen in markup. The obvious
+    /// alternative, a function that returns a <see cref="Brush"/>, has to resolve the
+    /// brush by name through <c>Application.Current.Resources</c>, and that dictionary
+    /// answers for the process theme. The flyout follows the taskbar theme, which is a
+    /// different switch, so on a machine set to light apps and a dark taskbar the readout
+    /// came back in the light theme's accent on a dark surface.
+    /// </para>
+    /// <para>
+    /// The name is matched rather than passed as a typed enum because <c>x:Bind</c> can
+    /// only supply string and numeric literals as function arguments. An unknown name
+    /// hides the element rather than throwing, so a typo costs a colour rather than the
+    /// process.
+    /// </para>
+    /// </remarks>
+    public static Visibility WhenSeverity(DrainSeverity severity, string match)
+        => Enum.TryParse<DrainSeverity>(match, out var wanted) && severity == wanted
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+    /// <summary>
+    /// Shows an element only when the battery level matches the name it was given.
+    /// </summary>
+    /// <param name="level">How low the battery currently is.</param>
+    /// <param name="match">The <see cref="BatteryLevel"/> name this element stands for.</param>
+    public static Visibility WhenBattery(BatteryLevel level, string match)
+        => Enum.TryParse<BatteryLevel>(match, out var wanted) && level == wanted
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+    /// <summary>
+    /// Shows an element only when the battery is at neither a low nor a critical level.
     /// </summary>
     /// <remarks>
-    /// Unknown deliberately stays the muted text colour. Any of the three signal colours
-    /// would assert a classification that no measurement supports.
+    /// The complement of the two warning states rather than a list of the comfortable
+    /// ones, so a level added later reads as ordinary until somebody decides it warrants
+    /// a warning colour, rather than silently disappearing from the flyout.
     /// </remarks>
-    public static Brush? ReadoutBrush(DrainSeverity severity)
-        => ThemeBrush(severity switch
-        {
-            DrainSeverity.Low => "SystemFillColorSuccessBrush",
-            DrainSeverity.Normal => "AccentTextFillColorPrimaryBrush",
-            DrainSeverity.High => "SystemFillColorCautionBrush",
-            _ => "TextFillColorSecondaryBrush",
-        });
-
-    /// <summary>
-    /// Foreground for the battery percentage, which turns into a warning only when the
-    /// machine is actually running the battery down.
-    /// </summary>
-    public static Brush? BatteryBrush(BatteryLevel level)
-        => ThemeBrush(level switch
-        {
-            BatteryLevel.Critical => "SystemFillColorCriticalBrush",
-            BatteryLevel.Low => "SystemFillColorCautionBrush",
-            _ => "TextFillColorPrimaryBrush",
-        });
+    public static Visibility WhenBatteryComfortable(BatteryLevel level)
+        => level is BatteryLevel.Critical or BatteryLevel.Low
+            ? Visibility.Collapsed
+            : Visibility.Visible;
 
     /// <summary>Star width of the filled part of a ranking bar.</summary>
     public static GridLength BarLength(double fraction)
@@ -278,17 +305,6 @@ public sealed partial class FlyoutWindow : Window
     /// <summary>Star width of the empty remainder of a ranking bar.</summary>
     public static GridLength BarRemainderLength(double fraction)
         => new(1 - Math.Clamp(fraction, 0, 1), GridUnitType.Star);
-
-    /// <summary>
-    /// Resolves a named brush from the active theme dictionary.
-    /// </summary>
-    /// <remarks>
-    /// The lookup happens per evaluation rather than once, and the bindings that call it
-    /// are re-run on <see cref="FrameworkElement.ActualThemeChanged"/>, because the theme
-    /// dictionaries hand back a different brush object per theme.
-    /// </remarks>
-    private static Brush? ThemeBrush(string key)
-        => Application.Current.Resources.TryGetValue(key, out var value) ? value as Brush : null;
 
     /// <summary>
     /// Builds what a screen reader says for the hero readout.
@@ -309,8 +325,25 @@ public sealed partial class FlyoutWindow : Window
     /// A reserved row announces that it is waiting rather than announcing three empty
     /// strings, which would otherwise read out as a run of commas.
     /// </remarks>
-    public static string RowAnnouncement(bool isPlaceholder, string name, string watts, string cost)
-        => isPlaceholder ? "Waiting for the first measurement" : $"{name}, {watts}, {cost}";
+    public static string RowAnnouncement(bool isPlaceholder, string name, string value, string cost)
+        => isPlaceholder ? "Waiting for the first measurement" : $"{name}, {value}, {cost}";
+
+    /// <summary>
+    /// Records the period the user picked, which the application answers by querying the
+    /// store.
+    /// </summary>
+    /// <remarks>
+    /// The period is carried on each item's Tag rather than being inferred from its
+    /// index, so reordering the bar in markup cannot silently repoint the selection at a
+    /// different range.
+    /// </remarks>
+    private void OnRangeSelectionChanged(SelectorBar sender, SelectorBarSelectionChangedEventArgs args)
+    {
+        if (sender.SelectedItem?.Tag is string tag && Enum.TryParse<EnergyRange>(tag, out var range))
+        {
+            ViewModel.SelectedRange = range;
+        }
+    }
 
     /// <summary>
     /// Shows the flyout above <paramref name="anchor"/>, the tray icon's screen
@@ -342,6 +375,14 @@ public sealed partial class FlyoutWindow : Window
             // Right edge aligned with the icon, sitting just above it. That is where the
             // shell puts its own tray flyouts, so it lands where the user expects.
             x = icon.Right - width;
+
+            // Capped against the space above the icon rather than against the work area
+            // as a whole, because the two are not the same when Windows 11 has put the
+            // icon in the overflow flyout: the anchor is then a couple of hundred pixels
+            // above the taskbar, and a window sized for the full work area hangs off the
+            // top of the screen. Found exactly that way, with the flyout's header sitting
+            // at a negative Y and simply not visible.
+            height = CapToSpaceAbove(height, icon.Top - gap, work, gap);
             y = icon.Top - height - gap;
         }
         else
@@ -451,9 +492,16 @@ public sealed partial class FlyoutWindow : Window
     {
         if (Content is not FrameworkElement root) return;
 
-        root.RequestedTheme = TaskbarAppearanceReader.Read().IsLightTheme
+        var wanted = TaskbarAppearanceReader.Read().IsLightTheme
             ? ElementTheme.Light
             : ElementTheme.Dark;
+
+        // Assigning the same value still walks the tree and still re-raises the theme
+        // machinery, and this runs on every shell appearance notification, most of which
+        // are about something else entirely.
+        if (root.RequestedTheme == wanted) return;
+
+        root.RequestedTheme = wanted;
     }
 
     /// <summary>
@@ -506,6 +554,33 @@ public sealed partial class FlyoutWindow : Window
     }
 
     /// <summary>
+    /// Caps an outer window height so that a window whose bottom edge is pinned at
+    /// <paramref name="bottom"/> still has its top edge inside the work area.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ClampToWorkArea"/> caps against the height of the whole work area, which
+    /// is the right answer only when the window's bottom edge is at the bottom of it. The
+    /// flyout's bottom edge is wherever the tray icon is, and when Windows 11 has moved
+    /// the icon into the overflow flyout that is well above the taskbar. This is the
+    /// second cap, applied against the space that actually exists above the anchor.
+    ///
+    /// Anything the cap takes away is recovered by the ScrollViewer around the content, so
+    /// a capped window hides nothing, it only asks the user to scroll for it.
+    /// </remarks>
+    /// <param name="outerHeight">Desired outer window height, in physical pixels.</param>
+    /// <param name="bottom">Where the window's bottom edge will sit, in physical pixels.</param>
+    /// <param name="work">Work area of the monitor the flyout is on, in physical pixels.</param>
+    /// <param name="gap">Margin to leave above the window, in physical pixels.</param>
+    private static int CapToSpaceAbove(int outerHeight, int bottom, RectInt32 work, int gap)
+    {
+        var available = bottom - (work.Y + gap);
+
+        // A non-positive figure means the anchor is at or above the top of the work area,
+        // which is not a real configuration. Capping to it would leave no window at all.
+        return available > 0 ? Math.Min(outerHeight, available) : outerHeight;
+    }
+
+    /// <summary>
     /// Keeps the window exactly as tall as its content.
     /// </summary>
     /// <remarks>
@@ -541,18 +616,22 @@ public sealed partial class FlyoutWindow : Window
         var scale = NativeMethods.GetDpiForWindow(hwnd) / 96.0;
         if (scale <= 0) scale = 1.0;
 
-        var target = OuterHeightFor(
-            ClampToWorkArea(
-                height,
-                DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea,
-                scale),
-            scale);
+        var work = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea;
+        var gap = (int)Math.Round(GapDips * scale);
+
+        var target = OuterHeightFor(ClampToWorkArea(height, work, scale), scale);
         var current = AppWindow.Size.Height;
+        var bottom = AppWindow.Position.Y + current;
+
+        // The same cap ShowAt applies, repeated here because this is the path that grows
+        // the window after the charts and the ranking have filled in, and growing upward
+        // from a bottom edge that is already well up the screen is precisely how the top
+        // of the flyout ends up off the display.
+        target = CapToSpaceAbove(target, bottom, work, gap);
+
         // Sub-pixel disagreement is rounding, not a layout change. Acting on it would
         // resize the window on every single layout pass.
         if (Math.Abs(target - current) <= 2) return;
-
-        var bottom = AppWindow.Position.Y + current;
 
         AppWindow.MoveAndResize(new RectInt32(
             AppWindow.Position.X,

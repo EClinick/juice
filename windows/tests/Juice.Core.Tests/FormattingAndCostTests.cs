@@ -36,6 +36,19 @@ public class PowerFormatterTests
     public void Energy_ScalesToMagnitude(double wattHours, string expected)
         => Assert.Equal(expected, PowerFormatter.Energy(wattHours));
 
+    [Theory]
+    [InlineData(0, "0s")]
+    [InlineData(42, "42s")]
+    [InlineData(59, "59s")]
+    [InlineData(60, "1m")]
+    [InlineData(4380, "1h 13m")]
+    public void FormatElapsed_KeepsSecondsBelowAMinute(int seconds, string expected)
+        => Assert.Equal(expected, PowerFormatter.FormatElapsed(TimeSpan.FromSeconds(seconds)));
+
+    [Fact]
+    public void FormatElapsed_NeverRendersNegativeTime()
+        => Assert.Equal("0s", PowerFormatter.FormatElapsed(TimeSpan.FromSeconds(-5)));
+
     [Fact]
     public void Tooltip_DoesNotClaimChargingForATrickle()
     {

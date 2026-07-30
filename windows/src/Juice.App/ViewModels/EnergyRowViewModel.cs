@@ -19,7 +19,7 @@ public sealed partial class EnergyRowViewModel : ObservableObject
         // Partial properties cannot carry initialisers, so the empty defaults are set
         // here.
         DisplayName = string.Empty;
-        WattsText = string.Empty;
+        ValueText = string.Empty;
         CostText = string.Empty;
         AppId = string.Empty;
     }
@@ -49,13 +49,40 @@ public sealed partial class EnergyRowViewModel : ObservableObject
     [ObservableProperty]
     public partial string DisplayName { get; set; }
 
-    /// <summary>Average wattage over the attribution window.</summary>
+    /// <summary>
+    /// The row's headline figure, right aligned at the end of the row.
+    /// </summary>
+    /// <remarks>
+    /// Average wattage while the live session is selected, and energy in watt-hours for
+    /// any stored period. The two are not interchangeable and the list never mixes them:
+    /// watts describe an instant and only mean something while one is being measured,
+    /// whereas a week is a quantity of energy that happened. The caption above the list
+    /// says which period is in view, so the unit is never ambiguous.
+    /// </remarks>
     [ObservableProperty]
-    public partial string WattsText { get; set; }
+    public partial string ValueText { get; set; }
 
-    /// <summary>Annual cost of sustaining that wattage, at the current rate.</summary>
+    /// <summary>What that draw costs, at the current rate.</summary>
+    /// <remarks>
+    /// Annualised from a sustained wattage for the live session, because a figure over a
+    /// few seconds is too small to mean anything, and the actual cost of the measured
+    /// energy for a stored period, because there it is a real amount that was really
+    /// spent.
+    /// </remarks>
     [ObservableProperty]
     public partial string CostText { get; set; }
+
+    /// <summary>
+    /// True for the first row in the list, which is the only one drawn without a divider
+    /// above it.
+    /// </summary>
+    /// <remarks>
+    /// The list is one rounded container with hairlines between its rows, which is the
+    /// grouped list Windows 11 Settings uses everywhere. A divider on the first row would
+    /// sit on the container's top edge.
+    /// </remarks>
+    [ObservableProperty]
+    public partial bool IsFirstRow { get; set; }
 
     /// <summary>
     /// True for the platform row. It is the display backlight, radios and regulator
@@ -82,13 +109,14 @@ public sealed partial class EnergyRowViewModel : ObservableObject
     public partial bool IsPlaceholder { get; set; }
 
     /// <summary>
-    /// This row's watts as a fraction of the largest row's, from 0 to 1. Sets the width
-    /// of the ranking bar drawn behind the row.
+    /// This row's energy as a fraction of the heaviest app row's, from 0 to 1. Sets the
+    /// width of the ranking bar drawn behind the row.
     /// </summary>
     /// <remarks>
-    /// It is the ratio of two measured averages and nothing else. The bar is never
+    /// It is the ratio of two measured quantities and nothing else. The bar is never
     /// floored to a visible minimum, because a row that drew almost nothing has to look
-    /// like it drew almost nothing.
+    /// like it drew almost nothing. <see cref="Juice.Core.Presentation.EnergyRankingBuilder"/>
+    /// decides it; this only carries it.
     /// </remarks>
     [ObservableProperty]
     public partial double BarFraction { get; set; }

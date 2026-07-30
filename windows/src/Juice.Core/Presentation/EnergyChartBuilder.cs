@@ -77,11 +77,27 @@ public sealed record EnergyChartSeries
     /// A caption stating what the chart does and does not cover, so a partially recorded
     /// window is never presented as a complete one.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The wording says "charted hours" rather than "this period" because the flyout's
+    /// period switcher sits directly above this chart and does not drive it. On a machine
+    /// with no stored history the old caption read "No data recorded for this period."
+    /// immediately beneath a populated Session ranking, which is true of the chart and
+    /// flatly contradicted by the list above it.
+    /// </para>
+    /// <para>
+    /// It deliberately does not restate the window length. The axis is aligned down to the
+    /// hour, so a 24 hour request spans 25 hourly columns for all but one minute in sixty,
+    /// and <see cref="Bars"/>.Count is therefore a column count and not a duration. The
+    /// heading above the chart already names the window, so repeating it here bought
+    /// nothing and cost an hour of accuracy.
+    /// </para>
+    /// </remarks>
     public string CoverageCaption()
     {
         if (Bars.Count == 0) return "No time range selected.";
-        if (GapCount == Bars.Count) return "No data recorded for this period.";
-        if (GapCount == 0) return "Complete recording for this period.";
+        if (GapCount == Bars.Count) return "No energy recorded in the charted hours.";
+        if (GapCount == 0) return "Every charted hour recorded.";
 
         var hours = GapCount == 1 ? "1 hour" : $"{GapCount} hours";
         return $"{hours} not recorded, shown as gaps.";

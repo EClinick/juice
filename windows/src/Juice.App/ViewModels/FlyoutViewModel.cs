@@ -25,22 +25,10 @@ namespace Juice.App.ViewModels;
 public sealed partial class FlyoutViewModel : ObservableObject
 {
     /// <summary>
-    /// Rows shown before the platform row. Five is what fits the flyout without
-    /// scrolling, and beyond that the numbers are small enough that the ranking is noise.
-    /// </summary>
-    private const int MaxAppRows = 5;
-
-    /// <summary>
     /// Rows the list reserves before any measurement exists: the app rows plus the
     /// platform row, which is what the populated list settles at.
     /// </summary>
     private const int ReservedRowCount = MaxAppRows + 1;
-
-    /// <summary>
-    /// Identity used for the platform row. It is not an app, so it takes a key that no
-    /// executable can produce rather than sharing the app id space.
-    /// </summary>
-    private const string PlatformRowId = "\u0000platform";
 
     /// <summary>Creates the view model in its pre-measurement state.</summary>
     /// <param name="icons">
@@ -54,10 +42,11 @@ public sealed partial class FlyoutViewModel : ObservableObject
         // Partial properties cannot carry initialisers. The opening text says there is no
         // reading yet rather than showing a zero that would look like a measurement.
         WattsText = "Unknown";
-        SourceText = "waiting for a reading";
+        SourceText = "Waiting for a reading";
         BatteryText = string.Empty;
         PowerStateText = string.Empty;
         EnergyWindowText = "Collecting the first sampling window.";
+        EnergyCoverageText = string.Empty;
         RateFooterText = string.Empty;
 
         // Reserved from the outset rather than on the first snapshot, because the flyout
@@ -67,6 +56,48 @@ public sealed partial class FlyoutViewModel : ObservableObject
     }
 
     private readonly AppIconService? _icons;
+
+    /// <summary>
+    /// How many app rows the ranking shows, before the platform row.
+    /// </summary>
+    /// <remarks>
+    /// The cap itself and the reasoning behind it live with the builder that applies it.
+    /// </remarks>
+    private const int MaxAppRows = EnergyRankingBuilder.DefaultAppLimit;
+
+    /// <summary>
+    /// The period the ranking and its totals describe.
+    /// </summary>
+    /// <remarks>
+    /// Only the ranking follows this. The hero readout, the battery state and the rail
+    /// breakdown are instantaneous measurements and stay live whatever is selected,
+    /// because there is no such thing as last week's wattage right now. The charts keep
+    /// their own stated window for the reason recorded on them.
+    /// </remarks>
+    [ObservableProperty]
+    public partial EnergyRange SelectedRange { get; set; }
+
+    /// <summary>True while the live session is selected.</summary>
+    /// <remarks>
+    /// Drives whether an incoming snapshot is allowed to rewrite the ranking. A stored
+    /// period must not be overwritten by the sampling loop every few seconds.
+    /// </remarks>
+    public bool IsLiveRange => SelectedRange == EnergyRange.Session;
+
+    /// <summary>Raised when the user picked a different period.</summary>
+    /// <remarks>
+    /// The view model has no store and no clock of its own, deliberately: it is the
+    /// application that owns the database handle and decides what a query costs. So the
+    /// selection is announced and the answer arrives back through
+    /// <see cref="ApplyRanking"/>.
+    /// </remarks>
+    public event EventHandler<EnergyRange>? RangeChanged;
+
+    partial void OnSelectedRangeChanged(EnergyRange value)
+    {
+        OnPropertyChanged(nameof(IsLiveRange));
+        RangeChanged?.Invoke(this, value);
+    }
 
     /// <summary>System wattage, or "Unknown" when nothing has measured it.</summary>
     [ObservableProperty]
@@ -99,6 +130,22 @@ public sealed partial class FlyoutViewModel : ObservableObject
     /// <summary>Describes the window the energy rows were measured over.</summary>
     [ObservableProperty]
     public partial string EnergyWindowText { get; set; }
+
+    /// <summary>
+    /// States how much of the selected period was actually recorded, or nothing when all
+    /// of it was.
+    /// </summary>
+    /// <remarks>
+    /// Kept apart from <see cref="EnergyWindowText"/> so it can be hidden rather than
+    /// producing a trailing blank sentence, and so it can be drawn in the same muted
+    /// style the chart captions use for the same admission.
+    /// </remarks>
+    [ObservableProperty]
+    public partial string EnergyCoverageText { get; set; }
+
+    /// <summary>True when there is a coverage shortfall to admit to.</summary>
+    [ObservableProperty]
+    public partial bool HasEnergyCoverageNote { get; set; }
 
     /// <summary>Electricity rate line, including whether it is an estimate.</summary>
     [ObservableProperty]
@@ -230,6 +277,11 @@ public sealed partial class FlyoutViewModel : ObservableObject
     }
 
     /// <summary>Applies a completed sampling pass.</summary>
+    /// <remarks>
+    /// The ranking is only rewritten while the live session is selected. A snapshot
+    /// arrives every few seconds, and letting it overwrite a stored period would make the
+    /// selector look broken: the user would pick "Week" and watch it revert.
+    /// </remarks>
     public void Update(PowerSnapshot snapshot, ElectricityRate rate)
     {
         var sample = snapshot.Sample;
@@ -237,12 +289,20 @@ public sealed partial class FlyoutViewModel : ObservableObject
         Severity = snapshot.Severity;
         WattsText = PowerFormatter.Watts(sample?.SystemWatts);
         SourceText = sample is null
-            ? "waiting for a reading"
-            : DiagnosticsReport.TierName(sample.Tier);
+            ? "Waiting for a reading"
+            : SentenceCase(DiagnosticsReport.TierName(sample.Tier));
 
         UpdateBattery(sample, snapshot.Remaining);
         UpdateRails(sample);
-        UpdateEnergyRows(snapshot.Attribution, rate);
+
+        if (IsLiveRange)
+        {
+            ApplyRanking(
+                EnergyRankingBuilder.FromLive(snapshot.Attribution),
+                EnergyRange.Session,
+                rate);
+        }
+
         UpdateFooter(rate);
     }
 
@@ -297,62 +357,104 @@ public sealed partial class FlyoutViewModel : ObservableObject
         HasRails = present.Count > 0;
     }
 
-    private void UpdateEnergyRows(AttributionResult? attribution, ElectricityRate rate)
+    /// <summary>
+    /// Applies a ranking built for one period, whether it came from the live sampling
+    /// loop or from the store.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// One entry point for both sources, so the two cannot drift apart in how they label
+    /// themselves. What differs between them is only the unit: a live session reports the
+    /// average draw right now, and a stored period reports the energy that was actually
+    /// accumulated. Watts over a week would be an average of averages that nobody asked
+    /// for, and watt-hours over four seconds is a number too small to read.
+    /// </para>
+    /// <para>
+    /// An empty ranking falls back to reserved rows rather than to an empty list, so the
+    /// flyout keeps its height while a period with nothing in it is selected.
+    /// </para>
+    /// </remarks>
+    public void ApplyRanking(EnergyRanking ranking, EnergyRange range, ElectricityRate rate)
     {
-        if (attribution is null || attribution.End <= attribution.Start)
+        ArgumentNullException.ThrowIfNull(ranking);
+
+        var isLive = range == EnergyRange.Session;
+
+        if (ranking.IsEmpty)
         {
             ReservePlaceholderRows();
             HasEnergyRows = false;
-            EnergyWindowText = "Collecting the first sampling window.";
+            EnergyWindowText = EmptyCaptionFor(range);
+            EnergyCoverageText = ranking.CoverageCaption();
+            HasEnergyCoverageNote = EnergyCoverageText.Length > 0;
             return;
         }
 
-        var window = attribution.End - attribution.Start;
-        var hours = window.TotalHours;
-
-        var rows = new List<(string AppId, string Name, double Watts, bool IsPlatform, IReadOnlyList<int> Pids)>();
-
-        foreach (var app in attribution.Apps.Take(MaxAppRows))
+        SyncRows(EnergyRows, ranking.Rows.Count, () => new EnergyRowViewModel(), (row, index) =>
         {
-            if (app.TotalWattHours <= 0) continue;
-            rows.Add((app.AppId, app.DisplayName, app.Watts, false, app.ProcessIds));
-        }
+            var source = ranking.Rows[index];
 
-        if (attribution.PlatformWattHours > 0 && hours > 0)
-        {
-            rows.Add((PlatformRowId, "System and display", attribution.PlatformWattHours / hours, true, []));
-        }
-
-        // Bars are scaled against the heaviest app, not against the heaviest row. The
-        // platform row is usually the largest single consumer, and including it would
-        // squeeze every app into the same short stub and destroy the ranking the list
-        // exists to show. The platform row is scaled against that same app maximum and
-        // clamps at full width when it exceeds it, which is honest enough because it is
-        // drawn in grey and set apart from the apps, and because its watts figure is
-        // printed next to it either way.
-        var heaviestAppWatts = RankingShare.Heaviest(
-            rows.Where(r => !r.IsPlatform).Select(r => r.Watts));
-
-        SyncRows(EnergyRows, rows.Count, () => new EnergyRowViewModel(), (row, index) =>
-        {
-            var (appId, name, watts, isPlatform, pids) = rows[index];
-            row.AppId = appId;
-            row.DisplayName = name;
-            row.WattsText = PowerFormatter.Watts(watts);
-            row.CostText = MoneyFormatter.Format(
-                CostCalculator.AnnualCostOfSustainedWatts(watts, rate), rate.Currency) + " a year";
-            row.IsPlatform = isPlatform;
+            row.AppId = source.AppId;
+            row.DisplayName = source.DisplayName;
+            row.ValueText = isLive
+                ? PowerFormatter.Watts(source.Watts)
+                : PowerFormatter.Energy(source.WattHours);
+            row.CostText = isLive
+                ? MoneyFormatter.Format(
+                    CostCalculator.AnnualCostOfSustainedWatts(source.Watts, rate), rate.Currency) + " a year"
+                : MoneyFormatter.Format(CostCalculator.CostOf(source.WattHours, rate), rate.Currency);
+            row.IsPlatform = source.IsPlatform;
             row.IsPlaceholder = false;
-            row.BarFraction = RankingShare.Of(watts, heaviestAppWatts);
+            row.IsFirstRow = index == 0;
+            row.BarFraction = source.BarFraction;
 
-            UpdateIcon(row, appId, isPlatform, pids);
+            UpdateIcon(row, source.AppId, source.IsPlatform, source.ProcessIds);
         });
 
-        HasEnergyRows = rows.Count > 0;
-        EnergyWindowText = rows.Count > 0
-            ? $"Measured over the last {PowerFormatter.FormatDuration(window)}, {PowerFormatter.Energy(attribution.SystemWattHours)} total."
-            : "No app drew measurable energy in the last window.";
+        HasEnergyRows = true;
+        EnergyWindowText = isLive
+            ? $"Measured over the last {PowerFormatter.FormatElapsed(ranking.Window)}, {PowerFormatter.Energy(ranking.SystemWattHours)} total."
+            : $"{CaptionFor(range)}, {PowerFormatter.Energy(ranking.SystemWattHours)} total.";
+
+        EnergyCoverageText = ranking.CoverageCaption();
+        HasEnergyCoverageNote = EnergyCoverageText.Length > 0;
     }
+
+    /// <summary>
+    /// Capitalises the first letter of a phrase for use as a standalone caption.
+    /// </summary>
+    /// <remarks>
+    /// The tier names come from <see cref="DiagnosticsReport"/>, where they are written
+    /// lower case because they appear mid line after a "Source:" label. Under the hero
+    /// reading the same phrase is a sentence of its own, and Windows writes those in
+    /// sentence case. Fixing it here rather than in the report keeps the diagnostics text
+    /// reading as prose, which is what a support log wants.
+    /// </remarks>
+    private static string SentenceCase(string text)
+        => text.Length == 0 ? text : char.ToUpperInvariant(text[0]) + text[1..];
+
+    /// <summary>How a populated stored period introduces itself.</summary>
+    private static string CaptionFor(EnergyRange range) => range switch    {
+        EnergyRange.Today => "Since midnight",
+        EnergyRange.Week => "Over the last 7 days",
+        _ => "Across all recorded history",
+    };
+
+    /// <summary>
+    /// What the list says when the period holds nothing.
+    /// </summary>
+    /// <remarks>
+    /// Each of these is a different fact and they are worth distinguishing. The live
+    /// session is still filling its first window, whereas an empty stored period means
+    /// Juice was not running, and telling the user to wait would be wrong there.
+    /// </remarks>
+    private static string EmptyCaptionFor(EnergyRange range) => range switch
+    {
+        EnergyRange.Session => "Collecting the first sampling window.",
+        EnergyRange.Today => "Nothing recorded since midnight.",
+        EnergyRange.Week => "Nothing recorded in the last 7 days.",
+        _ => "No history recorded yet.",
+    };
 
     /// <summary>
     /// Fills the list with blank rows that occupy the height the populated list will
@@ -364,11 +466,12 @@ public sealed partial class FlyoutViewModel : ObservableObject
         {
             row.AppId = string.Empty;
             row.DisplayName = string.Empty;
-            row.WattsText = string.Empty;
+            row.ValueText = string.Empty;
             row.CostText = string.Empty;
             row.Icon = null;
             row.IsPlatform = false;
             row.IsPlaceholder = true;
+            row.IsFirstRow = index == 0;
             row.BarFraction = 0;
         });
     }
