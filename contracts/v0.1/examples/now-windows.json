@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "0.1",
+  "platform": "windows",
+  "command": "now",
+  "generatedAt": "2026-07-29T19:34:00Z",
+  "ok": true,
+  "measurement": {
+    "confidence": "measured",
+    "source": "hardwareRail",
+    "systemWatts": 34.688,
+    "rails": {
+      "cpu": 17.577,
+      "gpu": 0.041,
+      "supply": 34.639
+    }
+  },
+  "battery": {
+    "present": true,
+    "percent": 80,
+    "flow": "pluggedIn"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "0.1",
+  "platform": "windows",
+  "command": "now",
+  "generatedAt": "2026-07-29T19:34:00Z",
+  "ok": false,
+  "error": {
+    "code": "noPowerSource",
+    "message": "No power source is available on this machine."
+  }
+}

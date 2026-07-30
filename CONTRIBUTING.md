@@ -26,6 +26,15 @@ Probe binaries must be re-signed after every build (`make dev-probe` does this f
 - Never use the em-dash character; use a plain "-" instead.
 - In Markdown, put each full sentence on its own line.
 
+## Cross-platform behavior
+
+Juice for Windows is maintained in [EClinick/juice-windows](https://github.com/EClinick/juice-windows) with its own implementation and release lifecycle.
+See [Platform parity](docs/platform-parity.md) for the repository boundary and feature workflow.
+
+Classify product changes as `shared-behavior`, `macos-only`, `windows-followup`, or `contract-change`.
+Shared behavior should have a linked Windows follow-up or a documented reason that the behavior differs.
+Changes to public JSON output must update the versioned contract and fixtures under `contracts/`.
+
 ## The privileged helper is special
 
 `Sources/JuiceHelper` runs as root.

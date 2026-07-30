@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "0.1",
+  "platform": "windows",
+  "command": "top",
+  "generatedAt": "2026-07-29T19:34:12Z",
+  "ok": true,
+  "window": {
+    "start": "2026-07-29T19:34:00Z",
+    "end": "2026-07-29T19:34:12Z",
+    "seconds": 12
+  },
+  "energy": {
+    "systemWattHours": 0.0861,
+    "attributedWattHours": 0.0722,
+    "platformWattHours": 0.0139
+  },
+  "rate": {
+    "pricePerKwh": 0.17,
+    "currency": "USD",
+    "regionCode": "US",
+    "regionName": "United States",
+    "isEstimate": true
+  },
+  "apps": [
+    {
+      "appId": "copilot",
+      "displayName": "Copilot",
+      "watts": 8.86,
+      "wattHours": 0.0295,
+      "components": {
+        "cpu": 8.86,
+        "gpu": 0
+      },
+      "annualCost": 13.2
+    }
+  ]
+}
