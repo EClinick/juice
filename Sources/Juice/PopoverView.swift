@@ -298,6 +298,7 @@ struct PopoverView: View {
                 if active {
                     model.refresh()
                     helper.refresh()
+                    applyInitialRange()
                 } else {
                     loadTask?.cancel()
                 }
@@ -306,7 +307,6 @@ struct PopoverView: View {
             .frame(width: 0, height: 0)
         }
         .onAppear {
-            applyInitialRange()
             syncDataAttachments()
         }
         .task(id: surfaceIsActive) {
