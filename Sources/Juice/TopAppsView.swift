@@ -66,6 +66,22 @@ struct TopAppsView: View {
         return showsLiveAcrossRanges || range == .today || range == .session
     }
 
+    static func costHeaderContext(
+        range: EnergyRange,
+        pricePerKilowattHour: Double
+    ) -> String? {
+        guard ElectricityCost.normalizedPrice(pricePerKilowattHour) > 0 else {
+            return nil
+        }
+        switch range {
+        case .session: return "SESSION"
+        case .today: return "TODAY"
+        case .threeDays: return "3D"
+        case .week: return "1W"
+        case .allTime: return "ALL"
+        }
+    }
+
     private var maxEnergy: Double {
         max(apps.map(\.energyWh).max() ?? 0, 0.001)
     }
@@ -202,7 +218,10 @@ struct TopAppsView: View {
                 CollapsibleLiveHeader(
                     isExpanded: $isTodayLiveExpanded,
                     appCount: hybrid.active.count,
-                    totalWatts: totalLiveWatts)
+                    totalWatts: totalLiveWatts,
+                    costContext: Self.costHeaderContext(
+                        range: range,
+                        pricePerKilowattHour: pricePerKilowattHour))
 
                 if isTodayLiveExpanded {
                     ForEach(hybrid.active) { app in
@@ -267,7 +286,10 @@ struct TopAppsView: View {
                 CollapsibleLiveHeader(
                     isExpanded: $isTodayLiveExpanded,
                     appCount: hybrid.active.count,
-                    totalWatts: totalLiveWatts)
+                    totalWatts: totalLiveWatts,
+                    costContext: Self.costHeaderContext(
+                        range: .today,
+                        pricePerKilowattHour: pricePerKilowattHour))
 
                 if isTodayLiveExpanded {
                     ForEach(hybrid.active) { app in
@@ -337,7 +359,10 @@ struct TopAppsView: View {
                 CollapsibleLiveHeader(
                     isExpanded: $isSessionLiveExpanded,
                     appCount: hybrid.active.count,
-                    totalWatts: totalLiveWatts)
+                    totalWatts: totalLiveWatts,
+                    costContext: Self.costHeaderContext(
+                        range: .session,
+                        pricePerKilowattHour: pricePerKilowattHour))
 
                 if isSessionLiveExpanded {
                     ForEach(hybrid.active) { app in
@@ -450,6 +475,7 @@ private struct CollapsibleLiveHeader: View {
     @Binding var isExpanded: Bool
     let appCount: Int
     let totalWatts: Double
+    let costContext: String?
 
     var body: some View {
         Button {
@@ -461,7 +487,10 @@ private struct CollapsibleLiveHeader: View {
                 LiveDot()
                 Text("DRAWING POWER NOW")
                 Spacer()
-                if !isExpanded {
+                if isExpanded, let costContext {
+                    Text("\(costContext) COST")
+                        .foregroundStyle(.tertiary)
+                } else if !isExpanded {
                     Text("\(appCount) app\(appCount == 1 ? "" : "s") · \(liveWattsText(totalWatts))")
                         .foregroundStyle(.tertiary)
                         .monospacedDigit()
@@ -523,7 +552,7 @@ private struct LiveActiveRow: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.green)
                     if let costText {
-                        Text("\(compactCostContext) · \(costText)")
+                        Text(costText)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -559,18 +588,6 @@ private struct LiveActiveRow: View {
         case .threeDays: return "over three days"
         case .week: return "this week"
         case .allTime: return "all time"
-        }
-    }
-
-    /// Keep the period at the start so tail truncation can shorten a long
-    /// localized currency value without ever hiding what the cost covers.
-    private var compactCostContext: String {
-        switch range {
-        case .session: return "SESSION"
-        case .today: return "TODAY"
-        case .threeDays: return "3D"
-        case .week: return "1W"
-        case .allTime: return "ALL"
         }
     }
 
