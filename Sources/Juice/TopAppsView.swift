@@ -182,15 +182,6 @@ struct TopAppsView: View {
         }
     }
 
-    private var rangeEnergyContext: String {
-        switch range {
-        case .today: return "today"
-        case .week: return "this week"
-        case .allTime: return "all time"
-        default: return range.rawValue.lowercased()
-        }
-    }
-
     /// Server variant of the original hybrid pattern. Live watts remain at the
     /// top for every range; changing tabs only changes the Wh value and the
     /// historical rows below.
@@ -218,7 +209,7 @@ struct TopAppsView: View {
                         LiveActiveRow(
                             app: app,
                             energyText: liveEnergyValueText(app.todayWh),
-                            energyContext: rangeEnergyContext,
+                            range: range,
                             costText: costValueText(app.todayWh),
                             fraction: app.watts / maxWatts,
                             onTap: {
@@ -283,7 +274,7 @@ struct TopAppsView: View {
                         LiveActiveRow(
                             app: app,
                             energyText: liveEnergyValueText(app.todayWh),
-                            energyContext: "today",
+                            range: .today,
                             costText: costValueText(app.todayWh),
                             fraction: app.watts / maxWatts,
                             onTap: {
@@ -354,7 +345,7 @@ struct TopAppsView: View {
                             app: app,
                             energyText: liveEnergyValueText(
                                 sessionByKey[app.appKey]?.energyWh),
-                            energyContext: "session",
+                            range: .session,
                             costText: costValueText(
                                 sessionByKey[app.appKey]?.energyWh),
                             fraction: app.watts / maxWatts,
@@ -496,7 +487,7 @@ private struct CollapsibleLiveHeader: View {
 private struct LiveActiveRow: View {
     let app: HybridTodayList.ActiveApp
     let energyText: String?
-    let energyContext: String
+    let range: EnergyRange
     let costText: String?
     let fraction: Double
     let onTap: () -> Void
@@ -532,7 +523,7 @@ private struct LiveActiveRow: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.green)
                     if let costText {
-                        Text("\(costText) \(energyContext)")
+                        Text("\(compactCostContext) · \(costText)")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -559,6 +550,28 @@ private struct LiveActiveRow: View {
     private var accessibilityValue: String {
         guard let costText else { return liveWattsText(app.watts) }
         return "\(liveWattsText(app.watts)), estimated cost \(costText) \(energyContext)"
+    }
+
+    private var energyContext: String {
+        switch range {
+        case .session: return "for this session"
+        case .today: return "today"
+        case .threeDays: return "over three days"
+        case .week: return "this week"
+        case .allTime: return "all time"
+        }
+    }
+
+    /// Keep the period at the start so tail truncation can shorten a long
+    /// localized currency value without ever hiding what the cost covers.
+    private var compactCostContext: String {
+        switch range {
+        case .session: return "SESSION"
+        case .today: return "TODAY"
+        case .threeDays: return "3D"
+        case .week: return "1W"
+        case .allTime: return "ALL"
+        }
     }
 
     private var energySubtext: Text {
