@@ -78,6 +78,8 @@ struct AppDetailView: View {
     @State private var showsAllProcesses = false
     @State private var processLoadState: ProcessLoadState = .idle
     @State private var processLoadID: UUID?
+    @AppStorage(ElectricityCost.pricePerKilowattHourStorageKey)
+    private var pricePerKilowattHour = ElectricityCost.defaultPricePerKilowattHour
 
     private var loadAnimation: Animation {
         .timingCurve(0.23, 1, 0.32, 1, duration: 0.2)
@@ -221,12 +223,21 @@ struct AppDetailView: View {
                 Text(displayName)
                     .font(.title3.weight(.semibold))
                     .lineLimit(1)
-                Text("\(detailEnergyText(breakdown.totalWh)) · \(rangeLabel)")
+                Text(headerSummary(breakdown))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
         }
+    }
+
+    private func headerSummary(_ breakdown: AppEnergyBreakdown) -> String {
+        let energy = detailEnergyText(breakdown.totalWh)
+        guard let cost = ElectricityCost.formattedEstimate(
+            wattHours: breakdown.totalWh,
+            pricePerKilowattHour: pricePerKilowattHour)
+        else { return "\(energy) · \(rangeLabel)" }
+        return "\(energy) · \(cost) estimated · \(rangeLabel)"
     }
 
     // MARK: - Component breakdown

@@ -283,6 +283,9 @@ struct PopoverView: View {
                         )
                     }
                 }
+                SettingsLink {
+                    Text("Settings…")
+                }
                 Spacer()
                 Button("Quit Juice") { NSApp.terminate(nil) }
             }

@@ -134,5 +134,9 @@ struct JuiceApp: App {
             }
         }
         .menuBarExtraStyle(.window)
+
+        Settings {
+            ElectricitySettingsView()
+        }
     }
 }

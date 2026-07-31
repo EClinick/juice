@@ -19,6 +19,8 @@ struct TopAppsView: View {
     var showsLiveAcrossRanges = false
     @State private var isSessionLiveExpanded = true
     @State private var isTodayLiveExpanded = true
+    @AppStorage(ElectricityCost.pricePerKilowattHourStorageKey)
+    private var pricePerKilowattHour = ElectricityCost.defaultPricePerKilowattHour
     /// The shared live/history result. Session reads its active rows and joins
     /// them with exact session energy; Today renders the result verbatim.
     var hybrid: HybridTodayList?
@@ -81,6 +83,13 @@ struct TopAppsView: View {
         }
         guard wattHours >= 0.05 else { return nil }
         return String(format: "%.1f Wh", wattHours)
+    }
+
+    private func costValueText(_ wattHours: Double?) -> String? {
+        guard let wattHours else { return nil }
+        return ElectricityCost.formattedEstimate(
+            wattHours: wattHours,
+            pricePerKilowattHour: pricePerKilowattHour)
     }
 
     private var historicalAppsIdentity: String {
@@ -154,6 +163,7 @@ struct TopAppsView: View {
                     app: app,
                     fraction: app.energyWh / maxEnergy,
                     valueText: energyValueText(app.energyWh),
+                    costText: costValueText(app.energyWh),
                     onTap: { showDetail(appKey: app.bundleId, displayName: app.displayName) })
             }
         }
@@ -209,6 +219,7 @@ struct TopAppsView: View {
                             app: app,
                             energyText: liveEnergyValueText(app.todayWh),
                             energyContext: rangeEnergyContext,
+                            costText: costValueText(app.todayWh),
                             fraction: app.watts / maxWatts,
                             onTap: {
                                 showDetail(appKey: app.appKey, displayName: app.displayName)
@@ -227,6 +238,7 @@ struct TopAppsView: View {
                             app: app,
                             fraction: app.energyWh / historyMax,
                             valueText: energyValueText(app.energyWh),
+                            costText: costValueText(app.energyWh),
                             onTap: {
                                 showDetail(
                                     appKey: app.bundleId,
@@ -237,6 +249,8 @@ struct TopAppsView: View {
                         FoldedAppsRow(
                             count: foldedHistory.count,
                             valueText: energyValueText(
+                                foldedHistory.reduce(0) { $0 + $1.energyWh }),
+                            costText: costValueText(
                                 foldedHistory.reduce(0) { $0 + $1.energyWh }))
                     }
                 }
@@ -270,6 +284,7 @@ struct TopAppsView: View {
                             app: app,
                             energyText: liveEnergyValueText(app.todayWh),
                             energyContext: "today",
+                            costText: costValueText(app.todayWh),
                             fraction: app.watts / maxWatts,
                             onTap: {
                                 showDetail(appKey: app.appKey, displayName: app.displayName)
@@ -288,12 +303,15 @@ struct TopAppsView: View {
                             app: app,
                             fraction: app.energyWh / historyMax,
                             valueText: energyValueText(app.energyWh),
+                            costText: costValueText(app.energyWh),
                             onTap: { showDetail(appKey: app.bundleId, displayName: app.displayName) })
                     }
                     if !foldedHistory.isEmpty {
                         FoldedAppsRow(
                             count: foldedHistory.count,
                             valueText: energyValueText(
+                                foldedHistory.reduce(0) { $0 + $1.energyWh }),
+                            costText: costValueText(
                                 foldedHistory.reduce(0) { $0 + $1.energyWh }))
                     }
                 }
@@ -337,6 +355,8 @@ struct TopAppsView: View {
                             energyText: liveEnergyValueText(
                                 sessionByKey[app.appKey]?.energyWh),
                             energyContext: "session",
+                            costText: costValueText(
+                                sessionByKey[app.appKey]?.energyWh),
                             fraction: app.watts / maxWatts,
                             onTap: {
                                 showDetail(appKey: app.appKey, displayName: app.displayName)
@@ -355,6 +375,7 @@ struct TopAppsView: View {
                             app: app,
                             fraction: app.energyWh / historyMax,
                             valueText: energyValueText(app.energyWh),
+                            costText: costValueText(app.energyWh),
                             onTap: {
                                 showDetail(appKey: app.bundleId, displayName: app.displayName)
                             })
@@ -363,6 +384,8 @@ struct TopAppsView: View {
                         FoldedAppsRow(
                             count: foldedHistory.count,
                             valueText: energyValueText(
+                                foldedHistory.reduce(0) { $0 + $1.energyWh }),
+                            costText: costValueText(
                                 foldedHistory.reduce(0) { $0 + $1.energyWh }))
                     }
                 }
@@ -474,6 +497,7 @@ private struct LiveActiveRow: View {
     let app: HybridTodayList.ActiveApp
     let energyText: String?
     let energyContext: String
+    let costText: String?
     let fraction: Double
     let onTap: () -> Void
 
@@ -503,11 +527,20 @@ private struct LiveActiveRow: View {
                     .frame(height: 5)
                 }
 
-                Text(liveWattsText(app.watts))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.green)
-                    .monospacedDigit()
-                    .frame(width: 56, alignment: .trailing)
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(liveWattsText(app.watts))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.green)
+                    if let costText {
+                        Text(costText)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                    }
+                }
+                .monospacedDigit()
+                .frame(width: 60, alignment: .trailing)
 
                 Image(systemName: "chevron.right")
                     .font(.system(size: 9, weight: .semibold))
@@ -519,8 +552,13 @@ private struct LiveActiveRow: View {
         .onHover { hovering = $0 }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(app.displayName)
-        .accessibilityValue(liveWattsText(app.watts))
+        .accessibilityValue(accessibilityValue)
         .accessibilityHint("Opens energy details")
+    }
+
+    private var accessibilityValue: String {
+        guard let costText else { return liveWattsText(app.watts) }
+        return "\(liveWattsText(app.watts)), estimated cost \(costText)"
     }
 
     private var energySubtext: Text {
@@ -536,6 +574,7 @@ private struct FoldedAppsRow: View {
     let count: Int
     /// Pre-formatted value so each section folds in its own unit (W or Wh).
     let valueText: String
+    let costText: String?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -554,11 +593,19 @@ private struct FoldedAppsRow: View {
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            Text(valueText)
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .monospacedDigit()
-                .frame(width: 56, alignment: .trailing)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(valueText)
+                    .font(.caption)
+                if let costText {
+                    Text(costText)
+                        .font(.caption2)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
+            }
+            .foregroundStyle(.tertiary)
+            .monospacedDigit()
+            .frame(width: 60, alignment: .trailing)
         }
     }
 }
@@ -598,6 +645,7 @@ private struct AppEnergyRow: View {
     let app: AppEnergy
     let fraction: Double
     let valueText: String
+    let costText: String?
     let onTap: () -> Void
 
     @State private var hovering = false
@@ -625,11 +673,19 @@ private struct AppEnergyRow: View {
                     .frame(height: 5)
                 }
 
-                Text(valueText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                    .frame(width: 56, alignment: .trailing)
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(valueText)
+                        .font(.caption)
+                    if let costText {
+                        Text(costText)
+                            .font(.caption2)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                    }
+                }
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .frame(width: 60, alignment: .trailing)
 
                 Image(systemName: "chevron.right")
                     .font(.system(size: 9, weight: .semibold))
@@ -641,8 +697,13 @@ private struct AppEnergyRow: View {
         .onHover { hovering = $0 }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(app.displayName)
-        .accessibilityValue(valueText)
+        .accessibilityValue(accessibilityValue)
         .accessibilityHint("Opens energy details")
+    }
+
+    private var accessibilityValue: String {
+        guard let costText else { return valueText }
+        return "\(valueText), estimated cost \(costText)"
     }
 }
 

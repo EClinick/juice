@@ -35,6 +35,8 @@ struct StatsView: View {
     @State private var range: EnergyRange
     @AppStorage(StatsRangeVisibility.storageKey)
     private var rangeVisibilityStorage = StatsRangeVisibility.defaultStorageValue
+    @AppStorage(ElectricityCost.pricePerKilowattHourStorageKey)
+    private var pricePerKilowattHour = ElectricityCost.defaultPricePerKilowattHour
     @State private var isCustomizingRanges = false
     /// Calendar history other than Today. Today reads the coordinator's
     /// published result; Session reads its exact-window coordinator.
@@ -105,6 +107,13 @@ struct StatsView: View {
 
     private var totalEnergy: Double {
         max(apps.reduce(0) { $0 + $1.energyWh }, 0.001)
+    }
+
+    private func costText(_ wattHours: Double?) -> String? {
+        guard let wattHours else { return nil }
+        return ElectricityCost.formattedEstimate(
+            wattHours: wattHours,
+            pricePerKilowattHour: pricePerKilowattHour)
     }
 
     var body: some View {
@@ -410,6 +419,7 @@ struct StatsView: View {
                         StatsAppRow(
                             app: app,
                             share: app.energyWh / totalEnergy,
+                            costText: costText(app.energyWh),
                             onTap: {
                                 AppDetailPresenter.shared.show(
                                     appKey: app.bundleId,
@@ -472,6 +482,7 @@ struct StatsView: View {
                             energyWh: app.todayWh,
                             cpuHours: app.todayCpuHours,
                             share: app.watts / maxWatts,
+                            costText: costText(app.todayWh),
                             onTap: {
                                 AppDetailPresenter.shared.show(
                                     appKey: app.appKey,
@@ -491,6 +502,7 @@ struct StatsView: View {
                             StatsAppRow(
                                 app: app,
                                 share: app.energyWh / earlierTotal,
+                                costText: costText(app.energyWh),
                                 onTap: {
                                     AppDetailPresenter.shared.show(
                                         appKey: app.bundleId,
@@ -545,6 +557,7 @@ struct StatsView: View {
                             energyWh: sessionEnergy?.energyWh,
                             cpuHours: sessionEnergy?.cpuHours,
                             share: app.watts / maxWatts,
+                            costText: costText(sessionEnergy?.energyWh),
                             onTap: {
                                 AppDetailPresenter.shared.show(
                                     appKey: app.appKey,
@@ -565,6 +578,7 @@ struct StatsView: View {
                             StatsAppRow(
                                 app: app,
                                 share: app.energyWh / earlierTotal,
+                                costText: costText(app.energyWh),
                                 onTap: {
                                     AppDetailPresenter.shared.show(
                                         appKey: app.bundleId,
@@ -734,6 +748,7 @@ struct StatsView: View {
 private struct StatsAppRow: View {
     let app: AppEnergy
     let share: Double
+    let costText: String?
     let onTap: () -> Void
 
     @State private var hovering = false
@@ -760,10 +775,19 @@ private struct StatsAppRow: View {
                 }
                 .frame(width: 60, height: 5)
 
-                Text(String(format: "%.1f Wh", app.energyWh))
-                    .font(.callout)
-                    .monospacedDigit()
-                    .frame(width: 72, alignment: .trailing)
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(String(format: "%.1f Wh", app.energyWh))
+                        .font(.callout)
+                    if let costText {
+                        Text(costText)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                    }
+                }
+                .monospacedDigit()
+                .frame(width: 72, alignment: .trailing)
 
                 Text(String(format: "%.1f h CPU", app.cpuHours))
                     .font(.caption)
@@ -781,9 +805,15 @@ private struct StatsAppRow: View {
         .onHover { hovering = $0 }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(app.displayName)
-        .accessibilityValue(String(
-            format: "%.1f watt-hours, %.1f CPU-hours", app.energyWh, app.cpuHours))
+        .accessibilityValue(accessibilityValue)
         .accessibilityHint("Opens energy details")
+    }
+
+    private var accessibilityValue: String {
+        let energy = String(
+            format: "%.1f watt-hours, %.1f CPU-hours", app.energyWh, app.cpuHours)
+        guard let costText else { return energy }
+        return "\(energy), estimated cost \(costText)"
     }
 }
 
@@ -796,6 +826,7 @@ private struct StatsActiveAppRow: View {
     let energyWh: Double?
     let cpuHours: Double?
     let share: Double
+    let costText: String?
     let onTap: () -> Void
 
     @State private var hovering = false
@@ -830,10 +861,19 @@ private struct StatsActiveAppRow: View {
                     .monospacedDigit()
                     .frame(width: 60, alignment: .trailing)
 
-                Text(energyWh.map { String(format: "%.1f Wh", $0) } ?? "-")
-                    .font(.callout)
-                    .monospacedDigit()
-                    .frame(width: 72, alignment: .trailing)
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(energyWh.map { String(format: "%.1f Wh", $0) } ?? "-")
+                        .font(.callout)
+                    if let costText {
+                        Text(costText)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                    }
+                }
+                .monospacedDigit()
+                .frame(width: 72, alignment: .trailing)
 
                 Text(cpuHours.map { String(format: "%.1f h CPU", $0) } ?? "-")
                     .font(.caption)
@@ -851,8 +891,13 @@ private struct StatsActiveAppRow: View {
         .onHover { hovering = $0 }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(app.displayName)
-        .accessibilityValue(liveWattsText(app.watts))
+        .accessibilityValue(accessibilityValue)
         .accessibilityHint("Opens energy details")
+    }
+
+    private var accessibilityValue: String {
+        guard let costText else { return liveWattsText(app.watts) }
+        return "\(liveWattsText(app.watts)), estimated cost \(costText)"
     }
 }
 
