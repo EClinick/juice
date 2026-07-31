@@ -14,6 +14,8 @@ final class StatsWindowPresenter: NSObject, NSWindowDelegate {
 
     private(set) var window: NSWindow?
     private let detachStatsConsumers: @MainActor () -> Void
+    private var suspendedHost: NSViewController?
+    private var contentIsSuspended = false
 
     private override init() {
         detachStatsConsumers = {
@@ -42,8 +44,36 @@ final class StatsWindowPresenter: NSObject, NSWindowDelegate {
               closingWindow === window else {
             return
         }
-        detachStatsConsumers()
-        Self.discardHostedContent(from: closingWindow)
+        suspendContent(in: closingWindow, retainingHost: false)
+    }
+
+    /// A minimized Stats window is not visible. Tear down its SwiftUI host so
+    /// live tokens, repeating animations, and minute refresh tasks cannot keep
+    /// running behind the Dock icon.
+    func windowDidMiniaturize(_ notification: Notification) {
+        guard let minimizedWindow = notification.object as? NSWindow,
+              minimizedWindow === window else {
+            return
+        }
+        suspendContent(in: minimizedWindow, retainingHost: true)
+    }
+
+    /// Reattach the same hosting controller when the retained window is made
+    /// visible again. Removing its view from the window cancels visibility-
+    /// bound tasks; retaining the controller preserves SwiftUI-owned UI state.
+    func windowDidDeminiaturize(_ notification: Notification) {
+        guard let restoredWindow = notification.object as? NSWindow,
+              restoredWindow === window,
+              contentIsSuspended,
+              let suspendedHost else {
+            return
+        }
+        let contentSize = restoredWindow.contentRect(
+            forFrameRect: restoredWindow.frame).size
+        restoredWindow.contentViewController = suspendedHost
+        restoredWindow.setContentSize(contentSize)
+        self.suspendedHost = nil
+        contentIsSuspended = false
     }
 
     /// `present` always installs a fresh root before reopening the retained
@@ -98,6 +128,9 @@ final class StatsWindowPresenter: NSObject, NSWindowDelegate {
         frameAutosaveName: NSWindow.FrameAutosaveName = "JuiceStatsWindow"
     ) {
         if let window {
+            if window.isMiniaturized {
+                window.deminiaturize(nil)
+            }
             // Refresh the content so the reopened window reflects current data.
             let currentSize = window.contentRect(forFrameRect: window.frame).size
             let targetSize: NSSize
@@ -110,6 +143,8 @@ final class StatsWindowPresenter: NSObject, NSWindowDelegate {
                 targetSize = currentSize
             }
             window.contentViewController = NSHostingController(rootView: root)
+            suspendedHost = nil
+            contentIsSuspended = false
             window.title = title
             window.contentMinSize = minimumContentSize
             // Replacing a hosting controller can adopt the new root's fitting
@@ -141,5 +176,21 @@ final class StatsWindowPresenter: NSObject, NSWindowDelegate {
         self.window = window
         window.makeKeyAndOrderFront(nil)
         window.center()
+    }
+
+    private func suspendContent(
+        in window: NSWindow,
+        retainingHost: Bool
+    ) {
+        if contentIsSuspended {
+            if !retainingHost {
+                suspendedHost = nil
+            }
+            return
+        }
+        detachStatsConsumers()
+        suspendedHost = retainingHost ? window.contentViewController : nil
+        Self.discardHostedContent(from: window)
+        contentIsSuspended = true
     }
 }

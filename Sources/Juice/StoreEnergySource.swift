@@ -11,8 +11,11 @@ struct StoreEnergySource: EnergySource {
     // Nonisolated async, so the synchronous store reads run on the
     // cooperative pool rather than the caller's (main) actor.
     func topApps(range: EnergyRange) async throws -> [AppEnergy] {
+        try Task.checkCancellation()
         let sinceDay = Self.sinceDay(for: range)
-        return try store.appEnergyTotals(sinceDay: sinceDay)
+        let totals = try store.appEnergyTotals(sinceDay: sinceDay)
+        try Task.checkCancellation()
+        return totals
             .map { total in
                 AppEnergy(
                     bundleId: total.appKey,
@@ -24,8 +27,11 @@ struct StoreEnergySource: EnergySource {
     }
 
     func batteryTimeline(hours: Int, until: Date) async throws -> [BatterySample] {
+        try Task.checkCancellation()
         let since = until.addingTimeInterval(-Double(hours) * 3600)
-        return try store.samples(since: since, until: until).map { sample in
+        let samples = try store.samples(since: since, until: until)
+        try Task.checkCancellation()
+        return samples.map { sample in
             BatterySample(
                 date: sample.date,
                 percent: sample.percent,

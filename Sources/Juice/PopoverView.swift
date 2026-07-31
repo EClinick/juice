@@ -35,8 +35,13 @@ struct PopoverView: View {
     @State private var historyError: String?
     @State private var insights: [Insight] = []
     @State private var historyCoverageDayCount: Int?
+    @State private var loadedHistoryRange: EnergyRange?
     @State private var loadTask: Task<Void, Never>?
     @State private var serverRefreshGeneration = 0
+    /// MenuBarExtra may retain this hierarchy after its AppKit window closes.
+    /// Drive work from the actual key-window lifecycle rather than relying on
+    /// SwiftUI `onDisappear`, which is not guaranteed for retained content.
+    @State private var surfaceIsActive = false
 
     private var replacementAnimation: Animation {
         .timingCurve(0.23, 1, 0.32, 1, duration: 0.18)
@@ -285,20 +290,34 @@ struct PopoverView: View {
         }
         .padding(14)
         .frame(width: model.isMacMini ? 360 : 320)
+        .environment(\.juiceSurfaceIsActive, surfaceIsActive)
+        .background {
+            WindowActivityReader { active in
+                guard surfaceIsActive != active else { return }
+                surfaceIsActive = active
+                if active {
+                    model.refresh()
+                    helper.refresh()
+                } else {
+                    loadTask?.cancel()
+                }
+                syncDataAttachments()
+            }
+            .frame(width: 0, height: 0)
+        }
         .onAppear {
-            model.refresh()
-            helper.refresh()
             applyInitialRange()
             syncDataAttachments()
         }
-        .task {
-            if !model.isMacMini {
+        .task(id: surfaceIsActive) {
+            if surfaceIsActive && !model.isMacMini {
                 await loadEnergy()
             }
         }
         .onChange(of: range) {
             loadTask?.cancel()
             syncDataAttachments()
+            guard surfaceIsActive else { return }
             loadTask = Task { await loadTopApps() }
         }
         .onChange(of: model.reading?.onAC) {
@@ -310,10 +329,15 @@ struct PopoverView: View {
                 from: rangeVisibilityStorage)
         }
         .onChange(of: helper.readyGeneration) {
-            if origin == .unavailable { retryTopApps() }
+            if surfaceIsActive && origin == .unavailable {
+                retryTopApps()
+            }
         }
-        // The popover recreates its content on open and tears it down on close.
+        // Keep the normal SwiftUI teardown path as a fallback. The AppKit
+        // activity reader above handles retained MenuBarExtra hierarchies.
         .onDisappear {
+            surfaceIsActive = false
+            loadTask?.cancel()
             live.setAttached(false, for: .popover(consumerID))
             batterySession.setAttached(false, for: .popover(consumerID))
         }
@@ -323,11 +347,11 @@ struct PopoverView: View {
     /// unplugged. Idempotent: repeated calls with the same state are absorbed.
     private func syncDataAttachments() {
         live.setAttached(
-            model.isMacMini || showsLivePower,
+            surfaceIsActive && (model.isMacMini || showsLivePower),
             includesTodayHistory: !model.isMacMini && range == .today,
             for: .popover(consumerID))
         batterySession.setAttached(
-            !model.isMacMini && range == .session,
+            surfaceIsActive && !model.isMacMini && range == .session,
             for: .popover(consumerID))
     }
 
@@ -432,21 +456,28 @@ struct PopoverView: View {
 
     private func loadEnergy() async {
         await loadTopApps()
+        guard !Task.isCancelled else { return }
         // Charge history comes from the local sample store. One captured
         // window end anchors both the store query and the chart's x-domain.
         if let store = JuiceApp.sampler?.store {
             let windowEnd = Date()
             do {
-                let timeline = try await StoreEnergySource(store: store)
+                let loadedTimeline = try await StoreEnergySource(store: store)
                     .batteryTimeline(hours: 24, until: windowEnd)
-                self.timeline = timeline
+                guard !Task.isCancelled else { return }
+                self.timeline = loadedTimeline
                 self.timelineWindowEnd = windowEnd
                 timelineAvailability = .available
             } catch {
+                guard !Task.isCancelled else { return }
                 timelineAvailability = .unavailable
             }
-            insights = await InsightsProvider(store: store).currentInsights()
+            guard !Task.isCancelled else { return }
+            let loadedInsights = await InsightsProvider(store: store).currentInsights()
+            guard !Task.isCancelled else { return }
+            insights = loadedInsights
         } else {
+            guard !Task.isCancelled else { return }
             timelineAvailability = .unavailable
         }
     }
@@ -476,11 +507,16 @@ struct PopoverView: View {
         // query is in flight, the stale result must not overwrite the newer
         // selection's data.
         let range = self.range
-        withAnimation(replacementAnimation) {
-            historyOrigin = .loading
-            historyApps = []
-            historyError = nil
-            historyCoverageDayCount = nil
+        if HistoricalReloadPolicy.shouldClear(
+            loadedRange: loadedHistoryRange,
+            requestedRange: range
+        ) {
+            withAnimation(replacementAnimation) {
+                historyOrigin = .loading
+                historyApps = []
+                historyError = nil
+                historyCoverageDayCount = nil
+            }
         }
         let result = await selector.topApps(range: range, limit: 8)
         guard !Task.isCancelled, range == self.range else { return }
@@ -489,10 +525,12 @@ struct PopoverView: View {
             historyOrigin = result.origin
             historyCoverageDayCount = result.coverageDayCount
             historyError = result.errorDescription
+            loadedHistoryRange = range
         }
     }
 
     private func retryTopApps() {
+        guard surfaceIsActive else { return }
         if range == .today {
             live.refreshTodayNow()
             return

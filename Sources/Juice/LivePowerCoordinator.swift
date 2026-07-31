@@ -135,8 +135,6 @@ final class LivePowerCoordinator: ObservableObject {
     /// closed SwiftUI view trees are not invalidated by every background tick.
     private var latestReading: LivePowerReading?
     private var latestStatus: LivePowerController.Status = .warmingUp
-    private var latestHybrid: HybridTodayList?
-
     /// Currently attached consumers and whether each needs Today history.
     /// Sampling runs while non-empty; history refreshes while any value is true.
     private var attached: [Consumer: Bool] = [:]
@@ -264,8 +262,8 @@ final class LivePowerCoordinator: ObservableObject {
         if hasVisibleConsumer {
             reading = nil
             systemLoadWatts = nil
+            recomputeHybrid()
         }
-        recomputeHybrid(publish: hasVisibleConsumer)
 
         source.setSamplingCadence(samplingCadence)
         source.start()
@@ -389,8 +387,12 @@ final class LivePowerCoordinator: ObservableObject {
         if shouldPublish {
             self.reading = reading
             systemLoadWatts = reading == nil ? nil : loadSystemLoad()
+            recomputeHybrid()
+        } else {
+            // Preserve threshold/grace state for the next visible surface, but
+            // skip the Today dictionary/filter/output allocations while hidden.
+            merger.observe(live: latestReading, now: now())
         }
-        recomputeHybrid(publish: shouldPublish)
     }
 
     /// Stops accepting source updates and waits for every already-enqueued
@@ -415,14 +417,11 @@ final class LivePowerCoordinator: ObservableObject {
     /// Folds the latest live reading into today's history. The merger needs the
     /// wall clock for its grace period, so the clock is captured here rather
     /// than inside the merger. This is the single place the merger ever runs.
-    private func recomputeHybrid(publish: Bool = true) {
-        latestHybrid = merger.merge(
+    private func recomputeHybrid() {
+        hybrid = merger.merge(
             live: latestReading,
             today: todayResult?.apps ?? [],
             now: now())
-        if publish {
-            hybrid = latestHybrid
-        }
     }
 
     /// Synchronizes the latest background sample before a visible consumer

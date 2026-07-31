@@ -46,7 +46,8 @@ struct StatsView: View {
     @State private var historyOrigin: DataOrigin = .loading
     @State private var historyError: String?
     @State private var historyCoverageDayCount: Int?
-    @State private var loadTask: Task<Void, Never>?
+    @State private var loadedHistoryRange: EnergyRange?
+    @State private var appsRefreshGeneration = 0
 
     private var replacementAnimation: Animation {
         .timingCurve(0.23, 1, 0.32, 1, duration: 0.18)
@@ -126,19 +127,27 @@ struct StatsView: View {
             minWidth: Self.minimumContentWidth,
             minHeight: Self.minimumContentHeight
         )
+        .task(id: AppsLoadRequest(
+            range: range,
+            refreshGeneration: appsRefreshGeneration)
+        ) {
+            await loadApps()
+        }
         .task {
-            await load()
+            await loadTimeline()
+            guard !Task.isCancelled else { return }
+            refreshedAt = Date()
             // Keep the timeline fresh while the window stays open.
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
                 guard !Task.isCancelled else { break }
                 await loadTimeline()
+                guard !Task.isCancelled else { break }
+                refreshedAt = Date()
             }
         }
         .onChange(of: range) {
-            loadTask?.cancel()
             syncDataAttachments()
-            loadTask = Task { await loadApps() }
         }
         .onChange(of: model.reading?.onAC) {
             syncDataAttachments()
@@ -647,10 +656,9 @@ struct StatsView: View {
 
     // MARK: - Loading
 
-    private func load() async {
-        await loadApps()
-        await loadTimeline()
-        refreshedAt = Date()
+    private struct AppsLoadRequest: Hashable {
+        var range: EnergyRange
+        var refreshGeneration: Int
     }
 
     private func loadTimeline() async {
@@ -662,12 +670,14 @@ struct StatsView: View {
             return
         }
         do {
-            let timeline = try await timelineSource.batteryTimeline(
+            let loadedTimeline = try await timelineSource.batteryTimeline(
                 hours: Self.timelineHours, until: windowEnd)
-            self.timeline = timeline
+            guard !Task.isCancelled else { return }
+            self.timeline = loadedTimeline
             self.timelineWindowEnd = windowEnd
             timelineAvailability = .available
         } catch {
+            guard !Task.isCancelled else { return }
             timelineAvailability = .unavailable
         }
     }
@@ -681,11 +691,16 @@ struct StatsView: View {
         // is in flight, the stale result must not overwrite the newer
         // selection's data.
         let range = self.range
-        withAnimation(replacementAnimation) {
-            historyOrigin = .loading
-            historyApps = []
-            historyError = nil
-            historyCoverageDayCount = nil
+        if HistoricalReloadPolicy.shouldClear(
+            loadedRange: loadedHistoryRange,
+            requestedRange: range
+        ) {
+            withAnimation(replacementAnimation) {
+                historyOrigin = .loading
+                historyApps = []
+                historyError = nil
+                historyCoverageDayCount = nil
+            }
         }
         let result = await selector.topApps(range: range)
         guard !Task.isCancelled, range == self.range else { return }
@@ -694,6 +709,7 @@ struct StatsView: View {
             historyOrigin = result.origin
             historyCoverageDayCount = result.coverageDayCount
             historyError = result.errorDescription
+            loadedHistoryRange = range
         }
     }
 
@@ -706,8 +722,7 @@ struct StatsView: View {
             batterySession.refreshNow()
             return
         }
-        loadTask?.cancel()
-        loadTask = Task { await loadApps() }
+        appsRefreshGeneration &+= 1
     }
 }
 

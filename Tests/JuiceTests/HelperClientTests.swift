@@ -142,6 +142,180 @@ struct HelperClientTests {
         #expect(secondHelper.handshakeCount == 2)
     }
 
+    @Test("Two stale checkState attempts cannot preserve prior readiness")
+    func checkStateRetryExhaustionPublishesUnavailable() async {
+        let firstHelper = MockHelper(protocolVersion: JuiceXPC.protocolVersion)
+        let secondHelper = MockHelper(protocolVersion: JuiceXPC.protocolVersion)
+        let firstConnection = MockHelperConnection(helper: firstHelper)
+        let secondConnection = MockHelperConnection(helper: secondHelper)
+        let client = makeClient(connections: [firstConnection, secondConnection])
+
+        let initialState = await client.checkState()
+        guard case .ready = initialState else {
+            Issue.record("Expected initial helper state to be ready")
+            return
+        }
+
+        firstHelper.beforeHandshakeReply = {
+            firstConnection.invalidateFromRemote()
+        }
+        secondHelper.beforeHandshakeReply = {
+            secondConnection.invalidateFromRemote()
+        }
+
+        let state = await client.checkState()
+
+        guard case .unavailable = state else {
+            Issue.record("Expected retry exhaustion to publish unavailable")
+            return
+        }
+        guard case .unavailable = client.state else {
+            Issue.record("Expected prior ready state to be cleared")
+            return
+        }
+        #expect(firstHelper.handshakeCount == 2)
+        #expect(secondHelper.handshakeCount == 1)
+    }
+
+    @Test("Concurrent cold requests share one in-flight handshake")
+    func concurrentRequestsShareHandshake() async throws {
+        let handshakeStarted = AsyncTestSignal()
+        let releaseHandshake = DispatchSemaphore(value: 0)
+        let helper = MockHelper(protocolVersion: 3)
+        helper.onHandshake = {
+            handshakeStarted.signal()
+        }
+        helper.beforeHandshakeReply = {
+            releaseHandshake.wait()
+        }
+        let connection = MockHelperConnection(helper: helper)
+        let client = makeClient(connections: [connection])
+
+        let first = Task {
+            try await client.fetchLiveEnergySample()
+        }
+        await handshakeStarted.wait()
+        let followers = (0..<7).map { _ in
+            Task {
+                try await client.fetchLiveEnergySample()
+            }
+        }
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+        releaseHandshake.signal()
+
+        _ = try await first.value
+        for follower in followers {
+            _ = try await follower.value
+        }
+
+        #expect(helper.handshakeCount == 1)
+        #expect(helper.liveSampleCount == 8)
+    }
+
+    @Test("A canceled caller does not create a helper connection")
+    func cancellationBeforeFetchSkipsConnection() async {
+        let helper = MockHelper(protocolVersion: 3)
+        let connection = MockHelperConnection(helper: helper)
+        let client = makeClient(connections: [connection])
+
+        let fetch = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await client.fetchLiveEnergySample()
+        }
+
+        do {
+            _ = try await fetch.value
+            Issue.record("Expected CancellationError")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            Issue.record("Expected CancellationError, got \(error)")
+        }
+        #expect(connection.resumeCount == 0)
+        #expect(helper.handshakeCount == 0)
+        #expect(helper.liveSampleCount == 0)
+    }
+
+    @Test("Cancellation during handshake prevents the versioned fetch")
+    func cancellationAfterHandshakeSkipsFetch() async {
+        let handshakeStarted = AsyncTestSignal()
+        let releaseHandshake = DispatchSemaphore(value: 0)
+        let helper = MockHelper(protocolVersion: 3)
+        helper.onHandshake = {
+            handshakeStarted.signal()
+        }
+        helper.beforeHandshakeReply = {
+            releaseHandshake.wait()
+        }
+        let connection = MockHelperConnection(helper: helper)
+        let client = makeClient(connections: [connection])
+
+        let fetch = Task {
+            try await client.fetchLiveEnergySample()
+        }
+        await handshakeStarted.wait()
+        fetch.cancel()
+        releaseHandshake.signal()
+
+        do {
+            _ = try await fetch.value
+            Issue.record("Expected CancellationError")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            Issue.record("Expected CancellationError, got \(error)")
+        }
+        #expect(helper.handshakeCount == 1)
+        #expect(helper.liveSampleCount == 0)
+    }
+
+    @Test("checkState waits for a pre-existing flight and then validates freshly")
+    func checkStateDoesNotReusePreexistingFlight() async {
+        let handshakeStarted = AsyncTestSignal()
+        let releaseHandshake = DispatchSemaphore(value: 0)
+        let helper = MockHelper(protocolVersion: 2)
+        helper.onHandshake = {
+            handshakeStarted.signal()
+        }
+        helper.beforeHandshakeReply = {
+            releaseHandshake.wait()
+        }
+        let connection = MockHelperConnection(helper: helper)
+        let client = makeClient(connections: [connection])
+
+        let staleFetch = Task {
+            try await client.fetchLiveEnergySample()
+        }
+        await handshakeStarted.wait()
+        helper.protocolVersion = JuiceXPC.protocolVersion
+        let stateCheck = Task {
+            await client.checkState()
+        }
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+        releaseHandshake.signal()
+
+        do {
+            _ = try await staleFetch.value
+            Issue.record("Expected the pre-upgrade validation to reject live sampling")
+        } catch HelperClientError.helperOutdated {
+            // Expected.
+        } catch {
+            Issue.record("Expected helperOutdated, got \(error)")
+        }
+        let state = await stateCheck.value
+
+        guard case .ready = state else {
+            Issue.record("Expected the fresh state check to observe the upgrade")
+            return
+        }
+        #expect(helper.handshakeCount == 2)
+        #expect(helper.liveSampleCount == 0)
+    }
+
     @Test("Consecutive current proxy failures replace prior ready state")
     func checkStatePublishesCurrentFailures() async {
         let helper = MockHelper(protocolVersion: JuiceXPC.protocolVersion)

@@ -30,7 +30,7 @@ enum HelperClientError: LocalizedError {
 
 /// Wraps the NSXPCConnection to the privileged helper with async APIs.
 final class HelperClient: @unchecked Sendable {
-    private struct ConnectionContext {
+    private struct ConnectionContext: @unchecked Sendable {
         let connection: any HelperClientConnection
         let generation: UInt64
     }
@@ -41,9 +41,25 @@ final class HelperClient: @unchecked Sendable {
         let value: (Int, String)
     }
 
+    private enum HandshakePurpose {
+        case shared
+        case stateCheck
+    }
+
+    private struct HandshakeFlight {
+        let id: UUID
+        let connection: any HelperClientConnection
+        let generation: UInt64
+        let purpose: HandshakePurpose
+        let task: Task<(Int, String), Error>
+    }
+
+    private struct ConnectionChangedDuringHandshake: Error {}
+
     private var connection: (any HelperClientConnection)?
     private var connectionGeneration: UInt64 = 0
     private var handshakeCache: HandshakeCache?
+    private var handshakeFlight: HandshakeFlight?
     private let lock = NSLock()
     private let makeConnection: () -> any HelperClientConnection
     private let requestTimeout: TimeInterval
@@ -69,6 +85,7 @@ final class HelperClient: @unchecked Sendable {
     /// The backing storage is protected by ``lock`` because it is written
     /// from XPC callback queues.
     private var _state: HelperState = .unavailable
+    private var stateRevision: UInt64 = 0
     private(set) var state: HelperState {
         get {
             lock.lock()
@@ -79,6 +96,7 @@ final class HelperClient: @unchecked Sendable {
             lock.lock()
             defer { lock.unlock() }
             _state = newValue
+            stateRevision &+= 1
         }
     }
 
@@ -97,6 +115,7 @@ final class HelperClient: @unchecked Sendable {
         let newConnection = makeConnection()
         connectionGeneration &+= 1
         handshakeCache = nil
+        handshakeFlight = nil
         let weakConnection = WeakHelperClientConnection(newConnection)
         newConnection.invalidationHandler = { [weak self] in
             // The helper is gone (uninstalled or denied); drop the connection
@@ -127,6 +146,7 @@ final class HelperClient: @unchecked Sendable {
         if connection === expected {
             connection = nil
             handshakeCache = nil
+            handshakeFlight = nil
             connectionGeneration &+= 1
         }
     }
@@ -136,6 +156,7 @@ final class HelperClient: @unchecked Sendable {
         defer { lock.unlock() }
         if connection === expected {
             handshakeCache = nil
+            handshakeFlight = nil
             connectionGeneration &+= 1
         }
     }
@@ -153,9 +174,11 @@ final class HelperClient: @unchecked Sendable {
             return
         }
         handshakeCache = nil
+        handshakeFlight = nil
         connectionGeneration &+= 1
         if let newState {
             _state = newState
+            stateRevision &+= 1
         }
     }
 
@@ -212,7 +235,29 @@ final class HelperClient: @unchecked Sendable {
             return false
         }
         _state = newState
+        stateRevision &+= 1
         return true
+    }
+
+    private func currentStateRevision() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return stateRevision
+    }
+
+    private func stateAfterRetryExhaustion(
+        startingAt revision: UInt64
+    ) -> HelperState {
+        lock.lock()
+        defer { lock.unlock() }
+        // Preserve a state published by a newer concurrent check. If neither
+        // stale attempt produced a current result, the old state is no longer
+        // evidence that the replacement helper is reachable.
+        if stateRevision == revision {
+            _state = .unavailable
+            stateRevision &+= 1
+        }
+        return _state
     }
 
     private func remoteProxy(
@@ -248,6 +293,79 @@ final class HelperClient: @unchecked Sendable {
     private func performHandshake(
         on context: ConnectionContext,
         failureState: HelperState? = nil
+    ) async throws -> (Int, String) {
+        let flight = handshakeFlightTask(
+            on: context,
+            failureState: failureState,
+            purpose: .shared)
+        return try await flight.task.value
+    }
+
+    /// A state check must not consume a shared handshake that began before the
+    /// check: its purpose is to observe an on-connection helper upgrade even
+    /// when versioned fetches have a cached or in-flight answer. Wait for an
+    /// older shared flight, then start a new state-check flight. Concurrent
+    /// state checks may share that explicitly fresh request.
+    private func performStateCheckHandshake(
+        on context: ConnectionContext
+    ) async throws -> (Int, String) {
+        while true {
+            let flight = handshakeFlightTask(
+                on: context,
+                failureState: .unavailable,
+                purpose: .stateCheck)
+            if flight.purpose == .stateCheck {
+                return try await flight.task.value
+            }
+            _ = try? await flight.task.value
+            guard isCurrent(context) else {
+                throw ConnectionChangedDuringHandshake()
+            }
+        }
+    }
+
+    private func handshakeFlightTask(
+        on context: ConnectionContext,
+        failureState: HelperState?,
+        purpose: HandshakePurpose
+    ) -> HandshakeFlight {
+        lock.lock()
+        if let handshakeFlight,
+           handshakeFlight.connection === context.connection,
+           handshakeFlight.generation == context.generation {
+            lock.unlock()
+            return handshakeFlight
+        }
+
+        let id = UUID()
+        let task = Task { [self] in
+            defer { clearHandshakeFlight(id: id) }
+            return try await performHandshakeRequest(
+                on: context,
+                failureState: failureState)
+        }
+        let flight = HandshakeFlight(
+            id: id,
+            connection: context.connection,
+            generation: context.generation,
+            purpose: purpose,
+            task: task)
+        handshakeFlight = flight
+        lock.unlock()
+        return flight
+    }
+
+    private func clearHandshakeFlight(id: UUID) {
+        lock.lock()
+        defer { lock.unlock() }
+        if handshakeFlight?.id == id {
+            handshakeFlight = nil
+        }
+    }
+
+    private func performHandshakeRequest(
+        on context: ConnectionContext,
+        failureState: HelperState?
     ) async throws -> (Int, String) {
         try await withCheckedThrowingContinuation { continuation in
             let resumed = OneShot()
@@ -292,14 +410,14 @@ final class HelperClient: @unchecked Sendable {
     /// Only a helper newer than the app is a mismatch.
     @discardableResult
     func checkState() async -> HelperState {
+        let startingStateRevision = currentStateRevision()
         // A reply can race an invalidation. Never publish state from an old
         // connection; retry once so the result describes its replacement.
         for _ in 0..<2 {
             let context = currentConnection()
             do {
-                let (version, _) = try await performHandshake(
-                    on: context,
-                    failureState: .unavailable)
+                let (version, _) = try await performStateCheckHandshake(
+                    on: context)
                 let newState: HelperState =
                     (1...JuiceXPC.protocolVersion).contains(version)
                     ? .ready : .versionMismatch
@@ -313,14 +431,16 @@ final class HelperClient: @unchecked Sendable {
                 return .unavailable
             }
         }
-        return state
+        return stateAfterRetryExhaustion(startingAt: startingStateRevision)
     }
 
     /// Fetches all energy intervals starting at or after `since`.
     func fetchIntervals(since: Date) async throws -> [EnergyInterval] {
+        try Task.checkCancellation()
         let data = try await fetchData { proxy, reply in
             proxy.fetchEnergyIntervals(sinceEpoch: since.timeIntervalSince1970, reply: reply)
         }
+        try Task.checkCancellation()
         return try JSONDecoder().decode([EnergyInterval].self, from: data)
     }
 
@@ -331,9 +451,11 @@ final class HelperClient: @unchecked Sendable {
     /// without ever invoking the unknown method, so the app keeps working
     /// until the user upgrades the helper.
     func fetchBatteryLevels(since: Date) async throws -> [BatteryLevelPoint] {
+        try Task.checkCancellation()
         let data = try await fetchData(requiringProtocolVersion: 2) { proxy, reply in
             proxy.fetchBatteryLevels(sinceEpoch: since.timeIntervalSince1970, reply: reply)
         }
+        try Task.checkCancellation()
         return try JSONDecoder().decode([BatteryLevelPoint].self, from: data)
     }
 
@@ -345,9 +467,11 @@ final class HelperClient: @unchecked Sendable {
     /// throws ``HelperClientError/helperOutdated`` without ever invoking the
     /// unknown method, exactly like ``fetchBatteryLevels(since:)``.
     func fetchLiveEnergySample() async throws -> LiveEnergySnapshot {
+        try Task.checkCancellation()
         let data = try await fetchData(requiringProtocolVersion: 3) { proxy, reply in
             proxy.fetchLiveEnergySample(reply: reply)
         }
+        try Task.checkCancellation()
         return try JSONDecoder().decode(LiveEnergySnapshot.self, from: data)
     }
 
@@ -359,7 +483,9 @@ final class HelperClient: @unchecked Sendable {
         _ invoke: @escaping (HelperProtocol, @escaping (Data?, NSError?) -> Void) -> Void
     ) async throws -> Data {
         for _ in 0..<2 {
+            try Task.checkCancellation()
             let validation = try await validatedHandshake()
+            try Task.checkCancellation()
             guard isCurrent(validation.context) else { continue }
             guard validation.value.0 >= minimumVersion else {
                 throw HelperClientError.helperOutdated
@@ -375,14 +501,16 @@ final class HelperClient: @unchecked Sendable {
     private func fetchData(
         _ invoke: @escaping (HelperProtocol, @escaping (Data?, NSError?) -> Void) -> Void
     ) async throws -> Data {
-        try await fetchData(on: currentConnection(), invoke)
+        try Task.checkCancellation()
+        return try await fetchData(on: currentConnection(), invoke)
     }
 
     private func fetchData(
         on context: ConnectionContext,
         _ invoke: @escaping (HelperProtocol, @escaping (Data?, NSError?) -> Void) -> Void
     ) async throws -> Data {
-        try await withCheckedThrowingContinuation { continuation in
+        try Task.checkCancellation()
+        return try await withCheckedThrowingContinuation { continuation in
             let resumed = OneShot()
             guard let proxy = remoteProxy(on: context, errorHandler: { error in
                 self.clearHandshakeCache(for: context)
@@ -432,9 +560,11 @@ final class HelperClient: @unchecked Sendable {
             oldConnection = connection
             connection = nil
             handshakeCache = nil
+            handshakeFlight = nil
             connectionGeneration &+= 1
             if let newState {
                 _state = newState
+                stateRevision &+= 1
             }
         } else {
             oldConnection = nil

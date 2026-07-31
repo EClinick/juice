@@ -503,6 +503,37 @@ import JuiceXPCShared
         withExtendedLifetime(observation) {}
     }
 
+    @Test("Background-only readings preserve grace without publishing a hybrid")
+    func backgroundReadingsPreserveGraceWithoutPublishing() {
+        let source = FakeSource()
+        var now = t0
+        let coordinator = LivePowerCoordinator(
+            source: source,
+            loadToday: { self.todayResult([]) },
+            loadSystemLoad: { nil },
+            now: { now })
+        let menuBarID = UUID()
+
+        coordinator.setAttached(
+            true,
+            includesTodayHistory: false,
+            for: .menuBar(menuBarID))
+        coordinator.apply(reading: reading([liveApp("server", watts: 3)]))
+        #expect(coordinator.hybrid == nil)
+
+        // The latest background tick is below the display threshold, but the
+        // prior hidden crossing remains inside the 30-second grace window.
+        now = t0.addingTimeInterval(10)
+        coordinator.apply(reading: reading([liveApp("server", watts: 0.01)]))
+        #expect(coordinator.hybrid == nil)
+
+        coordinator.setAttached(
+            true,
+            includesTodayHistory: false,
+            for: .popover(popoverID))
+        #expect(coordinator.hybrid?.active.map(\.appKey) == ["server"])
+    }
+
     @Test("A stopped loop cannot clear the replacement loop's delay handle")
     func staleLoopCannotOrphanReplacementDelay() async {
         let delay = ControlledDelay()

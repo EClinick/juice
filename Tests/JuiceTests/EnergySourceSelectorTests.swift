@@ -188,6 +188,80 @@ struct EnergySourceSelectorTests {
         #expect(result.apps.isEmpty)
     }
 
+    @Test("Cancellation after a store read does not start a helper fallback")
+    func cancellationStopsHistoricalFallback() async throws {
+        let store = try JuiceStore(path: temporaryDatabasePath())
+        let gate = SelectorStoreGate()
+        let live = TrackingEnergySource(result: .success([]))
+        let selector = EnergySourceSelector(
+            liveSource: live,
+            storedApps: { _, _ in await gate.load() },
+            store: { store })
+
+        let load = Task {
+            await selector.topApps(range: .week)
+        }
+        await gate.waitUntilEntered()
+        load.cancel()
+        await gate.release(with: [])
+        let result = await load.value
+
+        #expect(result.origin == .loading)
+        #expect(result.apps.isEmpty)
+        #expect(live.callCount == 0)
+    }
+
+    @Test("A store CancellationError never becomes helper fallback demand")
+    func storeCancellationErrorStopsFallback() async throws {
+        let store = try JuiceStore(path: temporaryDatabasePath())
+        let live = TrackingEnergySource(result: .success([]))
+        let selector = EnergySourceSelector(
+            liveSource: live,
+            storedApps: { _, _ in throw CancellationError() },
+            store: { store })
+
+        let result = await selector.topApps(range: .week)
+
+        #expect(result.origin == .loading)
+        #expect(result.apps.isEmpty)
+        #expect(live.callCount == 0)
+    }
+
+    @Test("A canceled live failure does not trigger helper recovery")
+    func canceledLiveFailureSkipsRecovery() async {
+        let live = SelectorLiveGate()
+        let reporter = SelectorFailureReporter()
+        let selector = EnergySourceSelector(
+            liveSource: live,
+            store: { nil },
+            reportLiveFailure: { await reporter.record() })
+
+        let load = Task {
+            await selector.topApps(range: .today)
+        }
+        await live.waitUntilEntered()
+        load.cancel()
+        await live.fail(with: TestFailure.unavailable)
+        let result = await load.value
+
+        #expect(result.origin == .loading)
+        #expect(result.apps.isEmpty)
+        #expect(await reporter.callCount == 0)
+    }
+
+    @Test("Same-range restoration keeps cached historical rows")
+    func sameRangeRestorationKeepsCache() {
+        #expect(!HistoricalReloadPolicy.shouldClear(
+            loadedRange: .week,
+            requestedRange: .week))
+        #expect(HistoricalReloadPolicy.shouldClear(
+            loadedRange: .week,
+            requestedRange: .allTime))
+        #expect(HistoricalReloadPolicy.shouldClear(
+            loadedRange: nil,
+            requestedRange: .week))
+    }
+
     private func temporaryDatabasePath() -> String {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("juice-selector-\(UUID().uuidString).sqlite")
@@ -196,6 +270,89 @@ struct EnergySourceSelectorTests {
 
     private func todayKey() -> String {
         RollupBuilder.dayFormatter().string(from: Date())
+    }
+}
+
+private actor SelectorStoreGate {
+    private var entered = false
+    private var entryWaiter: CheckedContinuation<Void, Never>?
+    private var loadWaiter: CheckedContinuation<[AppEnergy], Never>?
+    private var result: [AppEnergy]?
+
+    func load() async -> [AppEnergy] {
+        entered = true
+        entryWaiter?.resume()
+        entryWaiter = nil
+        return await withCheckedContinuation { continuation in
+            if let result {
+                self.result = nil
+                continuation.resume(returning: result)
+            } else {
+                loadWaiter = continuation
+            }
+        }
+    }
+
+    func waitUntilEntered() async {
+        guard !entered else { return }
+        await withCheckedContinuation { entryWaiter = $0 }
+    }
+
+    func release(with result: [AppEnergy]) {
+        if let loadWaiter {
+            self.loadWaiter = nil
+            loadWaiter.resume(returning: result)
+        } else {
+            self.result = result
+        }
+    }
+}
+
+private actor SelectorLiveGate: EnergySource {
+    private var entered = false
+    private var entryWaiter: CheckedContinuation<Void, Never>?
+    private var loadWaiter: CheckedContinuation<[AppEnergy], Error>?
+    private var result: Result<[AppEnergy], Error>?
+
+    func topApps(range: EnergyRange) async throws -> [AppEnergy] {
+        entered = true
+        entryWaiter?.resume()
+        entryWaiter = nil
+        return try await withCheckedThrowingContinuation { continuation in
+            if let result {
+                self.result = nil
+                continuation.resume(with: result)
+            } else {
+                loadWaiter = continuation
+            }
+        }
+    }
+
+    func batteryTimeline(hours: Int, until: Date) async throws -> [BatterySample] {
+        []
+    }
+
+    func waitUntilEntered() async {
+        guard !entered else { return }
+        await withCheckedContinuation { entryWaiter = $0 }
+    }
+
+    func fail(with error: Error) {
+        let result: Result<[AppEnergy], Error> = .failure(error)
+        if let loadWaiter {
+            self.loadWaiter = nil
+            loadWaiter.resume(with: result)
+        } else {
+            self.result = result
+        }
+    }
+}
+
+private actor SelectorFailureReporter {
+    private(set) var callCount = 0
+
+    func record() {
+        callCount += 1
     }
 }
 

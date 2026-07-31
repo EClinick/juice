@@ -70,6 +70,81 @@ struct StatsWindowLifecycleTests {
         #expect(taskCancelled)
     }
 
+    @Test("Minimizing suspends work and restores the same state-owning host")
+    func minimizeSuspendsHostedWork() async throws {
+        let probe = HostedTaskProbe()
+        var detachCount = 0
+        let presenter = StatsWindowPresenter { detachCount += 1 }
+        presenter.present(
+            HostedTaskProbeView(probe: probe),
+            title: "Minimize suspension test",
+            minimumContentSize: minimumSize,
+            contentSize: defaultSize,
+            frameAutosaveName: uniqueAutosaveName())
+        let window = try #require(presenter.window)
+        let originalHost = window.contentViewController
+
+        var taskStarted = false
+        for _ in 0..<100 {
+            taskStarted = await probe.started
+            if taskStarted { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(taskStarted)
+
+        presenter.windowDidMiniaturize(
+            Notification(name: NSWindow.didMiniaturizeNotification, object: window))
+        let suspendedHost = window.contentViewController
+
+        var taskCancelled = false
+        for _ in 0..<100 {
+            taskCancelled = await probe.cancelled
+            if taskCancelled { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(detachCount == 1)
+        #expect(suspendedHost !== originalHost)
+        #expect(taskCancelled)
+
+        presenter.windowDidDeminiaturize(
+            Notification(name: NSWindow.didDeminiaturizeNotification, object: window))
+
+        #expect(window.contentViewController === originalHost)
+        var taskRestarted = false
+        for _ in 0..<100 {
+            taskRestarted = await probe.startedCount >= 2
+            if taskRestarted { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(taskRestarted)
+        window.orderOut(nil)
+    }
+
+    @Test("Closing a minimized window releases its suspended host")
+    func closeWhileMinimizedReleasesHost() throws {
+        let presenter = StatsWindowPresenter(detachStatsConsumers: {})
+        presenter.present(
+            Color.clear,
+            title: "Minimized close test",
+            minimumContentSize: minimumSize,
+            contentSize: defaultSize,
+            frameAutosaveName: uniqueAutosaveName())
+        let window = try #require(presenter.window)
+        let originalHost = window.contentViewController
+
+        presenter.windowDidMiniaturize(
+            Notification(name: NSWindow.didMiniaturizeNotification, object: window))
+        #expect(window.contentViewController !== originalHost)
+
+        presenter.windowWillClose(
+            Notification(name: NSWindow.willCloseNotification, object: window))
+        presenter.windowDidDeminiaturize(
+            Notification(name: NSWindow.didDeminiaturizeNotification, object: window))
+
+        #expect(window.contentViewController !== originalHost)
+        window.orderOut(nil)
+    }
+
     @Test("A closed retained window is reused with a fresh host and preserved size")
     func reopensRetainedWindow() throws {
         let presenter = StatsWindowPresenter(detachStatsConsumers: {})
@@ -182,15 +257,17 @@ struct StatsWindowLifecycleTests {
 }
 
 private actor HostedTaskProbe {
-    private(set) var started = false
-    private(set) var cancelled = false
+    private(set) var startedCount = 0
+    private(set) var cancelledCount = 0
+    var started: Bool { startedCount > 0 }
+    var cancelled: Bool { cancelledCount > 0 }
 
     func run() async {
-        started = true
+        startedCount += 1
         do {
             try await Task.sleep(for: .seconds(60))
         } catch is CancellationError {
-            cancelled = true
+            cancelledCount += 1
         } catch {
             Issue.record("Unexpected hosted task error: \(error)")
         }
