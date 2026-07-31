@@ -66,7 +66,10 @@ struct LiveTodayMerger {
         self.idleGraceSeconds = idleGraceSeconds
     }
 
-    mutating func merge(live: LivePowerReading?, today: [AppEnergy], now: Date) -> HybridTodayList {
+    /// Advances only the inexpensive live/grace bookkeeping. Background
+    /// Mac mini sampling uses this path so brief threshold crossings survive
+    /// until reopen without rebuilding the Today dictionary and output arrays.
+    mutating func observe(live: LivePowerReading?, now: Date) {
         // Refresh per-app watts and metadata from this tick's live reading.
         if let live {
             for app in live.apps {
@@ -103,6 +106,11 @@ struct LiveTodayMerger {
         pruneStaleEntries(now: now, keepAlive: seen)
 
         previousActiveOrder = activeKeys
+    }
+
+    mutating func merge(live: LivePowerReading?, today: [AppEnergy], now: Date) -> HybridTodayList {
+        observe(live: live, now: now)
+        let activeKeys = previousActiveOrder
 
         // Index today's history by bundle id so active rows can borrow the Wh
         // value and earlier rows can exclude the active apps.

@@ -41,7 +41,6 @@ struct JuiceApp: App {
     @NSApplicationDelegateAdaptor(JuiceApplicationDelegate.self)
     private var appDelegate
     @StateObject private var model: BatteryViewModel
-    @ObservedObject private var live = LivePowerCoordinator.shared
     // Create the updater with the app so Sparkle can schedule opted-in checks
     // even while the menu bar popover is closed.
     private let updater = UpdateController.shared
@@ -60,6 +59,10 @@ struct JuiceApp: App {
         // Keep the lightweight live sampler attached so its wattage remains
         // current even while the popover is closed.
         if isMacMini {
+            LivePowerCoordinator.shared.onStatusReading = { reading in
+                StatusItemVisibilityGuard.updatePowerLabel(
+                    liveWattsText(reading.totalMeteredWatts))
+            }
             LivePowerCoordinator.shared.onReading = { reading in
                 await Self.sampler?.recordServerReading(
                     reading,
@@ -118,11 +121,10 @@ struct JuiceApp: App {
             PopoverView(model: model)
         } label: {
             if model.isMacMini {
-                if let watts = live.reading?.totalMeteredWatts {
-                    Text(liveWattsText(watts))
-                } else {
-                    Image(systemName: "bolt")
-                }
+                // Background samples update the AppKit status button directly.
+                // Keeping this app-scoped scene independent of the coordinator
+                // avoids rebuilding the hidden popover and Charts every tick.
+                Image(systemName: "bolt")
             } else {
                 // Icon only, like the system battery item; recomputed from the
                 // observed model so it tracks battery and Low Power Mode changes.

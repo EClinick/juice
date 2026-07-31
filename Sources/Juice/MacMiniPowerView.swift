@@ -78,7 +78,9 @@ enum MacMiniPowerDataLoader {
         now: Date = Date(),
         calendar: Calendar = .current
     ) throws -> MacMiniPowerDashboardData {
+        try Task.checkCancellation()
         let recordingSince = try store.earliestSystemPowerSampleDate()
+        try Task.checkCancellation()
         let start = range.macMiniWindowStart(
             now: now,
             recordingSince: recordingSince,
@@ -92,8 +94,10 @@ enum MacMiniPowerDataLoader {
                 since: start,
                 until: now,
                 bucketDuration: bucketDuration)
+            try Task.checkCancellation()
         } else {
             let samples = try store.systemPowerSamples(since: start, until: now)
+            try Task.checkCancellation()
             report = (
                 SystemPowerAnalytics.summary(
                     samples: samples,
@@ -104,17 +108,20 @@ enum MacMiniPowerDataLoader {
                     windowStart: start,
                     windowEnd: now,
                     bucketDuration: bucketDuration))
+            try Task.checkCancellation()
         }
         // App energy is persisted in hour-aligned buckets. All Time can begin
         // at an arbitrary minute, so include the bucket containing that first
         // sample; it contains no energy from before Juice started recording.
         let appStart = calendar.dateInterval(of: .hour, for: start)?.start ?? start
+        let appTotals = try store.systemAppEnergyTotals(since: appStart, until: now)
+        try Task.checkCancellation()
         return MacMiniPowerDashboardData(
             summary: report.summary,
             buckets: report.buckets,
             recordingSince: recordingSince,
             bucketDuration: bucketDuration,
-            appTotals: try store.systemAppEnergyTotals(since: appStart, until: now))
+            appTotals: appTotals)
     }
 }
 
@@ -146,6 +153,7 @@ enum MacMiniPowerChartSegments {
 /// Server-oriented Mac mini dashboard: a live reading plus persisted,
 /// gap-aware power and energy history for Today, Week, and All recorded time.
 struct MacMiniPowerView: View {
+    @Environment(\.juiceSurfaceIsActive) private var surfaceIsActive
     @ObservedObject private var live = LivePowerCoordinator.shared
     @ObservedObject private var helper = HelperRegistrationController.shared
 
@@ -160,6 +168,7 @@ struct MacMiniPowerView: View {
     @State private var historyOrigin: DataOrigin = .loading
     @State private var historyError: String?
     @State private var loadedAppRange: EnergyRange?
+    @State private var retryGeneration = 0
 
     private var apps: [AppEnergy] { historyApps }
 
@@ -246,11 +255,21 @@ struct MacMiniPowerView: View {
                     .controlSize(.small)
             }
         }
-        .task(id: LoadRequest(range: range, generation: refreshGeneration)) {
+        .task(id: LoadRequest(
+            range: range,
+            generation: refreshGeneration,
+            retryGeneration: retryGeneration,
+            surfaceIsActive: surfaceIsActive)
+        ) {
+            guard surfaceIsActive else {
+                live.setAttached(false, for: .popover(consumerID))
+                return
+            }
             syncLiveAttachment()
             await loadDashboard()
         }
-        .task {
+        .task(id: surfaceIsActive) {
+            guard surfaceIsActive else { return }
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
                 guard !Task.isCancelled else { break }
@@ -268,6 +287,8 @@ struct MacMiniPowerView: View {
     private struct LoadRequest: Hashable {
         var range: EnergyRange
         var generation: Int
+        var retryGeneration: Int
+        var surfaceIsActive: Bool
     }
 
     @ViewBuilder
@@ -461,12 +482,17 @@ struct MacMiniPowerView: View {
             historyError = nil
         }
         do {
-            let result = try await Task.detached {
+            let loadTask = Task.detached {
                 try MacMiniPowerDataLoader.load(
                     store: store,
                     range: requestedRange,
                     now: now)
-            }.value
+            }
+            let result = try await withTaskCancellationHandler {
+                try await loadTask.value
+            } onCancel: {
+                loadTask.cancel()
+            }
             guard !Task.isCancelled, requestedRange == range else { return }
             dashboard = result
             loadError = nil
@@ -493,7 +519,7 @@ struct MacMiniPowerView: View {
 
     private func syncLiveAttachment() {
         live.setAttached(
-            true,
+            surfaceIsActive,
             includesTodayHistory: false,
             for: .popover(consumerID))
     }
@@ -521,7 +547,8 @@ struct MacMiniPowerView: View {
     }
 
     private func retryApps() {
-        Task { await loadDashboard() }
+        guard surfaceIsActive else { return }
+        retryGeneration &+= 1
     }
 
     private func coverageText(_ summary: SystemPowerSummary) -> String {

@@ -20,6 +20,7 @@ struct MacMiniStatsView: View {
     @State private var loadedRange: EnergyRange?
     @State private var loadError: String?
     @State private var refreshedAt = Date()
+    @State private var retryGeneration = 0
 
     private struct AppRow: Identifiable {
         var id: String { appKey }
@@ -95,11 +96,9 @@ struct MacMiniStatsView: View {
         .frame(
             minWidth: Self.minimumContentWidth,
             minHeight: Self.minimumContentHeight)
-        .task(id: range) {
+        .task(id: LoadRequest(range: range, retryGeneration: retryGeneration)) {
             attachLive()
             await load()
-        }
-        .task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
                 guard !Task.isCancelled else { break }
@@ -135,7 +134,7 @@ struct MacMiniStatsView: View {
                     }
                 }
                 Button("Refresh") {
-                    Task { await load() }
+                    retryGeneration &+= 1
                 }
                 .controlSize(.small)
             }
@@ -151,6 +150,11 @@ struct MacMiniStatsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(16)
+    }
+
+    private struct LoadRequest: Hashable {
+        var range: EnergyRange
+        var retryGeneration: Int
     }
 
     private var appPane: some View {
@@ -457,12 +461,17 @@ struct MacMiniStatsView: View {
         }
         let now = Date()
         do {
-            let loaded = try await Task.detached {
+            let loadTask = Task.detached {
                 try MacMiniPowerDataLoader.load(
                     store: store,
                     range: requestedRange,
                     now: now)
-            }.value
+            }
+            let loaded = try await withTaskCancellationHandler {
+                try await loadTask.value
+            } onCancel: {
+                loadTask.cancel()
+            }
             guard !Task.isCancelled, requestedRange == range else { return }
             data = loaded
             loadedRange = requestedRange

@@ -16,6 +16,18 @@ enum DataOrigin {
     case unavailable
 }
 
+/// Keeps historical rows stable while an already-loaded range refreshes after
+/// a surface is restored. A genuinely different range still clears immediately
+/// so rows are never presented under the wrong label.
+enum HistoricalReloadPolicy {
+    static func shouldClear(
+        loadedRange: EnergyRange?,
+        requestedRange: EnergyRange
+    ) -> Bool {
+        loadedRange != requestedRange
+    }
+}
+
 /// Encapsulates the single policy for choosing an energy source per range:
 /// Today stays on the live helper path (fresher than the 15-minute rollup
 /// cadence); historical ranges (3 Days / Week / All Time) come from the app's own rollup
@@ -31,6 +43,7 @@ struct EnergySourceSelector {
     let storedApps: (JuiceStore, EnergyRange) async throws -> [AppEnergy]
     /// Resolved at query time so a store that appears after launch is used.
     let store: () -> JuiceStore?
+    let reportLiveFailure: @Sendable () async -> Void
 
     init(
         liveSource: EnergySource = PowerlogEnergySource(),
@@ -38,11 +51,17 @@ struct EnergySourceSelector {
             store, range in
             try await StoreEnergySource(store: store).topApps(range: range)
         },
-        store: @escaping () -> JuiceStore? = { JuiceApp.sampler?.store }
+        store: @escaping () -> JuiceStore? = { JuiceApp.sampler?.store },
+        reportLiveFailure: @escaping @Sendable () async -> Void = {
+            await MainActor.run {
+                HelperRegistrationController.shared.refresh()
+            }
+        }
     ) {
         self.liveSource = liveSource
         self.storedApps = storedApps
         self.store = store
+        self.reportLiveFailure = reportLiveFailure
     }
 
     struct TopAppsResult {
@@ -56,6 +75,7 @@ struct EnergySourceSelector {
     }
 
     func topApps(range: EnergyRange, limit: Int? = nil) async -> TopAppsResult {
+        guard !Task.isCancelled else { return Self.cancelledResult }
         // Session is an exact start/end window resolved from battery samples,
         // not a calendar range. BatterySessionCoordinator owns that query so a
         // daily store rollup can never be mistaken for session data.
@@ -66,34 +86,63 @@ struct EnergySourceSelector {
         }
 
         if range != .today, let store = store() {
-            if let apps = try? await storedApps(store, range),
-               !apps.isEmpty {
-                return TopAppsResult(
-                    apps: limited(apps, to: limit),
-                    origin: .store,
-                    coverageDayCount: coverageDayCount(store: store, range: range),
-                    errorDescription: nil
-                )
+            do {
+                let apps = try await storedApps(store, range)
+                guard !Task.isCancelled else { return Self.cancelledResult }
+                if !apps.isEmpty {
+                    return TopAppsResult(
+                        apps: limited(apps, to: limit),
+                        origin: .store,
+                        coverageDayCount: coverageDayCount(store: store, range: range),
+                        errorDescription: nil
+                    )
+                }
+            } catch is CancellationError {
+                return Self.cancelledResult
+            } catch {
+                // Store failures retain the existing live-helper fallback, but
+                // cancellation must never be reinterpreted as fallback demand.
+                guard !Task.isCancelled else { return Self.cancelledResult }
             }
+            // A hidden surface can cancel while the store query is running.
+            // Do not turn that canceled read into a new helper/XPC fallback.
+            guard !Task.isCancelled else { return Self.cancelledResult }
         }
 
         do {
+            try Task.checkCancellation()
             let apps = try await liveSource.topApps(range: range)
+            try Task.checkCancellation()
             return TopAppsResult(
                 apps: limited(apps, to: limit),
                 origin: .live,
                 coverageDayCount: nil,
                 errorDescription: nil)
+        } catch is CancellationError {
+            return Self.cancelledResult
         } catch {
-            await MainActor.run {
-                HelperRegistrationController.shared.refresh()
-            }
+            // XPC may report its own transport error after the surface task was
+            // canceled. Do not convert that stale completion into registration
+            // or recovery work for a UI that is no longer visible.
+            guard !Task.isCancelled else { return Self.cancelledResult }
+            await reportLiveFailure()
             return TopAppsResult(
                 apps: [],
                 origin: .unavailable,
                 coverageDayCount: nil,
                 errorDescription: error.localizedDescription)
         }
+    }
+
+    /// Callers discard canceled results before publication. Returning a neutral
+    /// value keeps this convenience API nonthrowing without misreporting
+    /// cancellation as helper failure or triggering registration work.
+    private static var cancelledResult: TopAppsResult {
+        TopAppsResult(
+            apps: [],
+            origin: .loading,
+            coverageDayCount: nil,
+            errorDescription: nil)
     }
 
     private func limited(_ apps: [AppEnergy], to limit: Int?) -> [AppEnergy] {
