@@ -137,9 +137,11 @@ struct StatsView: View {
             await loadTimeline()
             guard !Task.isCancelled else { return }
             refreshedAt = Date()
-            // Keep the timeline fresh while the window stays open.
+            // Keep both visible data panes fresh while the window stays open.
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
+                guard !Task.isCancelled else { break }
+                await loadApps()
                 guard !Task.isCancelled else { break }
                 await loadTimeline()
                 guard !Task.isCancelled else { break }
