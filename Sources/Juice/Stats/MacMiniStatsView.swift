@@ -246,10 +246,12 @@ struct MacMiniStatsView: View {
 
     private func appAccessibilityValue(_ app: AppRow) -> String {
         let liveDescription = app.liveWatts.map(liveWattsText) ?? "not live"
-        let energyDescription = app.energyWh.map(serverEnergyText) ?? "energy unavailable"
+        let energyDescription = app.energyWh
+            .map { "\(serverEnergyText($0)) \(accessibilityRangeDescription)" }
+            ?? "energy unavailable"
         let base = "\(liveDescription), \(energyDescription)"
         guard let cost = costText(app.energyWh) else { return base }
-        return "\(base), estimated cost \(cost)"
+        return "\(base), estimated cost \(cost) \(accessibilityRangeDescription)"
     }
 
     private func appRowLabel(_ app: AppRow) -> some View {
@@ -463,6 +465,16 @@ struct MacMiniStatsView: View {
         case .week: return "the last week's"
         case .allTime: return "all recorded"
         default: return range.rawValue.lowercased()
+        }
+    }
+
+    private var accessibilityRangeDescription: String {
+        switch range {
+        case .session: return "for this session"
+        case .today: return "today"
+        case .threeDays: return "over the last three days"
+        case .week: return "over the last week"
+        case .allTime: return "over all recorded time"
         }
     }
 

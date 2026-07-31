@@ -481,6 +481,7 @@ struct StatsView: View {
                             app: app,
                             energyWh: app.todayWh,
                             cpuHours: app.todayCpuHours,
+                            range: .today,
                             share: app.watts / maxWatts,
                             costText: costText(app.todayWh),
                             onTap: {
@@ -556,6 +557,7 @@ struct StatsView: View {
                             app: app,
                             energyWh: sessionEnergy?.energyWh,
                             cpuHours: sessionEnergy?.cpuHours,
+                            range: .session,
                             share: app.watts / maxWatts,
                             costText: costText(sessionEnergy?.energyWh),
                             onTap: {
@@ -825,6 +827,7 @@ private struct StatsActiveAppRow: View {
     let app: HybridTodayList.ActiveApp
     let energyWh: Double?
     let cpuHours: Double?
+    let range: EnergyRange
     let share: Double
     let costText: String?
     let onTap: () -> Void
@@ -896,8 +899,29 @@ private struct StatsActiveAppRow: View {
     }
 
     private var accessibilityValue: String {
-        guard let costText else { return liveWattsText(app.watts) }
-        return "\(liveWattsText(app.watts)), estimated cost \(costText)"
+        var values = [liveWattsText(app.watts)]
+        if let energyWh {
+            values.append(
+                String(format: "%.1f watt-hours", energyWh)
+                + " \(energyContext)")
+        }
+        if let costText {
+            values.append("estimated cost \(costText) \(energyContext)")
+        }
+        if let cpuHours {
+            values.append(String(format: "%.1f CPU-hours", cpuHours))
+        }
+        return values.joined(separator: ", ")
+    }
+
+    private var energyContext: String {
+        switch range {
+        case .session: return "for this session"
+        case .today: return "today"
+        case .threeDays: return "over three days"
+        case .week: return "over the last week"
+        case .allTime: return "over all recorded time"
+        }
     }
 }
 
