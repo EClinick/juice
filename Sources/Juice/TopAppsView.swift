@@ -532,7 +532,7 @@ private struct LiveActiveRow: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.green)
                     if let costText {
-                        Text(costText)
+                        Text("\(costText) \(energyContext)")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -558,7 +558,7 @@ private struct LiveActiveRow: View {
 
     private var accessibilityValue: String {
         guard let costText else { return liveWattsText(app.watts) }
-        return "\(liveWattsText(app.watts)), estimated cost \(costText)"
+        return "\(liveWattsText(app.watts)), estimated cost \(costText) \(energyContext)"
     }
 
     private var energySubtext: Text {
