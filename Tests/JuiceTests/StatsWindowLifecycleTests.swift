@@ -181,6 +181,37 @@ struct StatsWindowLifecycleTests {
         reopenedWindow.orderOut(nil)
     }
 
+    @Test("Visible presentations reuse one managed window")
+    func reusesVisibleWindow() throws {
+        let presenter = StatsWindowPresenter(detachStatsConsumers: {})
+        let autosaveName = uniqueAutosaveName()
+        presenter.present(
+            Color.red,
+            title: "Stats & Settings",
+            minimumContentSize: minimumSize,
+            contentSize: defaultSize,
+            frameAutosaveName: autosaveName)
+        let originalWindow = try #require(presenter.window)
+        let originalHost = originalWindow.contentViewController
+        originalWindow.setContentSize(NSSize(width: 810, height: 590))
+
+        presenter.present(
+            Color.blue,
+            title: "Stats & Settings",
+            minimumContentSize: minimumSize,
+            contentSize: defaultSize,
+            frameAutosaveName: autosaveName)
+        let reusedWindow = try #require(presenter.window)
+
+        #expect(reusedWindow === originalWindow)
+        #expect(reusedWindow.contentViewController !== originalHost)
+        #expect(reusedWindow.title == "Stats & Settings")
+        expectSize(
+            reusedWindow.contentRect(forFrameRect: reusedWindow.frame).size,
+            equals: NSSize(width: 810, height: 590))
+        reusedWindow.orderOut(nil)
+    }
+
     @Test("A saved frame restores its content size on first presentation")
     func restoresAutosavedContentSize() throws {
         let autosaveName = uniqueAutosaveName()

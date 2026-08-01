@@ -148,15 +148,19 @@ struct MacMiniStatsView: View {
                 .controlSize(.small)
             }
 
-            Picker("Server history range", selection: $range) {
-                ForEach(macMiniPowerRanges, id: \.self) {
-                    Text($0.macMiniPickerLabel).tag($0)
+            HStack(spacing: 16) {
+                Picker("Server history range", selection: $range) {
+                    ForEach(macMiniPowerRanges, id: \.self) {
+                        Text($0.macMiniPickerLabel).tag($0)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 360, alignment: .leading)
+
+                Spacer(minLength: 0)
+                ElectricityRateControl()
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 360, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(16)
     }

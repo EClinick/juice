@@ -224,14 +224,19 @@ struct StatsView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
 
-            Picker("Range", selection: $range) {
-                ForEach(visibleRanges, id: \.self) { range in
-                    Text(range.pickerLabel).tag(range)
+            HStack(spacing: 16) {
+                Picker("Range", selection: $range) {
+                    ForEach(visibleRanges, id: \.self) { range in
+                        Text(range.pickerLabel).tag(range)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 380)
+
+                Spacer(minLength: 0)
+                ElectricityRateControl()
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 380)
         }
         .padding(16)
     }

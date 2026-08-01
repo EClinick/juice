@@ -271,21 +271,7 @@ struct PopoverView: View {
                         loadTask = Task { await loadEnergy() }
                     }
                 }
-                Button("Stats") {
-                    if model.isMacMini {
-                        StatsWindowPresenter.shared.showServer(
-                            store: JuiceApp.sampler?.store)
-                    } else {
-                        StatsWindowPresenter.shared.show(
-                            selector: selector,
-                            timelineSource: timelineSource,
-                            model: model
-                        )
-                    }
-                }
-                SettingsLink {
-                    Text("Settings…")
-                }
+                Button("Stats & Settings…", action: showStatsWindow)
                 Spacer()
                 Button("Quit Juice") { NSApp.terminate(nil) }
             }
@@ -343,6 +329,20 @@ struct PopoverView: View {
             loadTask?.cancel()
             live.setAttached(false, for: .popover(consumerID))
             batterySession.setAttached(false, for: .popover(consumerID))
+        }
+    }
+
+    /// Stats and Settings intentionally share one retained AppKit window. The
+    /// kWh rate now lives in the Stats header beside the costs it controls.
+    private func showStatsWindow() {
+        if model.isMacMini {
+            StatsWindowPresenter.shared.showServer(store: JuiceApp.sampler?.store)
+        } else {
+            StatsWindowPresenter.shared.show(
+                selector: selector,
+                timelineSource: timelineSource,
+                model: model
+            )
         }
     }
 
