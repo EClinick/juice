@@ -91,10 +91,10 @@ dev-helper-uninstall:
 # dev code-signing requirement expects.
 dev-app-sign:
 	swift build -Xswiftc -DDEV_BUILD -Xswiftc -DDEV_HELPER
-	codesign --force -s - -i com.eclinick.juice.dev .build/debug/Juice
+	codesign --force -s - -i com.eclinick.juice.dev.ec .build/debug/Juice
 
 # Build, sign, and run the XPC end-to-end probe against the installed helper.
 dev-probe:
 	swift build -Xswiftc -DDEV_BUILD -Xswiftc -DDEV_HELPER
-	codesign --force -s - -i com.eclinick.juice.dev .build/debug/JuiceXPCProbe
+	codesign --force -s - -i com.eclinick.juice.dev.ec .build/debug/JuiceXPCProbe
 	./.build/debug/JuiceXPCProbe

@@ -128,9 +128,21 @@ struct JuiceApp: App {
             } else {
                 // Icon only, like the system battery item; recomputed from the
                 // observed model so it tracks battery and Low Power Mode changes.
+                #if DEV_BUILD
+                Label {
+                    Text("DEV")
+                        .font(.caption2.weight(.semibold))
+                } icon: {
+                    Image(nsImage: BatteryStatusIcon.image(
+                        for: model.reading,
+                        isLowPowerModeEnabled: model.isLowPowerModeEnabled))
+                }
+                .labelStyle(.titleAndIcon)
+                #else
                 Image(nsImage: BatteryStatusIcon.image(
                     for: model.reading,
                     isLowPowerModeEnabled: model.isLowPowerModeEnabled))
+                #endif
             }
         }
         .menuBarExtraStyle(.window)

@@ -5,7 +5,7 @@ public enum JuiceXPC {
     #if DEV_BUILD
     /// Development builds are a separate macOS product identity so their
     /// Service Management registration can coexist with the installed app.
-    public static let appBundleID = "com.eclinick.juice.dev"
+    public static let appBundleID = "com.eclinick.juice.dev.ec"
     public static let helperLabel = "com.eclinick.juice.dev.helper"
     public static let defaultsSuiteName = "com.eclinick.juice.dev"
     #else
