@@ -2,12 +2,11 @@ import SwiftUI
 import AppKit
 import JuiceCore
 
-/// Opens and manages the standalone Stats window.
+/// Opens and manages the shared Stats and Settings window.
 ///
 /// This is an accessory-policy (menu-bar) app, so showing a regular window
-/// requires activating the app explicitly. A single window is reused across
-/// invocations: repeated calls bring the existing window to the front rather
-/// than opening duplicates.
+/// requires activating the app explicitly. The kWh setting lives in the Stats
+/// header, and the combined popover action reuses this single retained window.
 @MainActor
 final class StatsWindowPresenter: NSObject, NSWindowDelegate {
     static let shared = StatsWindowPresenter()

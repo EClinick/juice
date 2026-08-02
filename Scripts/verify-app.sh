@@ -8,11 +8,11 @@ case "$BUILD_VARIANT" in
     production)
         EXPECTED_APP_ID="com.eclinick.juice"
         EXPECTED_HELPER_LABEL="com.eclinick.juice.helper"
-        OPPOSITE_APP_ID="com.eclinick.juice.dev"
+        OPPOSITE_APP_ID="com.eclinick.juice.dev.ec"
         OPPOSITE_HELPER_LABEL="com.eclinick.juice.dev.helper"
         ;;
     development)
-        EXPECTED_APP_ID="com.eclinick.juice.dev"
+        EXPECTED_APP_ID="com.eclinick.juice.dev.ec"
         EXPECTED_HELPER_LABEL="com.eclinick.juice.dev.helper"
         OPPOSITE_APP_ID="com.eclinick.juice"
         OPPOSITE_HELPER_LABEL="com.eclinick.juice.helper"

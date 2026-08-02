@@ -21,6 +21,8 @@ struct MacMiniStatsView: View {
     @State private var loadError: String?
     @State private var refreshedAt = Date()
     @State private var retryGeneration = 0
+    @AppStorage(ElectricityCost.pricePerKilowattHourStorageKey)
+    private var pricePerKilowattHour = ElectricityCost.defaultPricePerKilowattHour
 
     private struct AppRow: Identifiable {
         var id: String { appKey }
@@ -75,6 +77,13 @@ struct MacMiniStatsView: View {
 
     private var maxAppEnergy: Double {
         max(appRows.compactMap(\.energyWh).max() ?? 0, 0.001)
+    }
+
+    private func costText(_ wattHours: Double?) -> String? {
+        guard let wattHours else { return nil }
+        return ElectricityCost.formattedEstimate(
+            wattHours: wattHours,
+            pricePerKilowattHour: pricePerKilowattHour)
     }
 
     var body: some View {
@@ -139,15 +148,19 @@ struct MacMiniStatsView: View {
                 .controlSize(.small)
             }
 
-            Picker("Server history range", selection: $range) {
-                ForEach(macMiniPowerRanges, id: \.self) {
-                    Text($0.macMiniPickerLabel).tag($0)
+            HStack(spacing: 16) {
+                Picker("Server history range", selection: $range) {
+                    ForEach(macMiniPowerRanges, id: \.self) {
+                        Text($0.macMiniPickerLabel).tag($0)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 360, alignment: .leading)
+
+                Spacer(minLength: 0)
+                ElectricityRateControl()
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 360, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(16)
     }
@@ -173,7 +186,7 @@ struct MacMiniStatsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text("LIVE W")
                     .frame(width: 64, alignment: .trailing)
-                Text("ENERGY")
+                Text("ENERGY / COST")
                     .frame(width: 72, alignment: .trailing)
                 Text("PEAK W")
                     .frame(width: 64, alignment: .trailing)
@@ -231,9 +244,18 @@ struct MacMiniStatsView: View {
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(app.displayName)
-        .accessibilityValue(
-            "\(app.liveWatts.map(liveWattsText) ?? "not live"), \(app.energyWh.map(serverEnergyText) ?? "energy unavailable")")
+        .accessibilityValue(appAccessibilityValue(app))
         .accessibilityHint("Opens app energy details")
+    }
+
+    private func appAccessibilityValue(_ app: AppRow) -> String {
+        let liveDescription = app.liveWatts.map(liveWattsText) ?? "not live"
+        let energyDescription = app.energyWh
+            .map { "\(serverEnergyText($0)) \(accessibilityRangeDescription)" }
+            ?? "energy unavailable"
+        let base = "\(liveDescription), \(energyDescription)"
+        guard let cost = costText(app.energyWh) else { return base }
+        return "\(base), estimated cost \(cost) \(accessibilityRangeDescription)"
     }
 
     private func appRowLabel(_ app: AppRow) -> some View {
@@ -277,10 +299,19 @@ struct MacMiniStatsView: View {
                 .monospacedDigit()
                 .frame(width: 64, alignment: .trailing)
 
-            Text(app.energyWh.map(serverEnergyText) ?? "—")
-                .font(.callout)
-                .monospacedDigit()
-                .frame(width: 72, alignment: .trailing)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(app.energyWh.map(serverEnergyText) ?? "—")
+                    .font(.callout)
+                if let cost = costText(app.energyWh) {
+                    Text(cost)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
+            }
+            .monospacedDigit()
+            .frame(width: 72, alignment: .trailing)
 
             Text(app.peakWatts.map(liveWattsText) ?? "—")
                 .font(.caption)
@@ -438,6 +469,16 @@ struct MacMiniStatsView: View {
         case .week: return "the last week's"
         case .allTime: return "all recorded"
         default: return range.rawValue.lowercased()
+        }
+    }
+
+    private var accessibilityRangeDescription: String {
+        switch range {
+        case .session: return "for this session"
+        case .today: return "today"
+        case .threeDays: return "over the last three days"
+        case .week: return "over the last week"
+        case .allTime: return "over all recorded time"
         }
     }
 

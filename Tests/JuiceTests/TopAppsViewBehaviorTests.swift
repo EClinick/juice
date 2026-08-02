@@ -77,6 +77,25 @@ struct TopAppsViewBehaviorTests {
             activeCount: 0))
     }
 
+    @Test("configured costs use compact range headers outside the value column")
+    func costRangeHeaders() {
+        #expect(TopAppsView.costHeaderContext(
+            range: .session,
+            pricePerKilowattHour: 0.30) == "SESSION")
+        #expect(TopAppsView.costHeaderContext(
+            range: .today,
+            pricePerKilowattHour: 0.30) == "TODAY")
+        #expect(TopAppsView.costHeaderContext(
+            range: .week,
+            pricePerKilowattHour: 0.30) == "1W")
+        #expect(TopAppsView.costHeaderContext(
+            range: .allTime,
+            pricePerKilowattHour: 0.30) == "ALL")
+        #expect(TopAppsView.costHeaderContext(
+            range: .today,
+            pricePerKilowattHour: 0) == nil)
+    }
+
     @Test("live watt formatting always includes the unit")
     func liveWattFormatting() {
         #expect(liveWattsText(12.34) == "12.3 W")
