@@ -102,8 +102,8 @@ final class StatsWindowPresenter: NSObject, NSWindowDelegate {
             root,
             title: "Juice - Stats",
             minimumContentSize: NSSize(
-                width: StatsView.minimumContentWidth,
-                height: StatsView.minimumContentHeight),
+                width: StatsView.batteryMinimumContentWidth,
+                height: StatsView.batteryMinimumContentHeight),
             contentSize: NSSize(width: 760, height: 480))
     }
 
@@ -111,11 +111,11 @@ final class StatsWindowPresenter: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
 
         present(
-            MacMiniStatsView(store: store),
+            StatsView(serverStore: store),
             title: "Juice - Mac mini Stats",
             minimumContentSize: NSSize(
-                width: MacMiniStatsView.minimumContentWidth,
-                height: MacMiniStatsView.minimumContentHeight),
+                width: StatsView.serverMinimumContentWidth,
+                height: StatsView.serverMinimumContentHeight),
             contentSize: NSSize(width: 940, height: 600))
     }
 
