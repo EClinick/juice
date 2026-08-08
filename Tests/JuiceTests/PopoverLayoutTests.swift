@@ -71,6 +71,40 @@ struct PopoverLayoutTests {
         #expect(controller.view.bounds.contains(footerFrame))
     }
 
+    @Test("release updater scrolls with the dashboard while actions stay fixed")
+    func releaseUpdaterStaysInsideViewport() throws {
+        let controller = NSHostingController(
+            rootView: VStack(alignment: .leading, spacing: 10) {
+                PopoverDashboardViewport(height: 120) {
+                    VStack(spacing: 10) {
+                        Color.clear.frame(height: 180)
+                        ReleaseUpdaterMarker()
+                            .frame(height: 80)
+                    }
+                }
+
+                Divider()
+                FooterMarker()
+                    .frame(height: 20)
+            }
+            .frame(width: 320)
+        )
+        controller.view.frame = NSRect(
+            origin: .zero,
+            size: controller.view.fittingSize)
+        controller.view.layoutSubtreeIfNeeded()
+
+        let scrollView = try #require(firstSubview(of: NSScrollView.self, in: controller.view))
+        let updater = try #require(firstSubview(
+            of: ReleaseUpdaterMarkerView.self,
+            in: controller.view))
+        let footer = try #require(firstSubview(of: FooterMarkerView.self, in: controller.view))
+
+        #expect(updater.isDescendant(of: scrollView))
+        #expect(!footer.isDescendant(of: scrollView))
+        #expect(controller.view.bounds.contains(footer.convert(footer.bounds, to: controller.view)))
+    }
+
     @Test("scroll cue button jumps the viewport to the bottom")
     func scrollCueButtonJumpsToBottom() async throws {
         let controller = NSHostingController(
@@ -142,6 +176,7 @@ struct PopoverLayoutTests {
 }
 
 private final class FooterMarkerView: NSView {}
+private final class ReleaseUpdaterMarkerView: NSView {}
 
 private struct FooterMarker: NSViewRepresentable {
     func makeNSView(context: Context) -> FooterMarkerView {
@@ -149,4 +184,12 @@ private struct FooterMarker: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: FooterMarkerView, context: Context) {}
+}
+
+private struct ReleaseUpdaterMarker: NSViewRepresentable {
+    func makeNSView(context: Context) -> ReleaseUpdaterMarkerView {
+        ReleaseUpdaterMarkerView()
+    }
+
+    func updateNSView(_ nsView: ReleaseUpdaterMarkerView, context: Context) {}
 }

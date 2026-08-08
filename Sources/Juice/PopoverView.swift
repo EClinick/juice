@@ -98,66 +98,30 @@ struct PopoverView: View {
         VStack(alignment: .leading, spacing: 10) {
             if model.isMacMini {
                 PopoverDashboardViewport(height: Self.dashboardViewportHeight) {
-                    MacMiniPowerView(
-                        store: JuiceApp.sampler?.store,
-                        refreshGeneration: serverRefreshGeneration)
+                    VStack(alignment: .leading, spacing: 10) {
+                        MacMiniPowerView(
+                            store: JuiceApp.sampler?.store,
+                            refreshGeneration: serverRefreshGeneration)
+                        updateControls
+                    }
                 }
             } else if let r = model.reading, r.hasBattery {
                 PopoverDashboardViewport(height: Self.dashboardViewportHeight) {
-                    batteryDashboard(r)
+                    VStack(alignment: .leading, spacing: 10) {
+                        batteryDashboard(r)
+                        updateControls
+                    }
                 }
             } else if let err = model.lastError {
                 Text(err).font(.caption).foregroundStyle(.red)
+                updateControls
             } else {
                 Text("No battery detected.")
                     .foregroundStyle(.secondary)
+                updateControls
             }
 
             Divider()
-
-            if updater.isAvailable {
-                VStack(alignment: .leading, spacing: 5) {
-                    if let readyUpdate = updater.readyUpdate {
-                        HStack(spacing: 8) {
-                            Image(systemName: "arrow.down.circle.fill")
-                                .foregroundStyle(.blue)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text("Juice \(readyUpdate.version) is ready")
-                                    .font(.caption.weight(.semibold))
-                                Text("Restart Juice to finish installing.")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button("Update & Relaunch") {
-                                updater.installReadyUpdate()
-                            }
-                            .controlSize(.small)
-                            .buttonStyle(.borderedProminent)
-                        }
-                    }
-
-                    HStack {
-                        Toggle("Automatic updates", isOn: Binding(
-                            get: { updater.automaticallyUpdates },
-                            set: { updater.automaticallyUpdates = $0 }
-                        ))
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
-                        Spacer()
-                        if updater.readyUpdate == nil {
-                            Button("Check for Updates…") {
-                                updater.checkForUpdates()
-                            }
-                        }
-                    }
-                    Text("Turn this off to update manually.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                Divider()
-            }
 
             HStack {
                 Button("Refresh") {
@@ -228,6 +192,53 @@ struct PopoverView: View {
             loadTask?.cancel()
             live.setAttached(false, for: .popover(consumerID))
             batterySession.setAttached(false, for: .popover(consumerID))
+        }
+    }
+
+    @ViewBuilder
+    private var updateControls: some View {
+        if updater.isAvailable {
+            Divider()
+
+            VStack(alignment: .leading, spacing: 5) {
+                if let readyUpdate = updater.readyUpdate {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .foregroundStyle(.blue)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Juice \(readyUpdate.version) is ready")
+                                .font(.caption.weight(.semibold))
+                            Text("Restart Juice to finish installing.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Update & Relaunch") {
+                            updater.installReadyUpdate()
+                        }
+                        .controlSize(.small)
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+
+                HStack {
+                    Toggle("Automatic updates", isOn: Binding(
+                        get: { updater.automaticallyUpdates },
+                        set: { updater.automaticallyUpdates = $0 }
+                    ))
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    Spacer()
+                    if updater.readyUpdate == nil {
+                        Button("Check for Updates…") {
+                            updater.checkForUpdates()
+                        }
+                    }
+                }
+                Text("Turn this off to update manually.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
