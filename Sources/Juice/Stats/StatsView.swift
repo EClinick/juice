@@ -203,87 +203,27 @@ struct StatsView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button {
-                    withAnimation(replacementAnimation) {
-                        isCustomizingRanges.toggle()
-                    }
-                } label: {
-                    Label(
-                        isCustomizingRanges ? "Done" : "Customize Tabs",
-                        systemImage: isCustomizingRanges
-                            ? "checkmark"
-                            : "slider.horizontal.3")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help(isCustomizingRanges ? "Finish customizing tabs" : "Choose which tabs appear")
+                StatsRangeCustomizationButton(
+                    isCustomizing: $isCustomizingRanges)
             }
 
             if isCustomizingRanges {
-                rangeSettings
+                StatsRangeSettings(
+                    availableRanges: EnergyRange.allCases,
+                    fallbackRanges: StatsRangeVisibility.defaultRanges,
+                    selection: $range,
+                    storageValue: $rangeVisibilityStorage)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
 
-            HStack(spacing: 16) {
-                Picker("Range", selection: $range) {
-                    ForEach(visibleRanges, id: \.self) { range in
-                        Text(range.pickerLabel).tag(range)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(maxWidth: 380)
-
-                Spacer(minLength: 0)
-                ElectricityRateControl()
-            }
+            StatsRangePickerRow(
+                title: "Range",
+                selection: $range,
+                ranges: visibleRanges,
+                pickerWidth: 380,
+                label: \.pickerLabel)
         }
         .padding(16)
-    }
-
-    private var rangeSettings: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Visible tabs")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Show All") {
-                    rangeVisibilityStorage = StatsRangeVisibility.allStorageValue
-                }
-                .buttonStyle(.plain)
-                .font(.caption)
-                .disabled(visibleRanges.count == EnergyRange.allCases.count)
-            }
-
-            HStack(spacing: 14) {
-                ForEach(EnergyRange.allCases, id: \.self) { candidate in
-                    Toggle(
-                        candidate.rawValue,
-                        isOn: visibilityBinding(for: candidate))
-                    .toggleStyle(.checkbox)
-                    .disabled(
-                        visibleRanges.count == 1
-                            && visibleRanges.contains(candidate))
-                }
-            }
-        }
-        .padding(10)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func visibilityBinding(for candidate: EnergyRange) -> Binding<Bool> {
-        Binding(
-            get: { visibleRanges.contains(candidate) },
-            set: { isVisible in
-                let updated = StatsRangeVisibility.updating(
-                    candidate,
-                    isVisible: isVisible,
-                    in: rangeVisibilityStorage)
-                rangeVisibilityStorage = updated
-
-                range = StatsRangeVisibility.preferredRange(range, from: updated)
-            })
     }
 
     private var rangeSubtitle: String {

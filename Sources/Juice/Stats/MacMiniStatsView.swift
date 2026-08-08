@@ -21,8 +21,18 @@ struct MacMiniStatsView: View {
     @State private var loadError: String?
     @State private var refreshedAt = Date()
     @State private var retryGeneration = 0
+    @AppStorage(StatsRangeVisibility.macMiniStorageKey)
+    private var rangeVisibilityStorage = StatsRangeVisibility.macMiniDefaultStorageValue
     @AppStorage(ElectricityCost.pricePerKilowattHourStorageKey)
     private var pricePerKilowattHour = ElectricityCost.defaultPricePerKilowattHour
+    @State private var isCustomizingRanges = false
+
+    private var visibleRanges: [EnergyRange] {
+        StatsRangeVisibility.visibleRanges(
+            from: rangeVisibilityStorage,
+            availableRanges: macMiniPowerRanges,
+            fallbackRanges: macMiniPowerRanges)
+    }
 
     private struct AppRow: Identifiable {
         var id: String { appKey }
@@ -114,7 +124,13 @@ struct MacMiniStatsView: View {
                 await load()
             }
         }
-        .onAppear { attachLive() }
+        .onAppear {
+            range = preferredVisibleRange()
+            attachLive()
+        }
+        .onChange(of: rangeVisibilityStorage) {
+            range = preferredVisibleRange()
+        }
         .onDisappear {
             live.setAttached(false, for: .stats(consumerID))
         }
@@ -142,27 +158,39 @@ struct MacMiniStatsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                StatsRangeCustomizationButton(
+                    isCustomizing: $isCustomizingRanges)
                 Button("Refresh") {
                     retryGeneration &+= 1
                 }
                 .controlSize(.small)
             }
 
-            HStack(spacing: 16) {
-                Picker("Server history range", selection: $range) {
-                    ForEach(macMiniPowerRanges, id: \.self) {
-                        Text($0.macMiniPickerLabel).tag($0)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 360, alignment: .leading)
-
-                Spacer(minLength: 0)
-                ElectricityRateControl()
+            if isCustomizingRanges {
+                StatsRangeSettings(
+                    availableRanges: macMiniPowerRanges,
+                    fallbackRanges: macMiniPowerRanges,
+                    selection: $range,
+                    storageValue: $rangeVisibilityStorage)
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
+
+            StatsRangePickerRow(
+                title: "Server history range",
+                selection: $range,
+                ranges: visibleRanges,
+                pickerWidth: 360,
+                label: \.macMiniPickerLabel)
         }
         .padding(16)
+    }
+
+    private func preferredVisibleRange() -> EnergyRange {
+        StatsRangeVisibility.preferredRange(
+            range,
+            from: rangeVisibilityStorage,
+            availableRanges: macMiniPowerRanges,
+            fallbackRanges: macMiniPowerRanges)
     }
 
     private struct LoadRequest: Hashable {
