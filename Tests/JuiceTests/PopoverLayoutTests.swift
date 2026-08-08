@@ -1,0 +1,152 @@
+import AppKit
+import SwiftUI
+import Testing
+@testable import Juice
+
+@MainActor
+@Suite("Popover layout")
+struct PopoverLayoutTests {
+    @Test("scroll hint appears only while content remains below")
+    func scrollHintVisibility() {
+        let documentBounds = CGRect(x: 0, y: 0, width: 320, height: 900)
+
+        #expect(
+            PopoverScrollHintVisibility.shouldShow(
+                documentBounds: documentBounds,
+                visibleRect: CGRect(x: 0, y: 0, width: 320, height: 600),
+                isFlipped: true))
+        #expect(
+            !PopoverScrollHintVisibility.shouldShow(
+                documentBounds: documentBounds,
+                visibleRect: CGRect(x: 0, y: 300, width: 320, height: 600),
+                isFlipped: true))
+        #expect(
+            PopoverScrollHintVisibility.shouldShow(
+                documentBounds: documentBounds,
+                visibleRect: CGRect(x: 0, y: 300, width: 320, height: 600),
+                isFlipped: false))
+        #expect(
+            !PopoverScrollHintVisibility.shouldShow(
+                documentBounds: documentBounds,
+                visibleRect: CGRect(x: 0, y: 0, width: 320, height: 600),
+                isFlipped: false))
+        #expect(
+            !PopoverScrollHintVisibility.shouldShow(
+                documentBounds: CGRect(x: 0, y: 0, width: 320, height: 600),
+                visibleRect: CGRect(x: 0, y: 0, width: 320, height: 600),
+                isFlipped: true))
+    }
+
+    @Test("dashboard scrolling keeps actions outside the viewport")
+    func dashboardScrollingKeepsActionsVisible() throws {
+        let controller = NSHostingController(
+            rootView: VStack(alignment: .leading, spacing: 10) {
+                PopoverDashboardViewport(height: 120) {
+                    VStack {
+                        ForEach(0..<20, id: \.self) { index in
+                            Text("Dashboard row \(index)")
+                        }
+                    }
+                }
+
+                Divider()
+                FooterMarker()
+                    .frame(height: 20)
+            }
+            .frame(width: 320)
+        )
+        controller.view.frame = NSRect(
+            origin: .zero,
+            size: controller.view.fittingSize)
+        controller.view.layoutSubtreeIfNeeded()
+
+        let scrollView = try #require(firstSubview(of: NSScrollView.self, in: controller.view))
+        let footer = try #require(firstSubview(of: FooterMarkerView.self, in: controller.view))
+        let scrollFrame = scrollView.convert(scrollView.bounds, to: controller.view)
+        let footerFrame = footer.convert(footer.bounds, to: controller.view)
+
+        #expect(abs(scrollFrame.height - 120) < 1)
+        #expect(!footer.isDescendant(of: scrollView))
+        #expect(!scrollFrame.intersects(footerFrame))
+        #expect(controller.view.bounds.contains(footerFrame))
+    }
+
+    @Test("scroll cue button jumps the viewport to the bottom")
+    func scrollCueButtonJumpsToBottom() async throws {
+        let controller = NSHostingController(
+            rootView: PopoverDashboardViewport(height: 120) {
+                VStack {
+                    ForEach(0..<20, id: \.self) { index in
+                        Text("Dashboard row \(index)")
+                    }
+                }
+            }
+            .frame(width: 320)
+        )
+        controller.view.frame = NSRect(x: 0, y: 0, width: 320, height: 120)
+        let window = NSWindow(contentViewController: controller)
+        window.setContentSize(NSSize(width: 320, height: 120))
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        controller.view.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        controller.view.layoutSubtreeIfNeeded()
+
+        let scrollView = try #require(firstSubview(of: NSScrollView.self, in: controller.view))
+        let buttonY = controller.view.isFlipped
+            ? controller.view.bounds.maxY - 18
+            : controller.view.bounds.minY + 18
+        let clickPoint = controller.view.convert(
+            NSPoint(x: controller.view.bounds.midX, y: buttonY),
+            to: nil)
+        for eventType in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try #require(NSEvent.mouseEvent(
+                with: eventType,
+                location: clickPoint,
+                modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber,
+                context: nil,
+                eventNumber: 0,
+                clickCount: 1,
+                pressure: 1))
+            NSApplication.shared.sendEvent(event)
+        }
+
+        try await Task.sleep(for: .milliseconds(350))
+        controller.view.layoutSubtreeIfNeeded()
+        let documentView = try #require(scrollView.documentView)
+        let visibleRect = documentView.convert(
+            scrollView.contentView.bounds,
+            from: scrollView.contentView)
+        #expect(
+            !PopoverScrollHintVisibility.shouldShow(
+                documentBounds: documentView.bounds,
+                visibleRect: visibleRect,
+                isFlipped: documentView.isFlipped))
+    }
+
+    private func firstSubview<ViewType: NSView>(
+        of type: ViewType.Type,
+        in view: NSView,
+        matching predicate: @escaping (ViewType) -> Bool = { _ in true }
+    ) -> ViewType? {
+        if let match = view as? ViewType, predicate(match) {
+            return match
+        }
+        return view.subviews.lazy.compactMap {
+            firstSubview(of: type, in: $0, matching: predicate)
+        }.first
+    }
+
+}
+
+private final class FooterMarkerView: NSView {}
+
+private struct FooterMarker: NSViewRepresentable {
+    func makeNSView(context: Context) -> FooterMarkerView {
+        FooterMarkerView()
+    }
+
+    func updateNSView(_ nsView: FooterMarkerView, context: Context) {}
+}
