@@ -569,12 +569,13 @@ struct PopoverView: View {
 
 /// Gives MenuBarExtra dashboards a finite viewport while leaving action
 /// controls outside the scrollable region. ScrollView has no useful intrinsic
-/// height in a menu-bar panel, so the explicit height prevents both clipping
-/// and collapse.
+/// height in a menu-bar panel, so measure its content and cap the viewport to
+/// prevent clipping without leaving empty space above the action footer.
 struct PopoverDashboardViewport<Content: View>: View {
     let height: CGFloat
     private let content: Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var contentHeight: CGFloat?
     @State private var showsScrollHint = true
     @State private var scrollHintHovered = false
 
@@ -599,9 +600,20 @@ struct PopoverDashboardViewport<Content: View>: View {
                         .frame(height: 1)
                         .id(PopoverDashboardScrollTarget.bottom)
                 }
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear.preference(
+                            key: PopoverDashboardContentHeightKey.self,
+                            value: geometry.size.height)
+                    }
+                }
             }
             .scrollIndicators(.never)
-            .frame(height: height)
+            .frame(height: min(contentHeight ?? height, height))
+            .onPreferenceChange(PopoverDashboardContentHeightKey.self) { measuredHeight in
+                guard measuredHeight > 0 else { return }
+                contentHeight = measuredHeight
+            }
             .overlay(alignment: .bottom) {
                 if showsScrollHint {
                     ZStack(alignment: .bottom) {
@@ -650,6 +662,14 @@ struct PopoverDashboardViewport<Content: View>: View {
         } else {
             withAnimation(.easeOut(duration: 0.22), scroll)
         }
+    }
+}
+
+private struct PopoverDashboardContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
