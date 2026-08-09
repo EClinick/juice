@@ -71,6 +71,34 @@ struct PopoverLayoutTests {
         #expect(controller.view.bounds.contains(footerFrame))
     }
 
+    @Test("short dashboard shrinks instead of leaving space above actions")
+    func shortDashboardShrinksToContent() async throws {
+        let controller = NSHostingController(
+            rootView: VStack(alignment: .leading, spacing: 10) {
+                PopoverDashboardViewport(height: 120) {
+                    Color.clear.frame(height: 40)
+                }
+
+                Divider()
+                FooterMarker()
+                    .frame(height: 20)
+            }
+            .frame(width: 320)
+        )
+        controller.view.frame = NSRect(
+            origin: .zero,
+            size: controller.view.fittingSize)
+        controller.view.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        controller.view.layoutSubtreeIfNeeded()
+
+        let scrollView = try #require(firstSubview(of: NSScrollView.self, in: controller.view))
+        let scrollFrame = scrollView.convert(scrollView.bounds, to: controller.view)
+
+        // The one-point bottom scroll target is part of the measured document.
+        #expect(abs(scrollFrame.height - 41) < 1)
+    }
+
     @Test("release updater scrolls with the dashboard while actions stay fixed")
     func releaseUpdaterStaysInsideViewport() throws {
         let controller = NSHostingController(
