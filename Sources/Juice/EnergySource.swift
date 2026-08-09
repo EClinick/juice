@@ -10,7 +10,7 @@ struct AppEnergy: Identifiable, Equatable {
 }
 
 /// A single point in a battery charge-level timeline.
-struct BatterySample: Identifiable {
+struct BatterySample: Identifiable, Equatable, Sendable {
     var id: Date { date }
     var date: Date
     var percent: Int

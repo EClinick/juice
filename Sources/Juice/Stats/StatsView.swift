@@ -68,8 +68,9 @@ private struct BatteryStatsDashboard: View {
     @ObservedObject private var live = LivePowerCoordinator.shared
     @ObservedObject private var batterySession = BatterySessionCoordinator.shared
 
-    /// The charge timeline always covers the last 7 days.
-    private static let timelineHours = 24 * 7
+    /// Raw battery samples are retained for 90 days, so the chart fetches that
+    /// full truthful horizon and offers no range beyond it.
+    private static let timelineHours = 24 * 90
 
     /// A per-instance live-loop identity. The presenter swaps in a new
     /// StatsView on reopen while the old one tears down; distinct tokens mean
@@ -87,7 +88,7 @@ private struct BatteryStatsDashboard: View {
     /// Calendar history other than Today. Today reads the coordinator's
     /// published result; Session reads its exact-window coordinator.
     @State private var historyApps: [AppEnergy] = []
-    @State private var timeline: [BatterySample] = []
+    @State private var timelinePreparedData: StatsTimelinePreparedData?
     @State private var timelineAvailability: TimelineAvailability = .loading
     @State private var timelineWindowEnd = Date()
     @State private var refreshedAt = Date()
@@ -616,7 +617,7 @@ private struct BatteryStatsDashboard: View {
 
     private var timelinePane: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Battery level - last 7 days")
+            Text("Battery level history")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             TimelineLegend()
@@ -626,14 +627,14 @@ private struct BatteryStatsDashboard: View {
                     .font(.caption2)
                     .foregroundStyle(.orange)
                 Spacer()
-            } else if timeline.isEmpty {
+            } else if timelinePreparedData?.samples.isEmpty != false {
                 Text("Collecting local battery history.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                 Spacer()
-            } else {
+            } else if let timelinePreparedData {
                 StatsTimelineChart(
-                    samples: timeline,
+                    preparedData: timelinePreparedData,
                     hours: Self.timelineHours,
                     windowEnd: timelineWindowEnd
                 )
@@ -695,15 +696,35 @@ private struct BatteryStatsDashboard: View {
             return
         }
         do {
-            let loadedTimeline = try await timelineSource.batteryTimeline(
-                hours: Self.timelineHours, until: windowEnd)
+            let previousWindowEnd = timelinePreparedData == nil ? nil : timelineWindowEnd
+            let requestHours = StatsTimelineRefresh.requestHours(
+                previousWindowEnd: previousWindowEnd,
+                windowEnd: windowEnd,
+                retentionHours: Self.timelineHours)
+            let refreshedTimeline = try await timelineSource.batteryTimeline(
+                hours: requestHours, until: windowEnd)
             guard !Task.isCancelled else { return }
-            self.timeline = loadedTimeline
+            let windowStart = windowEnd.addingTimeInterval(
+                -Double(Self.timelineHours) * 3600)
+            let mergedTimeline = StatsTimelineRefresh.mergedSamples(
+                existing: timelinePreparedData?.samples ?? [],
+                refreshed: refreshedTimeline,
+                retentionStart: windowStart)
+            let preparedData = await Task.detached(priority: .userInitiated) {
+                StatsTimelinePreparedData(
+                    samples: mergedTimeline,
+                    windowStart: windowStart,
+                    windowEnd: windowEnd)
+            }.value
+            guard !Task.isCancelled else { return }
+            self.timelinePreparedData = preparedData
             self.timelineWindowEnd = windowEnd
             timelineAvailability = .available
         } catch {
             guard !Task.isCancelled else { return }
-            timelineAvailability = .unavailable
+            if timelinePreparedData == nil {
+                timelineAvailability = .unavailable
+            }
         }
     }
 
