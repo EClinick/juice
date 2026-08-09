@@ -19,7 +19,7 @@ struct MacMiniPowerRangeTests {
 
     @Test("Server Stats minimum height keeps its footer visible")
     func statsMinimumHeightIncludesFooter() {
-        #expect(MacMiniStatsView.minimumContentHeight >= 560)
+        #expect(StatsView.serverMinimumContentHeight >= 560)
     }
 
     @Test("All starts at the first recorded power sample")
