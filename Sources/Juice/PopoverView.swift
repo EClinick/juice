@@ -1,7 +1,10 @@
+import AppKit
 import SwiftUI
 import JuiceCore
 
 struct PopoverView: View {
+    static let dashboardViewportHeight: CGFloat = 600
+
     @ObservedObject var model: BatteryViewModel
     @ObservedObject private var updater = UpdateController.shared
     @ObservedObject private var helper = HelperRegistrationController.shared
@@ -94,171 +97,31 @@ struct PopoverView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if model.isMacMini {
-                ScrollView {
-                    MacMiniPowerView(
-                        store: JuiceApp.sampler?.store,
-                        refreshGeneration: serverRefreshGeneration)
+                PopoverDashboardViewport(height: Self.dashboardViewportHeight) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        MacMiniPowerView(
+                            store: JuiceApp.sampler?.store,
+                            refreshGeneration: serverRefreshGeneration)
+                        updateControls
+                    }
                 }
-                .scrollIndicators(.never)
-                // A ScrollView has no useful intrinsic height inside
-                // MenuBarExtra. Without an explicit viewport the popover can
-                // collapse to the action footer and hide the dashboard.
-                .frame(height: 600)
             } else if let r = model.reading, r.hasBattery {
-                HStack {
-                    Text("Battery - \(r.percent)%")
-                        .font(.headline)
-                    Spacer()
-                    Text(model.timeRemainingText)
-                        .foregroundStyle(.secondary)
-                }
-
-                HStack {
-                    if r.onAC {
-                        Label(r.isCharging ? String(format: "Charging at %.1f W", abs(r.watts))
-                                           : "Plugged in, not charging",
-                              systemImage: "powerplug")
-                    } else {
-                        Label(String(format: "Drawing %.1f W", abs(r.watts)),
-                              systemImage: "bolt")
-                    }
-                    Spacer()
-                }
-                .font(.callout)
-
-                Divider()
-
-                HStack {
-                    if let health = r.healthPercent {
-                        Text("Health \(health)%")
-                        Text("·")
-                    }
-                    Text("\(r.cycleCount) cycles")
-                    Spacer()
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-                Divider()
-
-                // The hybrid's own section captions replace this header line;
-                // rendering both would waste a row of the popover's height.
-                if !showsLiveAppSections {
-                    HStack {
-                        Text("Top energy users")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        if showsLivePower,
-                           live.status == .sampling || live.status == .warmingUp {
-                            LiveHint()
-                        }
-                        Spacer()
-                    }
-                }
-                TopAppsView(
-                    apps: topApps,
-                    range: $range,
-                    origin: origin,
-                    ranges: visibleRanges,
-                    hybrid: showsLivePower ? live.hybrid : nil,
-                    batteryWatts: model.reading.map { abs($0.watts) },
-                    systemLoadWatts: live.systemLoadWatts,
-                    onAC: model.reading?.onAC ?? false,
-                    totalAppWatts: showsLivePower ? live.reading?.totalAppWatts : nil,
-                    session: batterySession.result?.session)
-                energyStatus
-
-                Divider()
-
-                Text("Battery level - last 24 h")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TimelineLegend()
-                if timelineAvailability == .unavailable {
-                    Text("Battery history is unavailable because the local store could not be opened.")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                } else if timeline.isEmpty {
-                    Text("Collecting charge history - check back in a few minutes.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                } else {
-                    ChargeTimelineView(
-                        samples: timeline,
-                        windowStart: timelineWindowEnd.addingTimeInterval(-24 * 3600),
-                        windowEnd: timelineWindowEnd
-                    )
-                }
-
-                if !insights.isEmpty {
-                    Divider()
-                    ForEach(insights.prefix(2)) { insight in
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Image(systemName: iconName(for: insight.severity))
-                                .foregroundStyle(color(for: insight.severity))
-                                .font(.caption)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(insight.title).font(.caption.weight(.medium))
-                                Text(insight.detail)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
-                            }
-                        }
+                PopoverDashboardViewport(height: Self.dashboardViewportHeight) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        batteryDashboard(r)
+                        updateControls
                     }
                 }
             } else if let err = model.lastError {
                 Text(err).font(.caption).foregroundStyle(.red)
+                updateControls
             } else {
                 Text("No battery detected.")
                     .foregroundStyle(.secondary)
+                updateControls
             }
 
             Divider()
-
-            if updater.isAvailable {
-                VStack(alignment: .leading, spacing: 5) {
-                    if let readyUpdate = updater.readyUpdate {
-                        HStack(spacing: 8) {
-                            Image(systemName: "arrow.down.circle.fill")
-                                .foregroundStyle(.blue)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text("Juice \(readyUpdate.version) is ready")
-                                    .font(.caption.weight(.semibold))
-                                Text("Restart Juice to finish installing.")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button("Update & Relaunch") {
-                                updater.installReadyUpdate()
-                            }
-                            .controlSize(.small)
-                            .buttonStyle(.borderedProminent)
-                        }
-                    }
-
-                    HStack {
-                        Toggle("Automatic updates", isOn: Binding(
-                            get: { updater.automaticallyUpdates },
-                            set: { updater.automaticallyUpdates = $0 }
-                        ))
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
-                        Spacer()
-                        if updater.readyUpdate == nil {
-                            Button("Check for Updates…") {
-                                updater.checkForUpdates()
-                            }
-                        }
-                    }
-                    Text("Turn this off to update manually.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                Divider()
-            }
 
             HStack {
                 Button("Refresh") {
@@ -330,6 +193,163 @@ struct PopoverView: View {
             live.setAttached(false, for: .popover(consumerID))
             batterySession.setAttached(false, for: .popover(consumerID))
         }
+    }
+
+    @ViewBuilder
+    private var updateControls: some View {
+        if updater.isAvailable {
+            Divider()
+
+            VStack(alignment: .leading, spacing: 5) {
+                if let readyUpdate = updater.readyUpdate {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .foregroundStyle(.blue)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Juice \(readyUpdate.version) is ready")
+                                .font(.caption.weight(.semibold))
+                            Text("Restart Juice to finish installing.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Update & Relaunch") {
+                            updater.installReadyUpdate()
+                        }
+                        .controlSize(.small)
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+
+                HStack {
+                    Toggle("Automatic updates", isOn: Binding(
+                        get: { updater.automaticallyUpdates },
+                        set: { updater.automaticallyUpdates = $0 }
+                    ))
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    Spacer()
+                    if updater.readyUpdate == nil {
+                        Button("Check for Updates…") {
+                            updater.checkForUpdates()
+                        }
+                    }
+                }
+                Text("Turn this off to update manually.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func batteryDashboard(_ reading: BatteryReading) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Battery - \(reading.percent)%")
+                    .font(.headline)
+                Spacer()
+                Text(model.timeRemainingText)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                if reading.onAC {
+                    Label(
+                        reading.isCharging
+                            ? String(format: "Charging at %.1f W", abs(reading.watts))
+                            : "Plugged in, not charging",
+                        systemImage: "powerplug")
+                } else {
+                    Label(
+                        String(format: "Drawing %.1f W", abs(reading.watts)),
+                        systemImage: "bolt")
+                }
+                Spacer()
+            }
+            .font(.callout)
+
+            Divider()
+
+            HStack {
+                if let health = reading.healthPercent {
+                    Text("Health \(health)%")
+                    Text("·")
+                }
+                Text("\(reading.cycleCount) cycles")
+                Spacer()
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            Divider()
+
+            // The hybrid's own section captions replace this header line;
+            // rendering both would waste a row of the popover's height.
+            if !showsLiveAppSections {
+                HStack {
+                    Text("Top energy users")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if showsLivePower,
+                       live.status == .sampling || live.status == .warmingUp {
+                        LiveHint()
+                    }
+                    Spacer()
+                }
+            }
+            TopAppsView(
+                apps: topApps,
+                range: $range,
+                origin: origin,
+                ranges: visibleRanges,
+                hybrid: showsLivePower ? live.hybrid : nil,
+                batteryWatts: model.reading.map { abs($0.watts) },
+                systemLoadWatts: live.systemLoadWatts,
+                onAC: model.reading?.onAC ?? false,
+                totalAppWatts: showsLivePower ? live.reading?.totalAppWatts : nil,
+                session: batterySession.result?.session)
+            energyStatus
+
+            Divider()
+
+            Text("Battery level - last 24 h")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TimelineLegend()
+            if timelineAvailability == .unavailable {
+                Text("Battery history is unavailable because the local store could not be opened.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            } else if timeline.isEmpty {
+                Text("Collecting charge history - check back in a few minutes.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } else {
+                ChargeTimelineView(
+                    samples: timeline,
+                    windowStart: timelineWindowEnd.addingTimeInterval(-24 * 3600),
+                    windowEnd: timelineWindowEnd)
+            }
+
+            if !insights.isEmpty {
+                Divider()
+                ForEach(insights.prefix(2)) { insight in
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: iconName(for: insight.severity))
+                            .foregroundStyle(color(for: insight.severity))
+                            .font(.caption)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(insight.title).font(.caption.weight(.medium))
+                            Text(insight.detail)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// Stats and Settings intentionally share one retained AppKit window. The
@@ -544,5 +564,243 @@ struct PopoverView: View {
         }
         loadTask?.cancel()
         loadTask = Task { await loadTopApps() }
+    }
+}
+
+/// Gives MenuBarExtra dashboards a finite viewport while leaving action
+/// controls outside the scrollable region. ScrollView has no useful intrinsic
+/// height in a menu-bar panel, so the explicit height prevents both clipping
+/// and collapse.
+struct PopoverDashboardViewport<Content: View>: View {
+    let height: CGFloat
+    private let content: Content
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var showsScrollHint = true
+    @State private var scrollHintHovered = false
+
+    init(height: CGFloat, @ViewBuilder content: () -> Content) {
+        self.height = height
+        self.content = content()
+    }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 0) {
+                    content
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background {
+                            PopoverScrollStateObserver { canScrollDown in
+                                showsScrollHint = canScrollDown
+                            }
+                        }
+
+                    Color.clear
+                        .frame(height: 1)
+                        .id(PopoverDashboardScrollTarget.bottom)
+                }
+            }
+            .scrollIndicators(.never)
+            .frame(height: height)
+            .overlay(alignment: .bottom) {
+                if showsScrollHint {
+                    ZStack(alignment: .bottom) {
+                        LinearGradient(
+                            colors: [
+                                Color(nsColor: .windowBackgroundColor).opacity(0),
+                                Color(nsColor: .windowBackgroundColor).opacity(0.94),
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom)
+                        .allowsHitTesting(false)
+
+                        Button {
+                            scrollToBottom(using: proxy)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text("Scroll")
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 10, weight: .semibold))
+                            }
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 4)
+                        }
+                        .buttonStyle(PopoverScrollHintButtonStyle(
+                            hovered: scrollHintHovered))
+                        .onHover { scrollHintHovered = $0 }
+                        .help("Scroll to bottom")
+                        .accessibilityLabel("Scroll to bottom")
+                        .accessibilityIdentifier("popover-scroll-to-bottom")
+                        .padding(.bottom, 6)
+                    }
+                    .frame(height: 48)
+                }
+            }
+        }
+    }
+
+    private func scrollToBottom(using proxy: ScrollViewProxy) {
+        let scroll = {
+            proxy.scrollTo(PopoverDashboardScrollTarget.bottom, anchor: .bottom)
+        }
+        if reduceMotion {
+            scroll()
+        } else {
+            withAnimation(.easeOut(duration: 0.22), scroll)
+        }
+    }
+}
+
+private enum PopoverDashboardScrollTarget: Hashable {
+    case bottom
+}
+
+private struct PopoverScrollHintButtonStyle: ButtonStyle {
+    let hovered: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(
+                hovered ? AnyShapeStyle(.thickMaterial) : AnyShapeStyle(.regularMaterial),
+                in: Capsule())
+            .overlay {
+                Capsule()
+                    .strokeBorder(.primary.opacity(hovered ? 0.2 : 0.12), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.2), radius: 4, y: 1)
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .animation(
+                .easeOut(duration: 0.12),
+                value: configuration.isPressed)
+    }
+}
+
+enum PopoverScrollHintVisibility {
+    private static let bottomTolerance: CGFloat = 8
+
+    static func shouldShow(
+        documentBounds: CGRect,
+        visibleRect: CGRect,
+        isFlipped: Bool
+    ) -> Bool {
+        guard documentBounds.height > visibleRect.height + bottomTolerance else {
+            return false
+        }
+
+        let remaining = if isFlipped {
+            documentBounds.maxY - visibleRect.maxY
+        } else {
+            visibleRect.minY - documentBounds.minY
+        }
+        return remaining > bottomTolerance
+    }
+}
+
+private struct PopoverScrollStateObserver: NSViewRepresentable {
+    let onChange: (Bool) -> Void
+
+    func makeNSView(context: Context) -> PopoverScrollStateObserverView {
+        let view = PopoverScrollStateObserverView()
+        view.onChange = onChange
+        return view
+    }
+
+    func updateNSView(
+        _ nsView: PopoverScrollStateObserverView,
+        context: Context
+    ) {
+        nsView.onChange = onChange
+        nsView.scheduleAttachment()
+    }
+}
+
+private final class PopoverScrollStateObserverView: NSView {
+    var onChange: ((Bool) -> Void)?
+
+    private weak var observedScrollView: NSScrollView?
+    private var observations: [NSObjectProtocol] = []
+    private var lastValue: Bool?
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        scheduleAttachment()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        scheduleAttachment()
+    }
+
+    deinit {
+        removeObservations()
+    }
+
+    func scheduleAttachment() {
+        DispatchQueue.main.async { [weak self] in
+            self?.attachToEnclosingScrollView()
+        }
+    }
+
+    private func attachToEnclosingScrollView() {
+        guard let scrollView = enclosingScrollView else { return }
+
+        if observedScrollView !== scrollView {
+            removeObservations()
+            observedScrollView = scrollView
+            observe(scrollView)
+        }
+
+        refresh()
+    }
+
+    private func observe(_ scrollView: NSScrollView) {
+        let center = NotificationCenter.default
+        let clipView = scrollView.contentView
+        clipView.postsBoundsChangedNotifications = true
+        observations.append(center.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: clipView,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refresh()
+        })
+
+        if let documentView = scrollView.documentView {
+            documentView.postsFrameChangedNotifications = true
+            observations.append(center.addObserver(
+                forName: NSView.frameDidChangeNotification,
+                object: documentView,
+                queue: .main
+            ) { [weak self] _ in
+                self?.refresh()
+            })
+        }
+    }
+
+    private func refresh() {
+        guard let scrollView = observedScrollView,
+              let documentView = scrollView.documentView
+        else { return }
+
+        scrollView.layoutSubtreeIfNeeded()
+        let visibleRect = documentView.convert(
+            scrollView.contentView.bounds,
+            from: scrollView.contentView)
+        let value = PopoverScrollHintVisibility.shouldShow(
+            documentBounds: documentView.bounds,
+            visibleRect: visibleRect,
+            isFlipped: documentView.isFlipped)
+
+        guard value != lastValue else { return }
+        lastValue = value
+        onChange?(value)
+    }
+
+    private func removeObservations() {
+        let center = NotificationCenter.default
+        observations.forEach(center.removeObserver)
+        observations.removeAll()
     }
 }
