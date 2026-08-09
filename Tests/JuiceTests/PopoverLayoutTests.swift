@@ -175,9 +175,22 @@ struct PopoverLayoutTests {
             NSApplication.shared.sendEvent(event)
         }
 
-        try await Task.sleep(for: .milliseconds(350))
-        controller.view.layoutSubtreeIfNeeded()
         let documentView = try #require(scrollView.documentView)
+        for _ in 0..<100 {
+            controller.view.layoutSubtreeIfNeeded()
+            let visibleRect = documentView.convert(
+                scrollView.contentView.bounds,
+                from: scrollView.contentView)
+            if !PopoverScrollHintVisibility.shouldShow(
+                documentBounds: documentView.bounds,
+                visibleRect: visibleRect,
+                isFlipped: documentView.isFlipped
+            ) {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
         let visibleRect = documentView.convert(
             scrollView.contentView.bounds,
             from: scrollView.contentView)

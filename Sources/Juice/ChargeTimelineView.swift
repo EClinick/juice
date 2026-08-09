@@ -5,7 +5,7 @@ import JuiceCore
 /// The power state a battery sample was captured in, derived from its AC and
 /// charging flags. Drives the colored band along the bottom of the timeline
 /// charts.
-enum PowerBandState: Equatable {
+enum PowerBandState: Equatable, Sendable {
     case charging
     case pluggedIn
     case onBattery

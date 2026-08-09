@@ -89,7 +89,9 @@ struct JuiceApp: App {
                 } else {
                     StatsWindowPresenter.shared.show(
                         selector: EnergySourceSelector(),
-                        timelineSource: nil,
+                        timelineSource: Self.sampler.map {
+                            StoreEnergySource(store: $0.store)
+                        },
                         model: initialModel)
                 }
             }

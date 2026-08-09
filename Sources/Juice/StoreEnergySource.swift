@@ -40,6 +40,10 @@ struct StoreEnergySource: EnergySource {
         }
     }
 
+    func batteryTimelineRevision() async -> Date? {
+        try? store.metaDate(forKey: SamplerService.backfillLastRunKey)
+    }
+
     /// First rollup day (yyyy-MM-dd) included in the given range.
     static func sinceDay(for range: EnergyRange, now: Date = Date(), calendar: Calendar = .current) -> String {
         let formatter = RollupBuilder.dayFormatter(calendar: calendar)
