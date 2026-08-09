@@ -91,6 +91,7 @@ private struct BatteryStatsDashboard: View {
     @State private var timelinePreparedData: StatsTimelinePreparedData?
     @State private var timelineAvailability: TimelineAvailability = .loading
     @State private var timelineWindowEnd = Date()
+    @State private var timelineRevision: Date?
     @State private var refreshedAt = Date()
     @State private var historyOrigin: DataOrigin = .loading
     @State private var historyError: String?
@@ -696,16 +697,35 @@ private struct BatteryStatsDashboard: View {
             return
         }
         do {
+            let revisionBeforeLoad = await timelineSource.batteryTimelineRevision()
             let previousWindowEnd = timelinePreparedData == nil ? nil : timelineWindowEnd
             let requestHours = StatsTimelineRefresh.requestHours(
                 previousWindowEnd: previousWindowEnd,
                 windowEnd: windowEnd,
-                retentionHours: Self.timelineHours)
-            let refreshedTimeline = try await timelineSource.batteryTimeline(
+                retentionHours: Self.timelineHours,
+                historyRevisionChanged: timelinePreparedData != nil
+                    && revisionBeforeLoad != timelineRevision)
+            var refreshedTimeline = try await timelineSource.batteryTimeline(
                 hours: requestHours, until: windowEnd)
             guard !Task.isCancelled else { return }
             let windowStart = windowEnd.addingTimeInterval(
                 -Double(Self.timelineHours) * 3600)
+            let revisionAfterLoad = await timelineSource.batteryTimelineRevision()
+            if revisionAfterLoad != revisionBeforeLoad {
+                // Backfill writes its samples before advancing this revision.
+                // Re-read only its seven-day horizon so a completion racing
+                // the first query becomes visible without a 90-day reload.
+                let reconciledTimeline = try await timelineSource.batteryTimeline(
+                    hours: min(
+                        Self.timelineHours,
+                        StatsTimelineRefresh.backfillReconciliationHours),
+                    until: windowEnd)
+                refreshedTimeline = StatsTimelineRefresh.mergedSamples(
+                    existing: refreshedTimeline,
+                    refreshed: reconciledTimeline,
+                    retentionStart: windowStart)
+            }
+            guard !Task.isCancelled else { return }
             let mergedTimeline = StatsTimelineRefresh.mergedSamples(
                 existing: timelinePreparedData?.samples ?? [],
                 refreshed: refreshedTimeline,
@@ -719,6 +739,7 @@ private struct BatteryStatsDashboard: View {
             guard !Task.isCancelled else { return }
             self.timelinePreparedData = preparedData
             self.timelineWindowEnd = windowEnd
+            self.timelineRevision = revisionAfterLoad
             timelineAvailability = .available
         } catch {
             guard !Task.isCancelled else { return }

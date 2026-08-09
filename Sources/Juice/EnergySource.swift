@@ -74,4 +74,11 @@ protocol EnergySource {
     /// caller supplies `until` so the chart's x-domain and the sample query
     /// agree on the exact same window.
     func batteryTimeline(hours: Int, until: Date) async throws -> [BatterySample]
+    /// Changes when older persisted battery history is added outside the
+    /// normal newest-sample stream. Sources without such a mechanism use nil.
+    func batteryTimelineRevision() async -> Date?
+}
+
+extension EnergySource {
+    func batteryTimelineRevision() async -> Date? { nil }
 }

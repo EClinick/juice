@@ -339,6 +339,11 @@ struct StatsTimelineInteractionTests {
             previousWindowEnd: start,
             windowEnd: start.addingTimeInterval(3_000 * 3600),
             retentionHours: 2_160) == 2_160)
+        #expect(StatsTimelineRefresh.requestHours(
+            previousWindowEnd: start,
+            windowEnd: start.addingTimeInterval(60),
+            retentionHours: 2_160,
+            historyRevisionChanged: true) == 7 * 24)
     }
 
     @Test("timeline refresh trims retention and replaces overlapping samples")

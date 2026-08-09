@@ -418,19 +418,25 @@ struct StatsTimelineInspectionSelection: Equatable {
 /// fresh or corrected sample replaces its cached counterpart.
 enum StatsTimelineRefresh {
     static let overlap: TimeInterval = 120
+    static let backfillReconciliationHours = 7 * 24
 
     static func requestHours(
         previousWindowEnd: Date?,
         windowEnd: Date,
-        retentionHours: Int
+        retentionHours: Int,
+        historyRevisionChanged: Bool = false
     ) -> Int {
         guard retentionHours > 0 else { return 0 }
         guard let previousWindowEnd else { return retentionHours }
         let elapsed = windowEnd.timeIntervalSince(previousWindowEnd)
         guard elapsed > 0 else { return retentionHours }
-        return min(
+        let incrementalHours = min(
             retentionHours,
             max(1, Int(ceil((elapsed + overlap) / 3600))))
+        guard historyRevisionChanged else { return incrementalHours }
+        return min(
+            retentionHours,
+            max(incrementalHours, backfillReconciliationHours))
     }
 
     /// Merges two chronologically ordered windows, preferring refreshed rows
