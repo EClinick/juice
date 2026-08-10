@@ -144,6 +144,35 @@ struct PowerModeParserTests {
         }
     }
 
+    @Test("A present battery section with no mode key is an error, not a mirror")
+    func keylessBatterySectionThrows() {
+        // Mirroring AC here would publish "Low Power on battery" for a machine
+        // that never said so, and hide that the output was not understood.
+        let output = """
+        Battery Power:
+         displaysleep         2
+        AC Power:
+         powermode            1
+         displaysleep         10
+        """
+        #expect(throws: PowerModeParser.ParseError.missingPowerModeKey(section: "Battery Power:")) {
+            try PowerModeParser.parse(pmsetCustomOutput: output)
+        }
+    }
+
+    @Test("A present AC section with no mode key is an error, not a mirror")
+    func keylessACSectionThrows() {
+        let output = """
+        Battery Power:
+         powermode            1
+        AC Power:
+         displaysleep         10
+        """
+        #expect(throws: PowerModeParser.ParseError.missingPowerModeKey(section: "AC Power:")) {
+            try PowerModeParser.parse(pmsetCustomOutput: output)
+        }
+    }
+
     @Test("Ignores keys under a section header this build does not know")
     func ignoresUnknownSections() throws {
         let output = """

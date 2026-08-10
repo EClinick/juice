@@ -192,6 +192,14 @@ struct PopoverView: View {
             guard !model.isMacMini else { return }
             Task { await energyMode.refresh() }
         }
+        // That flag is false for both Automatic and High Power, so an external
+        // switch between the two raises no notification at all. Ride the battery
+        // refresh cadence instead: ~60 s while the popover is open, and only
+        // while it is, which is cheap enough for an unprivileged pmset read.
+        .onChange(of: model.readingGeneration) {
+            guard surfaceIsActive, !model.isMacMini else { return }
+            Task { await energyMode.refresh() }
+        }
         .onChange(of: rangeVisibilityStorage) {
             range = StatsRangeVisibility.preferredRange(
                 range,

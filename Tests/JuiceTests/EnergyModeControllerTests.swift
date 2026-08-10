@@ -48,22 +48,37 @@ private final class FakeEnergyModeBackend {
     }
 }
 
-/// Holds a read inside the controller until the test releases it, so an
-/// in-flight refresh can be raced against a write deterministically.
-private final class ReadGate: @unchecked Sendable {
+/// A `readState` seam that parks its FIRST read until the test releases it, and
+/// lets the test await that read's arrival, so a refresh can be raced against a
+/// write by handshake rather than by scheduler luck. Later reads - the recovery
+/// refresh a failed write kicks off - pass straight through.
+private final class GatedReader: @unchecked Sendable {
     private let lock = NSLock()
-    private var continuation: CheckedContinuation<Void, Never>?
+    private var results: [PowerModeState?]
+    private var started = 0
     private var released = false
+    private var reader: CheckedContinuation<Void, Never>?
+    private var arrival: CheckedContinuation<Void, Never>?
 
-    func wait() async {
+    /// One state per read, in order; the last is repeated afterwards.
+    init(_ results: [PowerModeState?]) {
+        self.results = results
+    }
+
+    var read: @Sendable () async -> PowerModeState? {
+        { await self.next() }
+    }
+
+    /// Resumes once a read has reached the gate.
+    func waitForFirstRead() async {
         await withCheckedContinuation { continuation in
             lock.lock()
-            if released {
+            guard started == 0 else {
                 lock.unlock()
                 continuation.resume()
                 return
             }
-            self.continuation = continuation
+            arrival = continuation
             lock.unlock()
         }
     }
@@ -71,10 +86,40 @@ private final class ReadGate: @unchecked Sendable {
     func release() {
         lock.lock()
         released = true
-        let waiting = continuation
-        continuation = nil
+        let waiting = reader
+        reader = nil
         lock.unlock()
         waiting?.resume()
+    }
+
+    private func next() async -> PowerModeState? {
+        let (isFirst, result) = beginRead()
+        guard isFirst else { return result }
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            guard !released else {
+                lock.unlock()
+                continuation.resume()
+                return
+            }
+            reader = continuation
+            lock.unlock()
+        }
+        return result
+    }
+
+    /// Claims this read's result and wakes ``waitForFirstRead()``. Synchronous
+    /// so the lock is never held across a suspension point.
+    private func beginRead() -> (isFirst: Bool, result: PowerModeState?) {
+        lock.lock()
+        started += 1
+        let isFirst = started == 1
+        let result = results.count > 1 ? results.removeFirst() : results.first ?? nil
+        let arrived = arrival
+        arrival = nil
+        lock.unlock()
+        arrived?.resume()
+        return (isFirst, result)
     }
 }
 
@@ -245,28 +290,85 @@ struct EnergyModeControllerTests {
 
     @Test("A refresh that started before a write cannot roll the write back")
     func staleRefreshIsDiscarded() async {
-        let gate = ReadGate()
         let stale = Self.modern(battery: .automatic)
         let written = Self.modern(battery: .highPower)
+        let reader = GatedReader([stale])
         let controller = EnergyModeController(
             defaults: Self.isolatedDefaults(),
-            readState: {
-                await gate.wait()
-                return stale
-            },
+            readState: reader.read,
             writeState: { _, _ in written },
             currentOnAC: { nil })
 
         let refreshing = Task { await controller.refresh() }
-        // Let the refresh reach the gate, so it is genuinely in flight.
-        await Task.yield()
+        // Ordered by the reader's own arrival, not by yielding and hoping.
+        await reader.waitForFirstRead()
         await controller.set(.highPower, onAC: false)
         #expect(controller.state == written)
 
-        gate.release()
+        reader.release()
         await refreshing.value
 
         #expect(controller.state == written)
+    }
+
+    @Test("A refresh that started before a FAILED write cannot roll its recovery back")
+    func staleRefreshIsDiscardedAfterFailure() async {
+        let stale = Self.modern(battery: .automatic)
+        // What the machine actually reports once the failed write is investigated.
+        let recovered = Self.modern(battery: .highPower)
+        let reader = GatedReader([stale, recovered])
+        let controller = EnergyModeController(
+            defaults: Self.isolatedDefaults(),
+            readState: reader.read,
+            writeState: { _, _ in
+                throw HelperError.error(.powerSettingFailed, message: "pmset exited 1")
+            },
+            currentOnAC: { nil })
+
+        let refreshing = Task { await controller.refresh() }
+        await reader.waitForFirstRead()
+        // The failure's own recovery read is the authoritative state.
+        await controller.set(.lowPower, onAC: false)
+        #expect(controller.state == recovered)
+        #expect(controller.lastErrorMessage == "macOS did not apply the new Energy Mode.")
+
+        reader.release()
+        await refreshing.value
+
+        // The older refresh must neither restore the stale state nor clear the
+        // message explaining why the machine is not showing what was asked for.
+        #expect(controller.state == recovered)
+        #expect(controller.lastErrorMessage == "macOS did not apply the new Energy Mode.")
+    }
+
+    @Test("A tap that matches only the stale caller's source still writes")
+    func noOpIsDecidedAgainstTheLiveSource() async {
+        let backend = FakeEnergyModeBackend(
+            readStates: [Self.modern(battery: .lowPower, ac: .automatic)],
+            writeResults: [.success(Self.modern(battery: .lowPower, ac: .lowPower))])
+        let controller = Self.makeController(backend: backend, currentOnAC: { true })
+        await controller.refresh()
+
+        // The view still thinks the machine is on battery, where Low Power is
+        // already selected - but the live source is AC, which is Automatic.
+        await controller.set(.lowPower, onAC: false)
+
+        #expect(backend.writes.map(\.scope) == [PowerModeScope.ac])
+        #expect(controller.state == Self.modern(battery: .lowPower, ac: .lowPower))
+    }
+
+    @Test("A tap on the live source's current mode writes nothing")
+    func matchingModeSkipsTheWrite() async {
+        let backend = FakeEnergyModeBackend(
+            readStates: [Self.modern(battery: .lowPower, ac: .automatic)])
+        let controller = Self.makeController(backend: backend, currentOnAC: { true })
+        await controller.refresh()
+
+        await controller.set(.automatic, onAC: false)
+
+        #expect(backend.writes.isEmpty)
+        #expect(!controller.isWriting)
+        #expect(controller.state == Self.modern(battery: .lowPower, ac: .automatic))
     }
 
     @Test("An upgraded helper clears the restart notice")

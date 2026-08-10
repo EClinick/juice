@@ -85,8 +85,9 @@ public enum PowerModeParser {
     public enum ParseError: LocalizedError, Equatable {
         /// Neither the "Battery Power:" nor the "AC Power:" section was found.
         case missingSections
-        /// Sections exist but none carries a `powermode`/`lowpowermode` key.
-        /// Names the first known section that was seen.
+        /// A known section was present without a `powermode`/`lowpowermode`
+        /// key. Names that section, or the first one seen when neither carried
+        /// a key.
         case missingPowerModeKey(section: String)
         /// The key is present but its value is not a mode this build knows.
         case unrecognizedValue(section: String, value: String)
@@ -113,7 +114,9 @@ public enum PowerModeParser {
     /// into the previous source. A machine exposing `lowpowermode` in either
     /// section is treated as legacy throughout, because the key name is a
     /// property of the hardware, not the source. Desktops publish only an
-    /// "AC Power:" section, so a lone section is mirrored onto the other source.
+    /// "AC Power:" section, so a lone section is mirrored onto the other source;
+    /// a section that is present but carries no mode key is a parse failure
+    /// rather than something to mirror over.
     public static func parse(pmsetCustomOutput: String) throws -> PowerModeState {
         // nil means "no source owns the following keys": either nothing has been
         // seen yet, or the last header was one this build does not recognise.
@@ -152,6 +155,11 @@ public enum PowerModeParser {
             values[section] = (mode, legacy)
         }
 
+        // Mirroring is only ever right when the other section does not exist -
+        // a desktop has no "Battery Power:" at all. A section that IS present
+        // and carries no mode key is output this build does not understand, and
+        // guessing its value from the other source would publish a mode the
+        // machine never reported.
         switch (values[batterySectionHeader], values[acSectionHeader]) {
         case let (battery?, ac?):
             return PowerModeState(
@@ -160,12 +168,18 @@ public enum PowerModeParser {
                 usesLegacyLowPowerKey: battery.legacy || ac.legacy,
                 hasBatterySource: true)
         case let (battery?, nil):
+            guard !knownSections.contains(acSectionHeader) else {
+                throw ParseError.missingPowerModeKey(section: acSectionHeader)
+            }
             return PowerModeState(
                 battery: battery.mode,
                 ac: battery.mode,
                 usesLegacyLowPowerKey: battery.legacy,
                 hasBatterySource: true)
         case let (nil, ac?):
+            guard !knownSections.contains(batterySectionHeader) else {
+                throw ParseError.missingPowerModeKey(section: batterySectionHeader)
+            }
             return PowerModeState(
                 battery: ac.mode,
                 ac: ac.mode,

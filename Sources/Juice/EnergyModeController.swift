@@ -112,6 +112,11 @@ final class EnergyModeController: ObservableObject {
     /// `onAC` is the caller's view of the power source; a fresher live reading
     /// wins when one is available, because plugging in moments before a tap must
     /// not send the write to the source that is no longer in use.
+    ///
+    /// Whether a tap is a no-op is decided here rather than in the view, for the
+    /// same reason: the view's idea of the selected mode comes from its own
+    /// possibly-stale `onAC`, so "you tapped what is already selected" can be
+    /// wrong about which source it is talking about.
     func set(_ mode: PowerMode, onAC: Bool) async {
         guard !isWriting else { return }
         isWriting = true
@@ -122,31 +127,50 @@ final class EnergyModeController: ObservableObject {
         }
 
         let scope: PowerModeScope = (currentOnAC() ?? onAC) ? .ac : .battery
+        // Re-picking the source's current mode is a dismissal, not a write.
+        guard state?.mode(for: scope) != mode else { return }
+
+        let outcome: Result<PowerModeState, any Error>
         do {
-            let applied = try await writeState(mode, scope)
-            stateGeneration += 1
+            outcome = .success(try await writeState(mode, scope))
+        } catch {
+            outcome = .failure(error)
+        }
+        // Every finished attempt - applied, refused, or cancelled - makes a
+        // refresh that started earlier stale: it may have read the machine
+        // mid-write, and must not overwrite what is published below or the
+        // authoritative state the recovery read is about to fetch.
+        stateGeneration += 1
+
+        switch outcome {
+        case .success(let applied):
             state = applied
             lastErrorMessage = nil
             needsHelperUpdate = false
-        } catch HelperClientError.helperOutdated {
+        case .failure(let error):
+            await report(error, mode: mode)
+        }
+    }
+
+    private func report(_ error: any Error, mode: PowerMode) async {
+        if error is CancellationError { return }
+        if let clientError = error as? HelperClientError, case .helperOutdated = clientError {
             needsHelperUpdate = true
-        } catch is CancellationError {
             return
-        } catch {
-            // Only an accepted-then-dropped High Power write proves the hardware
-            // has no High Power. A transient failure must never hide the option
-            // for good, so it is reported and left retryable.
-            let refusedHighPower = mode == .highPower
-                && HelperError.code(of: error) == .unsupportedPowerMode
-            // Re-read either way: a failed write may still have moved the
-            // machine, and the UI must never show a mode that is not set.
-            await refresh()
-            if refusedHighPower {
-                cacheHighPowerUnsupported()
-                lastErrorMessage = "This Mac does not support High Power."
-            } else {
-                lastErrorMessage = Self.message(for: error)
-            }
+        }
+        // Only an accepted-then-dropped High Power write proves the hardware
+        // has no High Power. A transient failure must never hide the option
+        // for good, so it is reported and left retryable.
+        let refusedHighPower = mode == .highPower
+            && HelperError.code(of: error) == .unsupportedPowerMode
+        // Re-read either way: a failed write may still have moved the
+        // machine, and the UI must never show a mode that is not set.
+        await refresh()
+        if refusedHighPower {
+            cacheHighPowerUnsupported()
+            lastErrorMessage = "This Mac does not support High Power."
+        } else {
+            lastErrorMessage = Self.message(for: error)
         }
     }
 

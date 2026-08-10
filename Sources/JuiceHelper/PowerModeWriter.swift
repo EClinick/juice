@@ -15,10 +15,16 @@ struct PowerModeWriter {
 
     static let pmsetPath = "/usr/bin/pmset"
 
-    /// Longest a `pmset` invocation may run before the helper gives up on it.
-    /// `pmset` returns in milliseconds; anything near this is wedged, and a root
-    /// process must not be parked on it forever.
-    static let commandDeadline: TimeInterval = 10
+    /// Longest a whole read/write/read-back transaction may run before the
+    /// helper gives up on it. `pmset` returns in milliseconds, so anything near
+    /// this is wedged, and the budget is shared by all three commands: the
+    /// client's own timeout covers the transaction, not one command of it.
+    static let transactionDeadline: TimeInterval = 10
+
+    /// Longest a transaction waits for the one ahead of it. Beyond this the
+    /// caller is better off told the machine is busy than left holding an XPC
+    /// reply until its own timeout fires.
+    static let lockTimeout: TimeInterval = 2
 
     /// Process-wide, because every XPC connection gets its own ``HelperService``
     /// and therefore its own writer: a per-instance lock would still let a
@@ -27,16 +33,29 @@ struct PowerModeWriter {
     private static let transactionLock = NSLock()
 
     /// Injectable so tests can cover validation, legacy-key handling, and
-    /// read-back verification without root.
-    private let runCommand: (String, [String]) throws -> CommandResult
+    /// read-back verification without root. The deadline is part of the seam
+    /// because it is the budget left for that one command, not a constant.
+    private let runCommand: (String, [String], TimeInterval) throws -> CommandResult
+    /// Instance-level so a test can prove the busy path without waiting out the
+    /// production timeout; production always uses ``lockTimeout``.
+    private let lockWait: TimeInterval
 
-    init(runCommand: @escaping (String, [String]) throws -> CommandResult = PowerModeWriter.spawn) {
+    init(
+        runCommand: @escaping (String, [String], TimeInterval) throws -> CommandResult
+            = PowerModeWriter.spawn,
+        lockWait: TimeInterval = PowerModeWriter.lockTimeout
+    ) {
         self.runCommand = runCommand
+        self.lockWait = lockWait
     }
 
     /// Reads the machine's current Energy Mode. Unprivileged.
     func readState() throws -> PowerModeState {
-        let result = try runCommand(Self.pmsetPath, ["-g", "custom"])
+        try readState(deadline: Self.transactionDeadline)
+    }
+
+    private func readState(deadline: TimeInterval) throws -> PowerModeState {
+        let result = try runCommand(Self.pmsetPath, ["-g", "custom"], deadline)
         guard result.status == 0 else {
             throw HelperError.error(
                 .internalError,
@@ -63,16 +82,38 @@ struct PowerModeWriter {
 
         // Read, write, and read-back are one transaction: two overlapping calls
         // would otherwise verify each other's writes and report nonsense. The
-        // spawns are deadline-bounded, so the wait here is bounded too.
-        Self.transactionLock.lock()
+        // wait for the transaction ahead is bounded too, because an unbounded
+        // one plus three bounded commands can outlast the client's own timeout,
+        // which would leave the machine changing after the caller gave up.
+        guard Self.transactionLock.lock(before: Date().addingTimeInterval(lockWait)) else {
+            throw HelperError.error(
+                .powerSettingFailed, message: "another Energy Mode change is in progress")
+        }
         defer { Self.transactionLock.unlock() }
-        return try apply(mode: mode, scope: scope)
+        // The budget starts once the lock is held, so a transaction is never
+        // charged for time it spent queued.
+        return try apply(mode: mode, scope: scope, budget: Budget(seconds: Self.transactionDeadline))
     }
 
-    private func apply(mode: PowerMode, scope: PowerModeScope) throws -> PowerModeState {
+    /// What is left of one transaction's wall clock, shared by its commands.
+    private struct Budget {
+        private let expiry: Date
+
+        init(seconds: TimeInterval) {
+            expiry = Date().addingTimeInterval(seconds)
+        }
+
+        var remaining: TimeInterval { max(expiry.timeIntervalSinceNow, 0) }
+    }
+
+    private func apply(
+        mode: PowerMode,
+        scope: PowerModeScope,
+        budget: Budget
+    ) throws -> PowerModeState {
         // Which key exists is a hardware property, so it must be discovered
         // before writing rather than assumed.
-        let before = try readState()
+        let before = try readState(deadline: budget.remaining)
         guard !(before.usesLegacyLowPowerKey && mode == .highPower) else {
             throw HelperError.error(
                 .unsupportedPowerMode,
@@ -80,7 +121,9 @@ struct PowerModeWriter {
         }
 
         let write = try runCommand(
-            Self.pmsetPath, [scope.pmsetFlag, before.pmsetKey, String(mode.rawValue)])
+            Self.pmsetPath,
+            [scope.pmsetFlag, before.pmsetKey, String(mode.rawValue)],
+            budget.remaining)
         guard write.status == 0 else {
             throw HelperError.error(
                 .powerSettingFailed,
@@ -89,16 +132,22 @@ struct PowerModeWriter {
 
         // pmset exits 0 for values the hardware silently declines, so the
         // read-back is the only honest confirmation.
-        let after = try readState()
+        let after = try readState(deadline: budget.remaining)
         for applied in Self.affectedScopes(scope) where after.mode(for: applied) != mode {
             // A High Power write that pmset accepted and the machine dropped is
-            // hardware refusal, not a transient failure: it is the only signal
-            // the app has that this Mac has no High Power at all. Every other
-            // mismatch stays transient so a one-off failure is retryable.
+            // hardware refusal - but only if nothing moved: System Settings or
+            // another client writing between the write and the read-back leaves
+            // the same mismatch, and blaming the hardware for that would hide
+            // High Power for good. Hardware refusal is the unchanged case.
+            let unchanged = after.mode(for: applied) == before.mode(for: applied)
+            let refused = mode == .highPower && unchanged
             throw HelperError.error(
-                mode == .highPower ? .unsupportedPowerMode : .powerSettingFailed,
-                message: "pmset accepted the change but \(applied.rawValue) still reports "
-                    + "mode \(after.mode(for: applied)?.rawValue ?? -1)")
+                refused ? .unsupportedPowerMode : .powerSettingFailed,
+                message: "pmset accepted the change but \(applied.rawValue) reports mode "
+                    + "\(after.mode(for: applied)?.rawValue ?? -1)"
+                    + (unchanged
+                        ? ", unchanged from before the write"
+                        : "; something else changed Energy Mode during the write"))
         }
         return after
     }
@@ -118,14 +167,11 @@ struct PowerModeWriter {
         return trimmed.isEmpty ? "no stderr output" : trimmed
     }
 
-    /// Runs `executable` with an argv array and waits for it. Absolute path and
-    /// array arguments only: no shell is involved at any point.
-    static func spawn(_ executable: String, _ arguments: [String]) throws -> CommandResult {
-        try spawn(executable, arguments, deadline: commandDeadline)
-    }
-
-    /// The deadline is a parameter so tests can prove the timeout path without
-    /// waiting out the production deadline.
+    /// Runs `executable` with an argv array and waits for it, up to `deadline`.
+    /// Absolute path and array arguments only: no shell is involved at any
+    /// point. The deadline is a parameter so a transaction can pass what is left
+    /// of its budget, and so tests can prove the timeout path without waiting
+    /// out the production one.
     static func spawn(
         _ executable: String,
         _ arguments: [String],

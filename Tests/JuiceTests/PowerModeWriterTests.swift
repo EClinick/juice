@@ -19,6 +19,13 @@ private final class FakePMSet {
     var writeStderr = ""
     /// Every argv the writer spawned, in order.
     private(set) var invocations: [[String]] = []
+    /// The deadline the writer handed each spawn, in order.
+    private(set) var deadlines: [TimeInterval] = []
+    /// Seconds of wall clock each spawn burns, so a shared budget visibly shrinks.
+    var secondsPerCommand: TimeInterval = 0
+    /// Applied to the read-back output only, standing in for another writer that
+    /// changed the mode between the write and the verification.
+    var interferingValue: Int?
 
     init(key: String = "powermode", battery: Int = 0, ac: Int = 0) {
         self.key = key
@@ -26,12 +33,18 @@ private final class FakePMSet {
         self.ac = ac
     }
 
-    var run: (String, [String]) throws -> PowerModeWriter.CommandResult {
-        { [unowned self] executable, arguments in
+    var run: (String, [String], TimeInterval) throws -> PowerModeWriter.CommandResult {
+        { [unowned self] executable, arguments, deadline in
             #expect(executable == PowerModeWriter.pmsetPath)
             self.invocations.append(arguments)
+            self.deadlines.append(deadline)
+            if self.secondsPerCommand > 0 { Thread.sleep(forTimeInterval: self.secondsPerCommand) }
 
             if arguments == ["-g", "custom"] {
+                if let interfering = self.interferingValue, self.invocations.count > 1 {
+                    self.battery = interfering
+                    self.ac = interfering
+                }
                 return (0, self.customOutput, "")
             }
             guard arguments.count == 3 else {
@@ -162,6 +175,27 @@ struct PowerModeWriterTests {
         // that this Mac has no High Power.
         let thrown = try #require(error)
         #expect(HelperError.code(of: thrown) == .unsupportedPowerMode)
+        #expect(thrown.localizedDescription.contains("unchanged from before the write"))
+    }
+
+    @Test("Treats a read-back changed by someone else as transient, not unsupported")
+    func externalWriterIsNotHardwareRefusal() throws {
+        let pmset = FakePMSet()
+        pmset.ignoresWrites = true
+        // Another writer - System Settings, or a second client - moves the mode
+        // to Low Power between the High Power write and the read-back.
+        pmset.interferingValue = 1
+        let writer = PowerModeWriter(runCommand: pmset.run)
+
+        let error = #expect(throws: NSError.self) {
+            try writer.setPowerMode(rawMode: 2, rawScope: "all")
+        }
+
+        // The mode moved, so the hardware never refused anything: reporting
+        // this as unsupported would hide High Power for good over a race.
+        let thrown = try #require(error)
+        #expect(HelperError.code(of: thrown) == .powerSettingFailed)
+        #expect(thrown.localizedDescription.contains("something else changed"))
     }
 
     @Test("Treats a silently ignored write of any other mode as transient")
@@ -181,10 +215,10 @@ struct PowerModeWriterTests {
     @Test("Detects a write that only landed on one power source")
     func detectsPartialAllWrite() throws {
         let pmset = FakePMSet()
-        let writer = PowerModeWriter(runCommand: { executable, arguments in
+        let writer = PowerModeWriter(runCommand: { executable, arguments, deadline in
             // Simulate pmset applying -a to AC only.
             let rewritten = arguments.first == "-a" ? ["-c"] + arguments.dropFirst() : arguments
-            return try pmset.run(executable, rewritten)
+            return try pmset.run(executable, rewritten, deadline)
         })
 
         let error = #expect(throws: NSError.self) {
@@ -213,7 +247,7 @@ struct PowerModeWriterTests {
 
     @Test("Surfaces unparsable pmset output as an internal error")
     func mapsUnparsableOutput() throws {
-        let writer = PowerModeWriter(runCommand: { _, _ in (0, "no sections here", "") })
+        let writer = PowerModeWriter(runCommand: { _, _, _ in (0, "no sections here", "") })
 
         let error = #expect(throws: NSError.self) {
             try writer.setPowerMode(rawMode: 1, rawScope: "all")
@@ -235,9 +269,11 @@ struct PowerModeWriterTests {
         let probe = TransactionProbe()
 
         // Separate writers on real threads, as separate XPC connections get:
-        // the guarantee has to hold process-wide, not per instance.
+        // the guarantee has to hold process-wide, not per instance. The lock
+        // wait is generous here because this test is about ordering, not about
+        // the busy timeout that ``lockWaitIsBounded`` covers.
         DispatchQueue.concurrentPerform(iterations: 4) { tag in
-            let writer = PowerModeWriter(runCommand: probe.run(tag: tag))
+            let writer = PowerModeWriter(runCommand: probe.run(tag: tag), lockWait: 30)
             _ = try? writer.setPowerMode(rawMode: 1, rawScope: "battery")
         }
 
@@ -259,6 +295,63 @@ struct PowerModeWriterTests {
             ])
         }
     }
+
+    @Test("A queued transaction gives up instead of outlasting its client")
+    func lockWaitIsBounded() throws {
+        let holdingLock = DispatchSemaphore(value: 0)
+        let releaseHolder = DispatchSemaphore(value: 0)
+        let holderFinished = DispatchSemaphore(value: 0)
+        let holder = PowerModeWriter(runCommand: { _, arguments, _ in
+            guard arguments != ["-g", "custom"] else {
+                return (0, "Battery Power:\n powermode 0\nAC Power:\n powermode 0\n", "")
+            }
+            // Inside the transaction, so the process-wide lock is held.
+            holdingLock.signal()
+            releaseHolder.wait()
+            return (0, "", "")
+        })
+        DispatchQueue.global().async {
+            _ = try? holder.setPowerMode(rawMode: 1, rawScope: "battery")
+            holderFinished.signal()
+        }
+        holdingLock.wait()
+
+        let pmset = FakePMSet()
+        // A short wait proves the bound without spending the production one.
+        let queued = PowerModeWriter(runCommand: pmset.run, lockWait: 0.2)
+        let started = Date()
+        let error = #expect(throws: NSError.self) {
+            try queued.setPowerMode(rawMode: 1, rawScope: "battery")
+        }
+        let waited = Date().timeIntervalSince(started)
+        releaseHolder.signal()
+        holderFinished.wait()
+
+        let thrown = try #require(error)
+        #expect(HelperError.code(of: thrown) == .powerSettingFailed)
+        #expect(thrown.localizedDescription.contains("another Energy Mode change is in progress"))
+        #expect(waited < 2)
+        // It gave up before touching pmset, so the machine was never half-set.
+        #expect(pmset.invocations.isEmpty)
+    }
+
+    @Test("One budget is shared by the transaction's three commands")
+    func transactionBudgetIsShared() throws {
+        let pmset = FakePMSet()
+        pmset.secondsPerCommand = 0.15
+        let writer = PowerModeWriter(runCommand: pmset.run)
+
+        _ = try writer.setPowerMode(rawMode: 1, rawScope: "battery")
+
+        #expect(pmset.deadlines.count == 3)
+        // Each command is handed what is left of the transaction, never a fresh
+        // deadline of its own: three fresh ones would let a wedged pmset park
+        // the helper for 30 s while the client gave up at 12 s.
+        #expect(pmset.deadlines[0] <= PowerModeWriter.transactionDeadline)
+        #expect(pmset.deadlines[1] <= pmset.deadlines[0] - 0.1)
+        #expect(pmset.deadlines[2] <= pmset.deadlines[1] - 0.1)
+        #expect(pmset.deadlines[2] > 0)
+    }
 }
 
 /// Records which caller spawned what, and lingers inside the write so an
@@ -278,8 +371,8 @@ private final class TransactionProbe: @unchecked Sendable {
         return entries
     }
 
-    func run(tag: Int) -> (String, [String]) throws -> PowerModeWriter.CommandResult {
-        { [self] _, arguments in
+    func run(tag: Int) -> (String, [String], TimeInterval) throws -> PowerModeWriter.CommandResult {
+        { [self] _, arguments, _ in
             lock.lock()
             entries.append(Entry(tag: tag, arguments: arguments))
             lock.unlock()
@@ -326,6 +419,22 @@ struct BoundedProcessTests {
         #expect(Date().timeIntervalSince(started) < 5)
     }
 
+    @Test("A descendant holding the pipes open cannot outlast the deadline")
+    func boundsDrainByDeadline() throws {
+        let started = Date()
+        // sh exits at once and leaves a background sleep holding the write ends
+        // of both pipes, so draining them to EOF would take 30 s.
+        let result = try BoundedProcess.run(
+            "/bin/sh", ["-c", "echo hi; sleep 30 &"], deadline: 0.3)
+        let elapsed = Date().timeIntervalSince(started)
+
+        // The child exited cleanly, so what it managed to write is returned -
+        // the deadline is a promise about wall clock, not about EOF.
+        #expect(result.status == 0)
+        #expect(result.stdout.contains("hi"))
+        #expect(elapsed < 5)
+    }
+
     @Test("A wedged pmset surfaces as a power setting failure mentioning the timeout")
     func spawnMapsTimeout() throws {
         let error = #expect(throws: NSError.self) {
@@ -337,9 +446,12 @@ struct BoundedProcessTests {
         #expect(thrown.localizedDescription.contains("timed out"))
     }
 
-    @Test("The production deadline is short enough to keep the helper responsive")
+    @Test("The production budgets are short enough to keep the helper responsive")
     func productionDeadline() {
-        #expect(PowerModeWriter.commandDeadline == 10)
+        // Both together stay inside the client's own timeout, so a queued
+        // transaction can never still be writing after the caller gave up.
+        #expect(PowerModeWriter.transactionDeadline == 10)
+        #expect(PowerModeWriter.lockTimeout == 2)
     }
 }
 
@@ -379,7 +491,7 @@ struct HelperServicePowerModeTests {
     func mapsSpawnFailure() throws {
         struct Boom: Error {}
         let service = HelperService(
-            powerModeWriter: PowerModeWriter(runCommand: { _, _ in throw Boom() }))
+            powerModeWriter: PowerModeWriter(runCommand: { _, _, _ in throw Boom() }))
 
         var failure: NSError?
         service.setPowerMode(0, scope: "all") { _, error in failure = error }

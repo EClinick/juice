@@ -88,16 +88,15 @@ func printPowerModeState(_ label: String, _ state: PowerModeState) {
 /// Reads and parses `pmset -g custom` locally; needs no privilege, so it works
 /// as a baseline even when the helper is missing.
 func localPowerModeState() -> PowerModeState? {
-    let process = Process()
-    let output = Pipe()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
-    process.arguments = ["-g", "custom"]
-    process.standardOutput = output
-    process.standardError = FileHandle.nullDevice
-    guard (try? process.run()) != nil else { return nil }
-    let data = output.fileHandleForReading.readDataToEndOfFile()
-    process.waitUntilExit()
-    return try? PowerModeParser.parse(pmsetCustomOutput: String(decoding: data, as: UTF8.self))
+    // Same bounded spawn the app and helper use: a wedged pmset must not park
+    // the probe either.
+    guard
+        let result = try? BoundedProcess.run("/usr/bin/pmset", ["-g", "custom"], deadline: 5),
+        result.status == 0
+    else {
+        return nil
+    }
+    return try? PowerModeParser.parse(pmsetCustomOutput: result.stdout)
 }
 
 proxy.handshake { version, helperVersion in

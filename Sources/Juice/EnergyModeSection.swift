@@ -330,8 +330,10 @@ struct EnergyModeOrbit: View {
         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
             isExpanded = false
         }
-        // Re-picking the active mode is a dismissal, not a write.
-        guard mode != selection else { return }
+        // Whether this is a real change is the controller's call: `selection`
+        // is derived from this view's `onAC`, which lags the live power source,
+        // so a tap that looks like a no-op here can still be a change to the
+        // source actually in use.
         Task { await controller.set(mode, onAC: onAC) }
     }
 
