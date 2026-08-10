@@ -43,7 +43,8 @@ final class EnergyModeController: ObservableObject {
     }
 
     static let highPowerUnsupportedKey = "energyMode.highPowerUnsupported.v1"
-    static let pmsetPath = "/usr/bin/pmset"
+    /// Read by the detached reader, so it cannot be actor-isolated.
+    nonisolated static let pmsetPath = "/usr/bin/pmset"
 
     private let readState: @Sendable () async -> PowerModeState?
     private let writeState: @Sendable (PowerMode, PowerModeScope) async throws -> PowerModeState

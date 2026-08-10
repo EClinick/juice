@@ -229,25 +229,65 @@ struct PopoverLayoutTests {
         #expect(EnergyModePresentation.detail(unknownHealth) == "Drawing 8.4 W · 120 cycles")
     }
 
-    @Test("selection and the cross-source footnote follow the active source")
+    @Test("selection and the footnote follow the active source")
     func modeSelectionFollowsPowerSource() {
         let mixed = PowerModeState(
             battery: .lowPower, ac: .highPower, usesLegacyLowPowerKey: false)
 
         #expect(EnergyModePresentation.currentMode(mixed, onAC: false) == .lowPower)
         #expect(EnergyModePresentation.currentMode(mixed, onAC: true) == .highPower)
+        // The orbit control carries no labels, so the caption always names the
+        // active mode first.
         #expect(
-            EnergyModePresentation.otherSourceFootnote(mixed, onAC: false)
-                == "Plugged in: High Power")
+            EnergyModePresentation.footnote(mixed, onAC: false)
+                == "Low Power · Plugged in: High Power")
         #expect(
-            EnergyModePresentation.otherSourceFootnote(mixed, onAC: true)
-                == "On battery: Low Power")
+            EnergyModePresentation.footnote(mixed, onAC: true)
+                == "High Power · On battery: Low Power")
 
         let matched = PowerModeState(
             battery: .automatic, ac: .automatic, usesLegacyLowPowerKey: false)
-        #expect(EnergyModePresentation.otherSourceFootnote(matched, onAC: false) == nil)
-        #expect(EnergyModePresentation.otherSourceFootnote(nil, onAC: false) == nil)
+        #expect(EnergyModePresentation.footnote(matched, onAC: false) == "Automatic")
+        #expect(EnergyModePresentation.footnote(matched, onAC: true) == "Automatic")
+        #expect(EnergyModePresentation.footnote(nil, onAC: false) == nil)
         #expect(EnergyModePresentation.currentMode(nil, onAC: false) == nil)
+    }
+
+    @Test("the orbit keeps its badge and fan clear of each other")
+    func orbitGeometryClearances() {
+        let gauge = BatteryChargeGauge.defaultDiameter
+        let badge = EnergyModeOrbitGeometry.badgeOffset(gaugeDiameter: gauge)
+        let badgeRadius = EnergyModeOrbitGeometry.badgeDiameter / 2
+        let fanRadius = EnergyModeOrbitGeometry.fanDiameter / 2
+
+        // The badge sits on the ring itself, bottom-trailing.
+        #expect(abs(hypot(badge.x, badge.y) - gauge / 2) < 0.01)
+        #expect(badge.x > 0 && badge.y > 0)
+
+        for count in [1, 2] {
+            let offsets = EnergyModeOrbitGeometry.fanOffsets(count: count)
+            #expect(offsets.count == count)
+            for offset in offsets {
+                // Outside the ring, on its trailing side.
+                #expect(offset.x > gauge / 2)
+                #expect(
+                    hypot(offset.x - badge.x, offset.y - badge.y)
+                        >= badgeRadius + fanRadius)
+                // Inside the gauge's own vertical band, so the fan never
+                // reaches the caption line under the hero.
+                #expect(abs(offset.y) + fanRadius <= gauge / 2 + 6)
+                // Inside the popover's content width beside the gauge.
+                #expect(offset.x + fanRadius < 120)
+            }
+            if count == 2 {
+                let gap = hypot(
+                    offsets[0].x - offsets[1].x,
+                    offsets[0].y - offsets[1].y)
+                #expect(gap >= EnergyModeOrbitGeometry.fanDiameter)
+            }
+        }
+
+        #expect(EnergyModeOrbitGeometry.fanOffsets(count: 0).isEmpty)
     }
 
     @Test("the picker drops High Power when it is unsupported")
@@ -285,15 +325,17 @@ struct PopoverLayoutTests {
     }
 
     @Test("the hero block stays compact enough for the popover's top zone")
-    func heroBlockFitsTopZone() {
+    func heroBlockFitsTopZone() async {
+        let energyMode = energyModeController()
+        await energyMode.refresh()
         let controller = NSHostingController(
-            rootView: VStack(alignment: .leading, spacing: 8) {
+            rootView: VStack(alignment: .leading, spacing: 6) {
                 BatteryHeroRow(
                     reading: reading(percent: 62, watts: 8.42, onAC: false),
                     timeRemainingText: "3h 10m remaining",
-                    mode: .lowPower,
+                    controller: energyMode,
                     isLowPowerModeEnabled: true)
-                EnergyModePicker(controller: energyModeController(), onAC: false)
+                EnergyModeCaptions(controller: energyMode, onAC: false)
             }
             .frame(width: 292)
         )
@@ -302,24 +344,67 @@ struct PopoverLayoutTests {
             size: controller.view.fittingSize)
         controller.view.layoutSubtreeIfNeeded()
 
-        // Gauge row plus one button row: the replaced header, dividers, and
-        // health caption used more vertical space than this.
+        // Gauge row plus one caption line: the docked control adds no rows, so
+        // the block must stay shorter than the button row it replaced.
         #expect(controller.view.fittingSize.height > 58)
-        #expect(controller.view.fittingSize.height < 130)
+        #expect(controller.view.fittingSize.height < 100)
     }
 
-    private func energyModeController() -> EnergyModeController {
+    @Test("the docked badge appears only once a mode is readable")
+    func badgePresenceFollowsState() async throws {
+        let unavailable = energyModeController(state: nil)
+        let available = energyModeController()
+        await available.refresh()
+
+        let withoutBadge = try #require(heroPixels(controller: unavailable))
+        let withBadge = try #require(heroPixels(controller: available))
+
+        // The badge centre sits at 45 degrees on the ring, so it is the one
+        // place the two renders must differ. The fan is collapsed on first
+        // render, so its slots must match.
+        let badge = EnergyModeOrbitGeometry.badgeOffset(
+            gaugeDiameter: BatteryChargeGauge.defaultDiameter)
+        let center = CGPoint(
+            x: BatteryChargeGauge.defaultDiameter / 2,
+            y: BatteryChargeGauge.defaultDiameter / 2)
+        #expect(
+            withoutBadge.color(atX: center.x + badge.x, y: center.y + badge.y)
+                != withBadge.color(atX: center.x + badge.x, y: center.y + badge.y))
+
+        for offset in EnergyModeOrbitGeometry.fanOffsets(count: 2) {
+            #expect(
+                withoutBadge.color(atX: center.x + offset.x, y: center.y + offset.y)
+                    == withBadge.color(atX: center.x + offset.x, y: center.y + offset.y))
+        }
+    }
+
+    /// Rasterizes the hero row so the docked control can be checked where it
+    /// actually lands: it is an overlay, so it changes no layout geometry.
+    private func heroPixels(controller: EnergyModeController) -> RenderedPixels? {
+        let renderer = ImageRenderer(
+            content: BatteryHeroRow(
+                reading: reading(percent: 62, watts: 8.42, onAC: false),
+                timeRemainingText: "3h 10m remaining",
+                controller: controller,
+                isLowPowerModeEnabled: true)
+                .frame(width: 292, height: 58)
+                .background(Color.white))
+        renderer.scale = 1
+        return renderer.cgImage.flatMap(RenderedPixels.init)
+    }
+
+    private func energyModeController(
+        state: PowerModeState? = PowerModeState(
+            battery: .lowPower, ac: .automatic, usesLegacyLowPowerKey: false)
+    ) -> EnergyModeController {
         let suiteName = "PopoverLayoutTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         let controller = EnergyModeController(
             defaults: defaults,
-            readState: {
-                PowerModeState(
-                    battery: .lowPower, ac: .automatic, usesLegacyLowPowerKey: false)
-            },
+            readState: { state },
             writeState: { _, _ in
-                PowerModeState(
+                state ?? PowerModeState(
                     battery: .lowPower, ac: .automatic, usesLegacyLowPowerKey: false)
             })
         return controller
@@ -355,6 +440,38 @@ struct PopoverLayoutTests {
         }.first
     }
 
+}
+
+/// A rasterized view, sampled in point coordinates with the origin at top-left.
+private struct RenderedPixels {
+    private let width: Int
+    private let height: Int
+    private let bytes: [UInt8]
+
+    init?(_ image: CGImage) {
+        width = image.width
+        height = image.height
+        var buffer = [UInt8](repeating: 0, count: width * height * 4)
+        guard let context = CGContext(
+            data: &buffer,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        bytes = buffer
+    }
+
+    func color(atX x: CGFloat, y: CGFloat) -> [UInt8] {
+        let column = min(max(Int(x), 0), width - 1)
+        // The image is drawn upright, so bitmap row 0 is the view's top edge.
+        let row = min(max(Int(y), 0), height - 1)
+        let start = (row * width + column) * 4
+        return Array(bytes[start..<(start + 4)])
+    }
 }
 
 private final class FooterMarkerView: NSView {}

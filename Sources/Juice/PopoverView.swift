@@ -256,21 +256,17 @@ struct PopoverView: View {
 
     private func batteryDashboard(_ reading: BatteryReading) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            // Gauge and mode picker read as one block, so they stay closer to
-            // each other than to the sections below. No divider: the grouping
-            // is carried by spacing.
-            VStack(alignment: .leading, spacing: 8) {
+            // Gauge, its docked mode control, and the mode caption read as one
+            // block, so they stay closer to each other than to the sections
+            // below. No divider: the grouping is carried by spacing.
+            VStack(alignment: .leading, spacing: 6) {
                 BatteryHeroRow(
                     reading: reading,
                     timeRemainingText: model.timeRemainingText,
-                    mode: EnergyModePresentation.currentMode(
-                        energyMode.state,
-                        onAC: reading.onAC),
+                    controller: energyMode,
                     isLowPowerModeEnabled: model.isLowPowerModeEnabled)
 
-                if energyMode.state != nil {
-                    EnergyModePicker(controller: energyMode, onAC: reading.onAC)
-                }
+                EnergyModeCaptions(controller: energyMode, onAC: reading.onAC)
             }
             .padding(.bottom, 2)
 

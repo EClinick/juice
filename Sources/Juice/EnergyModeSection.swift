@@ -46,13 +46,16 @@ enum EnergyModePresentation {
         }
     }
 
-    /// Mentions the inactive power source only when it is set differently, so
-    /// the common case stays a single row of buttons.
-    static func otherSourceFootnote(_ state: PowerModeState?, onAC: Bool) -> String? {
-        guard let state, state.battery != state.ac else { return nil }
-        return onAC
+    /// Names the active source's mode, and the inactive source's only when it
+    /// is set differently. The orbit control carries no labels, so this caption
+    /// is the only place the current mode is spelled out.
+    static func footnote(_ state: PowerModeState?, onAC: Bool) -> String? {
+        guard let state, let current = currentMode(state, onAC: onAC) else { return nil }
+        guard state.battery != state.ac else { return current.displayName }
+        let other = onAC
             ? "On battery: \(state.battery.displayName)"
             : "Plugged in: \(state.ac.displayName)"
+        return "\(current.displayName) · \(other)"
     }
 
     static func headline(_ reading: BatteryReading, timeRemainingText: String) -> String {
@@ -83,13 +86,17 @@ enum EnergyModePresentation {
     }
 }
 
-/// The popover's top zone: a circular charge gauge beside the headline estimate
-/// and the health/cycles detail line.
+/// The popover's top zone: a circular charge gauge carrying the Energy Mode
+/// orbit control, beside the headline estimate and the health/cycles detail.
 struct BatteryHeroRow: View {
     let reading: BatteryReading
     let timeRemainingText: String
-    let mode: PowerMode?
+    @ObservedObject var controller: EnergyModeController
     let isLowPowerModeEnabled: Bool
+
+    private var mode: PowerMode? {
+        EnergyModePresentation.currentMode(controller.state, onAC: reading.onAC)
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -100,7 +107,20 @@ struct BatteryHeroRow: View {
                     mode: mode,
                     percent: reading.percent,
                     onAC: reading.onAC,
-                    isLowPowerModeEnabled: isLowPowerModeEnabled))
+                    isLowPowerModeEnabled: isLowPowerModeEnabled),
+                avoidsOrbitBadge: controller.state != nil)
+                // Top-aligned over a square the size of the ring: the gauge's
+                // own frame grows at the bottom while charging, which would
+                // otherwise shift the orbit's centre off the ring's centre.
+                .overlay(alignment: .top) {
+                    EnergyModeOrbit(controller: controller, onAC: reading.onAC)
+                        .frame(
+                            width: BatteryChargeGauge.defaultDiameter,
+                            height: BatteryChargeGauge.defaultDiameter)
+                }
+                // The fan floats outside the ring and over the headline, so the
+                // gauge must paint above the row's later siblings.
+                .zIndex(1)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(EnergyModePresentation.headline(
@@ -124,6 +144,9 @@ struct BatteryChargeGauge: View {
     let isCharging: Bool
     let tint: Color
     var diameter: CGFloat = defaultDiameter
+    /// Shifts the charging badge off bottom-centre so it clears the Energy Mode
+    /// badge docked at the ring's bottom-trailing edge.
+    var avoidsOrbitBadge = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -163,6 +186,7 @@ struct BatteryChargeGauge: View {
                     .overlay {
                         Circle().strokeBorder(.background, lineWidth: 1.5)
                     }
+                    .offset(x: avoidsOrbitBadge ? -7 : 0)
             }
         }
         // Value-scoped so the first render lands without animating.
@@ -180,116 +204,265 @@ struct BatteryChargeGauge: View {
     }
 }
 
-/// Control Center style Energy Mode picker: one circle-and-label button per
-/// mode, selecting the mode of the power source currently in use.
-struct EnergyModePicker: View {
+
+/// Placement rules for the Energy Mode orbit control. Kept out of the view so
+/// the clearances between the badge, the fan, and the charging badge can be
+/// asserted directly: they are the whole reason for these numbers.
+enum EnergyModeOrbitGeometry {
+    static let badgeDiameter: CGFloat = 22
+    static let fanDiameter: CGFloat = 24
+    /// Bottom-trailing, so the badge sits on the ring rather than beside it.
+    static let badgeAngle = Angle.degrees(45)
+    /// Far enough out that a fan button never touches the badge it fanned from.
+    static let fanRadius: CGFloat = 52
+
+    /// Offset of the badge's centre from the gauge's centre, in view
+    /// coordinates (positive y is down).
+    static func badgeOffset(gaugeDiameter: CGFloat) -> CGPoint {
+        offset(radius: gaugeDiameter / 2, angle: badgeAngle)
+    }
+
+    /// A short arc straddling the trailing horizontal. Fanning further down
+    /// would clear the badge less well and reach past the hero into the caption
+    /// line below it, so the arc stays inside the gauge's own vertical band.
+    /// A lone button takes the middle of that arc, so it never reads as the
+    /// first of a missing pair.
+    static func fanAngles(count: Int) -> [Angle] {
+        switch count {
+        case ..<1: return []
+        case 1: return [.zero]
+        default:
+            let first = -20.0
+            let last = 24.0
+            let step = (last - first) / Double(count - 1)
+            return (0..<count).map { .degrees(first + step * Double($0)) }
+        }
+    }
+
+    static func fanOffsets(count: Int) -> [CGPoint] {
+        fanAngles(count: count).map { offset(radius: fanRadius, angle: $0) }
+    }
+
+    private static func offset(radius: CGFloat, angle: Angle) -> CGPoint {
+        CGPoint(
+            x: radius * CGFloat(cos(angle.radians)),
+            y: radius * CGFloat(sin(angle.radians)))
+    }
+}
+
+/// The Energy Mode control, docked on the charge gauge: a badge showing the
+/// active source's mode on the ring's bottom-trailing edge, which fans the other
+/// modes out just beyond the ring when tapped.
+struct EnergyModeOrbit: View {
     @ObservedObject var controller: EnergyModeController
     let onAC: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.juiceSurfaceIsActive) private var surfaceIsActive
+    @State private var isExpanded = false
 
     private var selection: PowerMode? {
         EnergyModePresentation.currentMode(controller.state, onAC: onAC)
     }
 
+    private var otherModes: [PowerMode] {
+        EnergyModePresentation.modes(showsHighPower: controller.showsHighPower)
+            .filter { $0 != selection }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            // Every column is pinned to the gauge's width and separated by
-            // equal flexible spacers: the first circle sits centered under
-            // the ring and the circle centers stay evenly spaced. Flexible
-            // equal-third columns would drift the first circle ~20 pt
-            // trailing of the gauge's axis.
-            HStack(spacing: 0) {
-                let modes = EnergyModePresentation.modes(
-                    showsHighPower: controller.showsHighPower)
-                ForEach(Array(modes.enumerated()), id: \.element.rawValue) { index, mode in
-                    if index > 0 { Spacer(minLength: 8) }
-                    EnergyModeButton(
-                        mode: mode,
-                        isSelected: mode == selection,
-                        isPending: controller.pendingMode == mode
-                    ) {
-                        Task { await controller.set(mode, onAC: onAC) }
+        ZStack {
+            // No state means no readable Energy Mode - a desktop, or a failed
+            // read - so the gauge carries no control at all.
+            if let selection {
+                if isExpanded {
+                    let offsets = EnergyModeOrbitGeometry.fanOffsets(
+                        count: otherModes.count)
+                    ForEach(Array(otherModes.enumerated()), id: \.element.rawValue) { index, mode in
+                        EnergyModeFanButton(mode: mode) { select(mode) }
+                            .transition(fanTransition(index: index))
+                            .offset(x: offsets[index].x, y: offsets[index].y)
                     }
-                    .frame(width: BatteryChargeGauge.defaultDiameter)
                 }
-            }
-            .frame(maxWidth: .infinity)
-            .disabled(controller.isWriting || controller.needsHelperUpdate)
 
-            if let footnote = EnergyModePresentation.otherSourceFootnote(
-                controller.state,
-                onAC: onAC
-            ) {
-                Text(footnote)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            if controller.needsHelperUpdate {
-                Text("Switching Energy Mode needs the updated helper - restart Juice to update it.")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-            } else if let message = controller.lastErrorMessage {
-                Text(message)
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
+                EnergyModeBadge(
+                    mode: selection,
+                    isWriting: controller.isWriting,
+                    isExpanded: isExpanded,
+                    action: toggle)
+                    .offset(
+                        x: badgeOffset.x,
+                        y: badgeOffset.y)
+                    .disabled(controller.isWriting || controller.needsHelperUpdate)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // A popover that is ordered out and reopened must come back collapsed.
+        .onChange(of: surfaceIsActive) { _, isActive in
+            if !isActive { isExpanded = false }
+        }
+        .onDisappear { isExpanded = false }
+    }
+
+    private var badgeOffset: CGPoint {
+        EnergyModeOrbitGeometry.badgeOffset(
+            gaugeDiameter: BatteryChargeGauge.defaultDiameter)
+    }
+
+    private func toggle() {
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+            isExpanded.toggle()
+        }
+    }
+
+    private func select(_ mode: PowerMode) {
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+            isExpanded = false
+        }
+        Task { await controller.set(mode, onAC: onAC) }
+    }
+
+    /// Fan in with a staggered pop out of focus, and leave with a quieter
+    /// shrink: the exit is not the moment worth watching.
+    private func fanTransition(index: Int) -> AnyTransition {
+        guard !reduceMotion else { return .opacity }
+        let insertion = AnyTransition
+            .modifier(
+                active: EnergyModeFanEffect(opacity: 0, scale: 0.25, blur: 4),
+                identity: EnergyModeFanEffect(opacity: 1, scale: 1, blur: 0))
+            .animation(.easeOut(duration: 0.2).delay(Double(index) * 0.04))
+        let removal = AnyTransition
+            .modifier(
+                active: EnergyModeFanEffect(opacity: 0, scale: 0.85, blur: 0),
+                identity: EnergyModeFanEffect(opacity: 1, scale: 1, blur: 0))
+            .animation(.easeIn(duration: 0.15))
+        return .asymmetric(insertion: insertion, removal: removal)
     }
 }
 
-private struct EnergyModeButton: View {
-    let mode: PowerMode
-    let isSelected: Bool
-    let isPending: Bool
-    let action: () -> Void
+private struct EnergyModeFanEffect: ViewModifier {
+    let opacity: Double
+    let scale: CGFloat
+    let blur: CGFloat
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(scale)
+            .blur(radius: blur)
+            .opacity(opacity)
+    }
+}
+
+/// The docked badge: accent-filled, ringed in the popover's background colour so
+/// it reads as sitting on top of the gauge's stroke.
+private struct EnergyModeBadge: View {
+    let mode: PowerMode
+    let isWriting: Bool
+    let isExpanded: Bool
+    let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 3) {
-                ZStack {
-                    // The system accent for every selected mode: per-mode tints
-                    // (yellow, cyan) clash with the white glyph on top of them.
-                    Circle()
-                        .fill(isSelected
-                            ? AnyShapeStyle(Color.accentColor)
-                            : AnyShapeStyle(.quaternary))
-                        .frame(width: 26, height: 26)
-                    if isPending {
-                        ProgressView()
-                            .controlSize(.small)
-                            .scaleEffect(0.6)
-                    } else {
-                        Image(systemName: EnergyModePresentation.symbol(for: mode))
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(isSelected ? Color.white : Color.secondary)
-                            .contentTransition(.symbolEffect(.replace))
-                    }
+            ZStack {
+                Circle().fill(Color.accentColor)
+                if isWriting {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.5)
+                        .tint(.white)
+                } else {
+                    Image(systemName: EnergyModePresentation.symbol(for: mode))
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .contentTransition(.symbolEffect(.replace))
                 }
-                Text(mode.displayName)
-                    .font(.caption2)
-                    .foregroundStyle(isSelected ? Color.primary : Color.secondary)
-                    // Labels may be wider than the pinned first column; let
-                    // them spill symmetrically instead of truncating.
-                    .fixedSize(horizontal: true, vertical: false)
             }
-            .frame(maxWidth: .infinity)
-            .contentShape(Rectangle())
+            .frame(
+                width: EnergyModeOrbitGeometry.badgeDiameter,
+                height: EnergyModeOrbitGeometry.badgeDiameter)
+            .overlay {
+                Circle().strokeBorder(.background, lineWidth: 2)
+            }
+            .contentShape(Circle())
         }
-        .buttonStyle(EnergyModeButtonStyle())
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: isSelected)
-        .help("\(mode.displayName) Energy Mode")
-        .accessibilityLabel("\(mode.displayName) Energy Mode")
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+        .buttonStyle(EnergyModeOrbitButtonStyle())
+        .help("Energy Mode")
+        .accessibilityLabel("Energy Mode: \(mode.displayName)")
+        .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
     }
 }
 
-private struct EnergyModeButtonStyle: ButtonStyle {
+/// One fanned-out alternative mode, floating just outside the ring.
+private struct EnergyModeFanButton: View {
+    let mode: PowerMode
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle().fill(.regularMaterial)
+                Circle().fill(.primary.opacity(isHovered ? 0.09 : 0))
+                Image(systemName: EnergyModePresentation.symbol(for: mode))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(
+                width: EnergyModeOrbitGeometry.fanDiameter,
+                height: EnergyModeOrbitGeometry.fanDiameter)
+            .overlay {
+                Circle().strokeBorder(.separator, lineWidth: 0.5)
+            }
+            .shadow(color: .black.opacity(0.18), radius: 3, y: 1)
+            .contentShape(Circle())
+        }
+        .buttonStyle(EnergyModeOrbitButtonStyle())
+        .onHover { isHovered = $0 }
+        .help("\(mode.displayName) Energy Mode")
+        .accessibilityLabel("\(mode.displayName) Energy Mode")
+    }
+}
+
+/// The caption lines under the hero: the orbit control has no labels, so the
+/// active mode is named here, followed by any helper or failure notice.
+struct EnergyModeCaptions: View {
+    @ObservedObject var controller: EnergyModeController
+    let onAC: Bool
+
+    private var footnote: String? {
+        EnergyModePresentation.footnote(controller.state, onAC: onAC)
+    }
+
+    private var notice: String? {
+        if controller.needsHelperUpdate {
+            return "Switching Energy Mode needs the updated helper - restart Juice to update it."
+        }
+        return controller.lastErrorMessage
+    }
+
+    var body: some View {
+        if footnote != nil || notice != nil {
+            VStack(alignment: .leading, spacing: 2) {
+                if let footnote {
+                    Text(footnote)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                if let notice {
+                    Text(notice)
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private struct EnergyModeOrbitButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .scaleEffect(configuration.isPressed ? 0.92 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
