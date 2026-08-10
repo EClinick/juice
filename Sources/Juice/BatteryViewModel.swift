@@ -81,6 +81,9 @@ final class BatteryViewModel: ObservableObject {
         if r.onAC && !r.isCharging { return "On AC power" }
         guard let mins = r.timeRemainingMinutes else { return "Estimating…" }
         let verb = r.isCharging ? "until full" : "remaining"
-        return String(format: "%d:%02d %@", mins / 60, mins % 60, verb)
+        let duration = mins < 60
+            ? "\(mins)m"
+            : String(format: "%dh %02dm", mins / 60, mins % 60)
+        return "\(duration) \(verb)"
     }
 }
