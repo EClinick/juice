@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 /// The shared page structure for every Stats dashboard. Battery and server
@@ -96,6 +97,141 @@ struct StatsDashboardHeader<Actions: View, Controls: View>: View {
     }
 }
 
+struct AppTableSortValues {
+    let stableID: String
+    let displayName: String
+    let liveWatts: Double?
+    let energyWh: Double?
+    let detail: Double?
+}
+
+/// Live watts are compared at the precision the row actually displays, so two
+/// rows showing the same number never trade places between samples.
+func displayedLiveWatts(_ watts: Double) -> Double {
+    watts >= 0.1
+        ? (watts * 10).rounded() / 10
+        : (watts * 100).rounded() / 100
+}
+
+/// A user-chosen column sort for a Stats app table. A `nil` sort means no
+/// column is selected and the table keeps the natural order its caller
+/// supplies, which is what preserves live-row hysteresis.
+struct AppTableSort: Equatable {
+    enum Column: Equatable {
+        case app
+        case liveWatts
+        case energy
+        case detail
+    }
+
+    enum Direction: Equatable {
+        case ascending
+        case descending
+    }
+
+    var column: Column
+    var direction: Direction
+
+    /// The direction a column starts in the first time it is chosen.
+    static func naturalDirection(for column: Column) -> Direction {
+        column == .app ? .ascending : .descending
+    }
+
+    /// Header clicks cycle one column through its natural direction, the
+    /// reversed direction, and then back to no sort at all.
+    static func select(_ column: Column, from current: AppTableSort?) -> AppTableSort? {
+        let natural = naturalDirection(for: column)
+        guard let current, current.column == column else {
+            return AppTableSort(column: column, direction: natural)
+        }
+        guard current.direction == natural else { return nil }
+        return AppTableSort(
+            column: column,
+            direction: natural == .ascending ? .descending : .ascending)
+    }
+
+    /// Sorting by live watts falls back to energy when none of the visible rows
+    /// carry live values, so the column stays useful in historical sections.
+    func effectiveColumn(hasLiveWatts: Bool) -> Column {
+        column == .liveWatts && !hasLiveWatts ? .energy : column
+    }
+
+    static func apply<Row>(
+        _ sort: AppTableSort?,
+        to rows: [Row],
+        query: String,
+        values: (Row) -> AppTableSortValues
+    ) -> [Row] {
+        let filter = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidates = rows
+            .map { (row: $0, values: values($0)) }
+            .filter {
+                filter.isEmpty || $0.values.displayName.localizedStandardContains(filter)
+            }
+        guard let sort else { return candidates.map(\.row) }
+
+        let effectiveColumn = sort.effectiveColumn(
+            hasLiveWatts: candidates.contains { $0.values.liveWatts != nil })
+
+        func namePrecedes(_ lhs: AppTableSortValues, _ rhs: AppTableSortValues) -> Bool {
+            let nameOrder = lhs.displayName.localizedStandardCompare(rhs.displayName)
+            if nameOrder != .orderedSame {
+                return nameOrder == .orderedAscending
+            }
+            return lhs.stableID.localizedStandardCompare(rhs.stableID) == .orderedAscending
+        }
+
+        func numericValue(_ values: AppTableSortValues) -> Double? {
+            switch effectiveColumn {
+            case .app:
+                return nil
+            case .liveWatts:
+                return values.liveWatts.map(displayedLiveWatts)
+            case .energy:
+                return values.energyWh
+            case .detail:
+                return values.detail
+            }
+        }
+
+        return candidates.sorted { lhs, rhs in
+            if effectiveColumn == .app {
+                let nameOrder = lhs.values.displayName.localizedStandardCompare(
+                    rhs.values.displayName)
+                if nameOrder != .orderedSame {
+                    return sort.direction == .ascending
+                        ? nameOrder == .orderedAscending
+                        : nameOrder == .orderedDescending
+                }
+                return lhs.values.stableID.localizedStandardCompare(rhs.values.stableID)
+                    == .orderedAscending
+            }
+
+            switch (numericValue(lhs.values), numericValue(rhs.values)) {
+            case let (left?, right?) where left != right:
+                return sort.direction == .ascending ? left < right : left > right
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                return namePrecedes(lhs.values, rhs.values)
+            }
+        }
+        .map { $0.row }
+    }
+}
+
+/// The one ease Juice uses whenever on-screen content is replaced or
+/// reordered - the popover's app list, the Stats range controls, and every
+/// Stats app table share it so those swaps never feel like different products.
+let juiceStandardEase = Animation.timingCurve(
+    0.23,
+    1,
+    0.32,
+    1,
+    duration: 0.18)
+
 /// Column configuration shared by battery and server app tables.
 struct StatsAppTableColumns: Equatable {
     let showsLiveWatts: Bool
@@ -119,24 +255,132 @@ struct StatsAppTableColumns: Equatable {
 /// ``StatsAppTableRow`` so labels remain aligned in every device mode.
 struct StatsAppTableHeader: View {
     let columns: StatsAppTableColumns
+    @Binding var sort: AppTableSort?
 
     var body: some View {
         HStack(spacing: 10) {
-            Text("APP")
+            StatsAppTableHeaderButton(
+                title: "APP",
+                column: .app,
+                alignment: .leading,
+                indicatorBeforeLabel: false,
+                direction: direction(for: .app),
+                onSelect: { select(.app) })
                 .frame(maxWidth: .infinity, alignment: .leading)
             if columns.showsLiveWatts {
-                Text("LIVE W")
+                StatsAppTableHeaderButton(
+                    title: "LIVE W",
+                    column: .liveWatts,
+                    alignment: .trailing,
+                    indicatorBeforeLabel: true,
+                    direction: direction(for: .liveWatts),
+                    onSelect: { select(.liveWatts) })
                     .frame(width: 64, alignment: .trailing)
             }
-            Text("ENERGY / COST")
+            StatsAppTableHeaderButton(
+                title: "ENERGY / COST",
+                column: .energy,
+                alignment: .trailing,
+                indicatorBeforeLabel: true,
+                direction: direction(for: .energy),
+                onSelect: { select(.energy) })
                 .frame(width: 72, alignment: .trailing)
-            Text(columns.detailTitle)
+            StatsAppTableHeaderButton(
+                title: columns.detailTitle,
+                column: .detail,
+                alignment: .trailing,
+                indicatorBeforeLabel: true,
+                direction: direction(for: .detail),
+                onSelect: { select(.detail) })
                 .frame(width: columns.detailWidth, alignment: .trailing)
             Color.clear.frame(width: 10, height: 1)
         }
         .font(.system(size: 9, weight: .semibold))
-        .foregroundStyle(.tertiary)
-        .padding(.horizontal, 7)
+        .padding(.trailing, 7)
+    }
+
+    /// The chevron follows the column the user picked, never the data-driven
+    /// live-watts fallback, so the header can't contradict the click.
+    private func direction(for column: AppTableSort.Column) -> AppTableSort.Direction? {
+        sort?.column == column ? sort?.direction : nil
+    }
+
+    private func select(_ column: AppTableSort.Column) {
+        withAnimation(juiceStandardEase) {
+            sort = AppTableSort.select(column, from: sort)
+        }
+    }
+}
+
+private struct StatsAppTableHeaderButton: View {
+    let title: String
+    let column: AppTableSort.Column
+    let alignment: Alignment
+    let indicatorBeforeLabel: Bool
+    /// `nil` when the table is not sorted by this column.
+    let direction: AppTableSort.Direction?
+    let onSelect: () -> Void
+
+    @State private var hovering = false
+
+    private var foregroundStyle: HierarchicalShapeStyle {
+        direction == nil ? .tertiary : .primary
+    }
+
+    private var textAlignment: TextAlignment {
+        alignment == .leading ? .leading : .trailing
+    }
+
+    private var helpText: String {
+        guard let direction else { return "Sort by \(title)" }
+        return direction == AppTableSort.naturalDirection(for: column)
+            ? "Reverse \(title) sort"
+            : "Clear \(title) sort"
+    }
+
+    /// The direction the indicator renders: the active sort, or a preview of
+    /// the natural direction while hovering an unsorted column.
+    private var displayedDirection: AppTableSort.Direction? {
+        direction ?? (hovering ? AppTableSort.naturalDirection(for: column) : nil)
+    }
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 3) {
+                if displayedDirection != nil, indicatorBeforeLabel {
+                    sortIndicator
+                }
+                Text(title)
+                    .multilineTextAlignment(textAlignment)
+                if displayedDirection != nil, !indicatorBeforeLabel {
+                    sortIndicator
+                }
+            }
+            // The hover pill hugs the label (negative padding grows it without
+            // shifting the text off its column alignment); the full-width frame
+            // below only widens the click target, so it must not carry the fill.
+            .background(
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.primary.opacity(hovering ? 0.06 : 0))
+                    .padding(-3))
+            .frame(maxWidth: .infinity, alignment: alignment)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(foregroundStyle)
+        .onHover { hovering = $0 }
+        .help(helpText)
+        .accessibilityValue(direction.map { $0 == .ascending ? "Ascending" : "Descending" }
+            ?? "Not sorted")
+    }
+
+    private var sortIndicator: some View {
+        Image(systemName: displayedDirection == .ascending
+            ? "arrow.up"
+            : "arrow.down")
+            .font(.system(size: 7.5, weight: .bold))
+            // Dimmed while previewing on hover, full strength once active.
+            .opacity(direction == nil ? 0.45 : 1)
     }
 }
 
@@ -147,6 +391,8 @@ struct StatsAppTablePane<Content: View, Summary: View>: View {
     let title: String
     let showsLiveActivity: Bool
     let columns: StatsAppTableColumns
+    @Binding private var sort: AppTableSort?
+    @Binding private var query: String
 
     private let content: Content
     private let summary: Summary
@@ -155,12 +401,16 @@ struct StatsAppTablePane<Content: View, Summary: View>: View {
         title: String,
         showsLiveActivity: Bool,
         columns: StatsAppTableColumns,
+        sort: Binding<AppTableSort?>,
+        query: Binding<String>,
         @ViewBuilder content: () -> Content,
         @ViewBuilder summary: () -> Summary
     ) {
         self.title = title
         self.showsLiveActivity = showsLiveActivity
         self.columns = columns
+        _sort = sort
+        _query = query
         self.content = content()
         self.summary = summary()
     }
@@ -174,14 +424,63 @@ struct StatsAppTablePane<Content: View, Summary: View>: View {
                     LiveHint()
                 }
                 Spacer()
+                StatsAppSearchField(query: $query)
             }
 
-            StatsAppTableHeader(columns: columns)
+            StatsAppTableHeader(columns: columns, sort: $sort)
             content
             summary
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(16)
+    }
+}
+
+struct StatsAppTableNoMatches: View {
+    let query: String
+
+    var body: some View {
+        Text("No apps match \"\(query)\".")
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+    }
+}
+
+private struct StatsAppSearchField: View {
+    @Binding var query: String
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+
+            TextField("Filter apps", text: $query)
+                .textFieldStyle(.plain)
+                .accessibilityLabel("Filter apps")
+
+            if !query.isEmpty {
+                Button {
+                    query = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+                .help("Clear app filter")
+                .accessibilityLabel("Clear app filter")
+            }
+        }
+        .font(.caption)
+        .padding(.horizontal, 7)
+        .frame(width: 180, height: 22)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.secondary.opacity(0.18))
+        }
+        .onExitCommand {
+            query = ""
+        }
     }
 }
 

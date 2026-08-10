@@ -46,9 +46,7 @@ struct PopoverView: View {
     /// SwiftUI `onDisappear`, which is not guaranteed for retained content.
     @State private var surfaceIsActive = false
 
-    private var replacementAnimation: Animation {
-        .timingCurve(0.23, 1, 0.32, 1, duration: 0.18)
-    }
+    private var replacementAnimation: Animation { juiceStandardEase }
 
     private var visibleRanges: [EnergyRange] {
         StatsRangeVisibility.visibleRanges(from: rangeVisibilityStorage)

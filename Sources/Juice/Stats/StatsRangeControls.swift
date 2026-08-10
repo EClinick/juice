@@ -32,7 +32,7 @@ struct StatsRangeCustomizationButton: View {
 
     var body: some View {
         Button {
-            withAnimation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.18)) {
+            withAnimation(juiceStandardEase) {
                 isCustomizing.toggle()
             }
         } label: {

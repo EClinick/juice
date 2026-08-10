@@ -16,6 +16,10 @@ struct MacMiniStatsDashboard: View {
     @ObservedObject private var live = LivePowerCoordinator.shared
     @State private var consumerID = UUID()
     @State private var range: EnergyRange = .today
+    /// `nil` until the user picks a column: the table then keeps its natural
+    /// live-first order.
+    @State private var appTableSort: AppTableSort?
+    @State private var appFilterQuery = ""
     @State private var data: MacMiniPowerDashboardData?
     @State private var loadedRange: EnergyRange?
     @State private var loadError: String?
@@ -44,7 +48,9 @@ struct MacMiniStatsDashboard: View {
         var peakWatts: Double?
     }
 
-    private var appRows: [AppRow] {
+    /// The table's natural order: live apps first by current watts, then the
+    /// rest by energy. Called once per body pass rather than per access.
+    private func makeAppRows() -> [AppRow] {
         let totals = Dictionary(
             (data?.appTotals ?? []).map { ($0.appKey, $0) },
             uniquingKeysWith: { first, _ in first })
@@ -83,10 +89,6 @@ struct MacMiniStatsDashboard: View {
                     == .orderedAscending
             }
         }
-    }
-
-    private var maxAppEnergy: Double {
-        max(appRows.compactMap(\.energyWh).max() ?? 0, 0.001)
     }
 
     private func costText(_ wattHours: Double?) -> String? {
@@ -183,10 +185,29 @@ struct MacMiniStatsDashboard: View {
     }
 
     private var appPane: some View {
-        StatsAppTablePane(
+        let allRows = makeAppRows()
+        let visibleRows = AppTableSort.apply(
+            appTableSort,
+            to: allRows,
+            query: appFilterQuery
+        ) { app in
+            AppTableSortValues(
+                stableID: app.appKey,
+                displayName: app.displayName,
+                liveWatts: app.liveWatts,
+                energyWh: app.energyWh,
+                detail: app.peakWatts)
+        }
+        // The energy bars stay comparable while a filter is active, so the
+        // maximum comes from every row rather than the visible ones.
+        let maxAppEnergy = max(allRows.compactMap(\.energyWh).max() ?? 0, 0.001)
+
+        return StatsAppTablePane(
             title: "Apps using power",
             showsLiveActivity: live.status == .sampling || live.status == .warmingUp,
             columns: .server,
+            sort: $appTableSort,
+            query: $appFilterQuery,
             content: {
                 if let loadError {
                     Text(loadError)
@@ -197,21 +218,27 @@ struct MacMiniStatsDashboard: View {
                         .controlSize(.small)
                 }
 
-                if appRows.isEmpty {
+                if allRows.isEmpty {
                     if data != nil {
                         Text("Collecting app energy—live apps appear as soon as they draw measurable power.")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                     }
                     Spacer()
+                } else if visibleRows.isEmpty {
+                    StatsAppTableNoMatches(query: appFilterQuery)
+                    Spacer()
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 6) {
-                            ForEach(appRows) { app in
-                                appRow(app)
+                            ForEach(visibleRows) { app in
+                                appRow(app, maxAppEnergy: maxAppEnergy)
                             }
                         }
                         .padding(.trailing, 4)
+                        .animation(
+                            juiceStandardEase,
+                            value: visibleRows.map(\.id))
                     }
                 }
             },
@@ -227,7 +254,7 @@ struct MacMiniStatsDashboard: View {
             })
     }
 
-    private func appRow(_ app: AppRow) -> some View {
+    private func appRow(_ app: AppRow, maxAppEnergy: Double) -> some View {
         StatsAppTableRow(
             appKey: app.appKey,
             displayName: app.displayName,
