@@ -226,6 +226,24 @@ struct EnergyModeControllerTests {
         #expect(controller.state == Self.modern())
     }
 
+    @Test("Observed High Power heals a wrongly poisoned unsupported cache")
+    func observedHighPowerHealsTheCache() async {
+        let defaults = Self.isolatedDefaults()
+        // An external write racing the helper's read-back can misclassify a
+        // supported machine as refusing High Power; a later read that shows
+        // High Power actually set is proof of support and must clear it.
+        defaults.set(true, forKey: EnergyModeController.highPowerUnsupportedKey)
+        let backend = FakeEnergyModeBackend(
+            readStates: [Self.modern(battery: .highPower)])
+        let controller = Self.makeController(backend: backend, defaults: defaults)
+        #expect(!controller.showsHighPower)
+
+        await controller.refresh()
+
+        #expect(controller.showsHighPower)
+        #expect(defaults.object(forKey: EnergyModeController.highPowerUnsupportedKey) == nil)
+    }
+
     @Test("A high-power write the hardware refuses hides the option for good")
     func refusedHighPowerIsCached() async {
         let defaults = Self.isolatedDefaults()

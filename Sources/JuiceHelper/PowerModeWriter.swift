@@ -40,13 +40,19 @@ struct PowerModeWriter {
     /// production timeout; production always uses ``lockTimeout``.
     private let lockWait: TimeInterval
 
+    /// Instance-level for the same reason as ``lockWait``: tests prove the
+    /// exhausted-budget path with a tiny budget instead of waiting out 10 s.
+    private let transactionBudget: TimeInterval
+
     init(
         runCommand: @escaping (String, [String], TimeInterval) throws -> CommandResult
             = PowerModeWriter.spawn,
-        lockWait: TimeInterval = PowerModeWriter.lockTimeout
+        lockWait: TimeInterval = PowerModeWriter.lockTimeout,
+        transactionBudget: TimeInterval = PowerModeWriter.transactionDeadline
     ) {
         self.runCommand = runCommand
         self.lockWait = lockWait
+        self.transactionBudget = transactionBudget
     }
 
     /// Reads the machine's current Energy Mode. Unprivileged.
@@ -92,7 +98,7 @@ struct PowerModeWriter {
         defer { Self.transactionLock.unlock() }
         // The budget starts once the lock is held, so a transaction is never
         // charged for time it spent queued.
-        return try apply(mode: mode, scope: scope, budget: Budget(seconds: Self.transactionDeadline))
+        return try apply(mode: mode, scope: scope, budget: Budget(seconds: transactionBudget))
     }
 
     /// What is left of one transaction's wall clock, shared by its commands.
@@ -103,7 +109,19 @@ struct PowerModeWriter {
             expiry = Date().addingTimeInterval(seconds)
         }
 
-        var remaining: TimeInterval { max(expiry.timeIntervalSinceNow, 0) }
+        /// The time left for the next command, or an error once the budget is
+        /// spent. Checked before EVERY spawn: a privileged write must never
+        /// start after the transaction's deadline has already passed, or the
+        /// machine can change after the client gave up and reported failure.
+        func remainingOrThrow(before step: String) throws -> TimeInterval {
+            let left = max(expiry.timeIntervalSinceNow, 0)
+            guard left > 0 else {
+                throw HelperError.error(
+                    .powerSettingFailed,
+                    message: "transaction deadline passed before the \(step)")
+            }
+            return left
+        }
     }
 
     private func apply(
@@ -113,7 +131,8 @@ struct PowerModeWriter {
     ) throws -> PowerModeState {
         // Which key exists is a hardware property, so it must be discovered
         // before writing rather than assumed.
-        let before = try readState(deadline: budget.remaining)
+        let before = try readState(
+            deadline: budget.remainingOrThrow(before: "initial read"))
         guard !(before.usesLegacyLowPowerKey && mode == .highPower) else {
             throw HelperError.error(
                 .unsupportedPowerMode,
@@ -123,7 +142,7 @@ struct PowerModeWriter {
         let write = try runCommand(
             Self.pmsetPath,
             [scope.pmsetFlag, before.pmsetKey, String(mode.rawValue)],
-            budget.remaining)
+            budget.remainingOrThrow(before: "write"))
         guard write.status == 0 else {
             throw HelperError.error(
                 .powerSettingFailed,
@@ -132,7 +151,8 @@ struct PowerModeWriter {
 
         // pmset exits 0 for values the hardware silently declines, so the
         // read-back is the only honest confirmation.
-        let after = try readState(deadline: budget.remaining)
+        let after = try readState(
+            deadline: budget.remainingOrThrow(before: "verification read"))
         for applied in Self.affectedScopes(scope) where after.mode(for: applied) != mode {
             // A High Power write that pmset accepted and the machine dropped is
             // hardware refusal - but only if nothing moved: System Settings or

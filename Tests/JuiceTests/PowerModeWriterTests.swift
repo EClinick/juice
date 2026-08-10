@@ -352,6 +352,25 @@ struct PowerModeWriterTests {
         #expect(pmset.deadlines[2] <= pmset.deadlines[1] - 0.1)
         #expect(pmset.deadlines[2] > 0)
     }
+
+    @Test("An exhausted budget refuses to start the privileged write")
+    func exhaustedBudgetNeverSpawnsTheWrite() throws {
+        let pmset = FakePMSet()
+        // The initial read burns the entire (tiny) budget, so the transaction
+        // must fail BEFORE the write spawns: launching a mutation after the
+        // deadline would change the machine after the client already gave up.
+        pmset.secondsPerCommand = 0.15
+        let writer = PowerModeWriter(runCommand: pmset.run, transactionBudget: 0.1)
+
+        let error = #expect(throws: NSError.self) {
+            try writer.setPowerMode(rawMode: 1, rawScope: "battery")
+        }
+
+        let thrown = try #require(error)
+        #expect(HelperError.code(of: thrown) == .powerSettingFailed)
+        #expect(thrown.localizedDescription.contains("deadline passed before the write"))
+        #expect(pmset.invocations == [["-g", "custom"]])
+    }
 }
 
 /// Records which caller spawned what, and lingers inside the write so an

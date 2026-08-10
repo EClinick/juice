@@ -92,10 +92,22 @@ final class EnergyModeController: ObservableObject {
         // A write that landed while this read was in flight is newer than the
         // answer being held, and must not be rolled back by it.
         guard generation == stateGeneration else { return }
-        state = fresh
+        publish(fresh)
         if fresh != nil {
             lastErrorMessage = nil
         }
+    }
+
+    /// Publishes a read or write result, and lets observed reality heal the
+    /// High Power cache: an external write racing the helper's read-back can
+    /// misclassify a supported machine as refusing High Power, so any state
+    /// that shows High Power actually set is proof the hardware supports it.
+    private func publish(_ fresh: PowerModeState?) {
+        state = fresh
+        guard let fresh, highPowerUnsupported,
+              fresh.battery == .highPower || fresh.ac == .highPower else { return }
+        highPowerUnsupported = false
+        defaults.removeObject(forKey: Self.highPowerUnsupportedKey)
     }
 
     /// Forgets a previously detected outdated helper, so the notice does not
@@ -144,7 +156,7 @@ final class EnergyModeController: ObservableObject {
 
         switch outcome {
         case .success(let applied):
-            state = applied
+            publish(applied)
             lastErrorMessage = nil
             needsHelperUpdate = false
         case .failure(let error):
