@@ -108,11 +108,12 @@ struct AppTableSortValues {
 /// Live watts are compared at the precision the row actually displays, so two
 /// rows showing the same number never trade places between samples.
 func displayedLiveWatts(_ watts: Double) -> Double {
-    // Ties round to even to match String(format:)'s IEEE behavior, so an
-    // exact midpoint like 0.25 W keys as the 0.2 it displays, never 0.3.
-    watts >= 0.1
-        ? (watts * 10).rounded(.toNearestOrEven) / 10
-        : (watts * 100).rounded(.toNearestOrEven) / 100
+    // The key comes from the same format call the row displays through
+    // (liveWattsText), so the two can never disagree at rounding boundaries.
+    // Arithmetic imitations (scale, round, divide) fail there: the scaling
+    // multiply itself rounds, e.g. 0.45 * 10 lands on exactly 4.5 and then
+    // keys as 0.4 while %.1f of 0.45 displays 0.5.
+    Double(String(format: watts >= 0.1 ? "%.1f" : "%.2f", watts)) ?? watts
 }
 
 /// A user-chosen column sort for a Stats app table. A `nil` sort means no
@@ -196,8 +197,8 @@ struct AppTableSort: Equatable {
             }
         }
 
-        return candidates.sorted { lhs, rhs in
-            if effectiveColumn == .app {
+        if effectiveColumn == .app {
+            return candidates.sorted { lhs, rhs in
                 let nameOrder = lhs.values.displayName.localizedStandardCompare(
                     rhs.values.displayName)
                 if nameOrder != .orderedSame {
@@ -208,19 +209,26 @@ struct AppTableSort: Equatable {
                 return lhs.values.stableID.localizedStandardCompare(rhs.values.stableID)
                     == .orderedAscending
             }
-
-            switch (numericValue(lhs.values), numericValue(rhs.values)) {
-            case let (left?, right?) where left != right:
-                return sort.direction == .ascending ? left < right : left > right
-            case (_?, nil):
-                return true
-            case (nil, _?):
-                return false
-            default:
-                return namePrecedes(lhs.values, rhs.values)
-            }
+            .map { $0.row }
         }
-        .map { $0.row }
+
+        // Keys are computed once per row, not per comparison, because the
+        // live-watts key goes through String(format:).
+        return candidates
+            .map { (row: $0.row, values: $0.values, key: numericValue($0.values)) }
+            .sorted { lhs, rhs in
+                switch (lhs.key, rhs.key) {
+                case let (left?, right?) where left != right:
+                    return sort.direction == .ascending ? left < right : left > right
+                case (_?, nil):
+                    return true
+                case (nil, _?):
+                    return false
+                default:
+                    return namePrecedes(lhs.values, rhs.values)
+                }
+            }
+            .map { $0.row }
     }
 }
 
