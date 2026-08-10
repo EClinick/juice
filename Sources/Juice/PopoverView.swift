@@ -617,14 +617,8 @@ struct PopoverDashboardViewport<Content: View>: View {
             .overlay(alignment: .bottom) {
                 if showsScrollHint {
                     ZStack(alignment: .bottom) {
-                        LinearGradient(
-                            colors: [
-                                Color(nsColor: .windowBackgroundColor).opacity(0),
-                                Color(nsColor: .windowBackgroundColor).opacity(0.94),
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom)
-                        .allowsHitTesting(false)
+                        Color.clear
+                            .allowsHitTesting(false)
 
                         Button {
                             scrollToBottom(using: proxy)
