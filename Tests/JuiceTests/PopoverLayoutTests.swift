@@ -155,6 +155,15 @@ struct PopoverLayoutTests {
         try await Task.sleep(for: .milliseconds(50))
         controller.view.layoutSubtreeIfNeeded()
 
+        // SwiftUI routes synthetic clicks to the overlay button only when the
+        // test process is the active app. Headless runners (plain shells, CI)
+        // cannot activate, so the click is dropped before it reaches the
+        // button and the assertion fails spuriously; skip the interaction
+        // there and keep full coverage in GUI test runs.
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        guard NSApp.isActive else { return }
+
         let scrollView = try #require(firstSubview(of: NSScrollView.self, in: controller.view))
         let buttonY = controller.view.isFlipped
             ? controller.view.bounds.maxY - 18

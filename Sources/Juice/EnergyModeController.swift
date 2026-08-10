@@ -45,23 +45,34 @@ final class EnergyModeController: ObservableObject {
     static let highPowerUnsupportedKey = "energyMode.highPowerUnsupported.v1"
     /// Read by the detached reader, so it cannot be actor-isolated.
     nonisolated static let pmsetPath = "/usr/bin/pmset"
+    /// `pmset -g custom` answers in milliseconds; a read that outlives this is
+    /// wedged and the popover is better off with no Energy Mode UI than a hang.
+    nonisolated static let readDeadline: TimeInterval = 5
 
     private let readState: @Sendable () async -> PowerModeState?
     private let writeState: @Sendable (PowerMode, PowerModeScope) async throws -> PowerModeState
+    private let currentOnAC: @Sendable () -> Bool?
     private let defaults: UserDefaults
     private var highPowerUnsupported: Bool
+    /// Bumped by every write that publishes state, so a refresh that started
+    /// earlier can tell its answer is now stale and drop it.
+    private var stateGeneration = 0
 
     /// The readers and writers are injectable seams: the state machine is
     /// covered by tests without root, a real helper, or a real `pmset`.
     init(
         defaults: UserDefaults? = nil,
         readState: (@Sendable () async -> PowerModeState?)? = nil,
-        writeState: (@Sendable (PowerMode, PowerModeScope) async throws -> PowerModeState)? = nil
+        writeState: (@Sendable (PowerMode, PowerModeScope) async throws -> PowerModeState)? = nil,
+        currentOnAC: (@Sendable () -> Bool?)? = nil
     ) {
         self.defaults = defaults
             ?? UserDefaults(suiteName: JuiceXPC.defaultsSuiteName)
             ?? .standard
         self.readState = readState ?? { await Self.readSystemState() }
+        // IOKit, not the battery view model's ~60 s timer: the source in use at
+        // the moment of the write is the only one worth writing.
+        self.currentOnAC = currentOnAC ?? { (try? BatteryMonitor.read())?.onAC }
         if let writeState {
             self.writeState = writeState
         } else {
@@ -76,16 +87,31 @@ final class EnergyModeController: ObservableObject {
     /// Re-reads the machine's Energy Mode. Quiet on failure: an unreadable or
     /// battery-less machine simply has no Energy Mode UI.
     func refresh() async {
+        let generation = stateGeneration
         let fresh = await readState()
+        // A write that landed while this read was in flight is newer than the
+        // answer being held, and must not be rolled back by it.
+        guard generation == stateGeneration else { return }
         state = fresh
         if fresh != nil {
             lastErrorMessage = nil
         }
     }
 
+    /// Forgets a previously detected outdated helper, so the notice does not
+    /// outlive an upgrade that happened while the app ran. The next write
+    /// re-detects it if the installed helper is still too old.
+    func helperMayHaveUpdated() {
+        needsHelperUpdate = false
+    }
+
     /// Writes `mode` for the power source currently in use. Writing only the
     /// active source mirrors System Settings, which keeps the two sources'
     /// modes independent.
+    ///
+    /// `onAC` is the caller's view of the power source; a fresher live reading
+    /// wins when one is available, because plugging in moments before a tap must
+    /// not send the write to the source that is no longer in use.
     func set(_ mode: PowerMode, onAC: Bool) async {
         guard !isWriting else { return }
         isWriting = true
@@ -95,8 +121,10 @@ final class EnergyModeController: ObservableObject {
             pendingMode = nil
         }
 
+        let scope: PowerModeScope = (currentOnAC() ?? onAC) ? .ac : .battery
         do {
-            let applied = try await writeState(mode, onAC ? .ac : .battery)
+            let applied = try await writeState(mode, scope)
+            stateGeneration += 1
             state = applied
             lastErrorMessage = nil
             needsHelperUpdate = false
@@ -105,9 +133,11 @@ final class EnergyModeController: ObservableObject {
         } catch is CancellationError {
             return
         } catch {
-            let code = HelperError.code(of: error)
+            // Only an accepted-then-dropped High Power write proves the hardware
+            // has no High Power. A transient failure must never hide the option
+            // for good, so it is reported and left retryable.
             let refusedHighPower = mode == .highPower
-                && (code == .unsupportedPowerMode || code == .powerSettingFailed)
+                && HelperError.code(of: error) == .unsupportedPowerMode
             // Re-read either way: a failed write may still have moved the
             // machine, and the UI must never show a mode that is not set.
             await refresh()
@@ -145,33 +175,16 @@ final class EnergyModeController: ObservableObject {
     /// its run loop on a process, however brief.
     private nonisolated static func readSystemState() async -> PowerModeState? {
         await Task.detached(priority: .userInitiated) {
-            guard let output = runPMSetCustom() else { return nil }
-            return try? PowerModeParser.parse(pmsetCustomOutput: output)
+            // Absolute path and an argv array, never a shell string; both pipes
+            // drained concurrently, and the whole read on a deadline.
+            guard
+                let result = try? BoundedProcess.run(
+                    pmsetPath, ["-g", "custom"], deadline: readDeadline),
+                result.status == 0
+            else {
+                return nil
+            }
+            return try? PowerModeParser.parse(pmsetCustomOutput: result.stdout)
         }.value
-    }
-
-    /// Absolute path and an argv array, never a shell string.
-    private nonisolated static func runPMSetCustom() -> String? {
-        let process = Process()
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.executableURL = URL(fileURLWithPath: pmsetPath)
-        process.arguments = ["-g", "custom"]
-        process.standardOutput = stdout
-        process.standardError = stderr
-
-        do {
-            try process.run()
-        } catch {
-            return nil
-        }
-        // Drain both pipes before waiting so verbose output cannot fill a pipe
-        // buffer and deadlock the wait.
-        let outData = stdout.fileHandleForReading.readDataToEndOfFile()
-        _ = stderr.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else { return nil }
-        return String(decoding: outData, as: UTF8.self)
     }
 }

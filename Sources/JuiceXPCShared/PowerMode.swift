@@ -31,11 +31,37 @@ public struct PowerModeState: Codable, Sendable, Equatable {
     /// `powermode`. Those machines only accept 0/1, so High Power is
     /// unreachable and must never be offered.
     public var usesLegacyLowPowerKey: Bool
+    /// True when `pmset -g custom` actually reported a "Battery Power:" section.
+    /// Desktops have only "AC Power:", so their ``battery`` value is the AC
+    /// setting mirrored rather than a second, independently settable source.
+    public var hasBatterySource: Bool
 
-    public init(battery: PowerMode, ac: PowerMode, usesLegacyLowPowerKey: Bool) {
+    public init(
+        battery: PowerMode,
+        ac: PowerMode,
+        usesLegacyLowPowerKey: Bool,
+        hasBatterySource: Bool = true
+    ) {
         self.battery = battery
         self.ac = ac
         self.usesLegacyLowPowerKey = usesLegacyLowPowerKey
+        self.hasBatterySource = hasBatterySource
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case battery, ac, usesLegacyLowPowerKey, hasBatterySource
+    }
+
+    /// ``hasBatterySource`` decodes with a default: the app and helper ship
+    /// together, but the installed helper can lag the app by one launch, and a
+    /// payload without the key must still load rather than fail the write.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        battery = try container.decode(PowerMode.self, forKey: .battery)
+        ac = try container.decode(PowerMode.self, forKey: .ac)
+        usesLegacyLowPowerKey = try container.decode(Bool.self, forKey: .usesLegacyLowPowerKey)
+        hasBatterySource =
+            try container.decodeIfPresent(Bool.self, forKey: .hasBatterySource) ?? true
     }
 
     /// The `pmset` key name to write for this machine.
@@ -59,7 +85,8 @@ public enum PowerModeParser {
     public enum ParseError: LocalizedError, Equatable {
         /// Neither the "Battery Power:" nor the "AC Power:" section was found.
         case missingSections
-        /// A section exists but carries no `powermode`/`lowpowermode` key.
+        /// Sections exist but none carries a `powermode`/`lowpowermode` key.
+        /// Names the first known section that was seen.
         case missingPowerModeKey(section: String)
         /// The key is present but its value is not a mode this build knows.
         case unrecognizedValue(section: String, value: String)
@@ -81,47 +108,81 @@ public enum PowerModeParser {
 
     /// Extracts both sources' Energy Mode from `pmset -g custom` output.
     ///
-    /// Keys are attributed strictly to the section header above them; unknown
-    /// lines and surrounding whitespace are ignored. A machine exposing
-    /// `lowpowermode` in either section is treated as legacy throughout,
-    /// because the key name is a property of the hardware, not the source.
+    /// Keys are attributed strictly to the section header above them; a header
+    /// this build does not know ends attribution rather than leaking its keys
+    /// into the previous source. A machine exposing `lowpowermode` in either
+    /// section is treated as legacy throughout, because the key name is a
+    /// property of the hardware, not the source. Desktops publish only an
+    /// "AC Power:" section, so a lone section is mirrored onto the other source.
     public static func parse(pmsetCustomOutput: String) throws -> PowerModeState {
+        // nil means "no source owns the following keys": either nothing has been
+        // seen yet, or the last header was one this build does not recognise.
         var current: String?
         var values: [String: (mode: PowerMode, legacy: Bool)] = [:]
-        var sawSection = false
+        var knownSections: [String] = []
 
         for rawLine in pmsetCustomOutput.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty { continue }
             if line == batterySectionHeader || line == acSectionHeader {
                 current = line
-                sawSection = true
+                if !knownSections.contains(line) { knownSections.append(line) }
                 continue
             }
-            guard let section = current, values[section] == nil else { continue }
+            if isSectionHeader(rawLine: rawLine, line: line) {
+                current = nil
+                continue
+            }
+            guard let section = current else { continue }
 
             let fields = line.split(separator: " ", omittingEmptySubsequences: true)
             guard fields.count == 2 else { continue }
             let key = String(fields[0])
             guard key == "powermode" || key == "lowpowermode" else { continue }
 
+            // A section can carry both keys. `powermode` is the authoritative
+            // one, so it wins whichever order they appear in.
+            let legacy = key == "lowpowermode"
+            if let existing = values[section], !(existing.legacy && !legacy) { continue }
+
             let value = String(fields[1])
             guard let raw = Int(value), let mode = PowerMode(rawValue: raw) else {
                 throw ParseError.unrecognizedValue(section: section, value: value)
             }
-            values[section] = (mode, key == "lowpowermode")
+            values[section] = (mode, legacy)
         }
 
-        guard sawSection else { throw ParseError.missingSections }
-        guard let battery = values[batterySectionHeader] else {
-            throw ParseError.missingPowerModeKey(section: batterySectionHeader)
+        switch (values[batterySectionHeader], values[acSectionHeader]) {
+        case let (battery?, ac?):
+            return PowerModeState(
+                battery: battery.mode,
+                ac: ac.mode,
+                usesLegacyLowPowerKey: battery.legacy || ac.legacy,
+                hasBatterySource: true)
+        case let (battery?, nil):
+            return PowerModeState(
+                battery: battery.mode,
+                ac: battery.mode,
+                usesLegacyLowPowerKey: battery.legacy,
+                hasBatterySource: true)
+        case let (nil, ac?):
+            return PowerModeState(
+                battery: ac.mode,
+                ac: ac.mode,
+                usesLegacyLowPowerKey: ac.legacy,
+                hasBatterySource: false)
+        case (nil, nil):
+            guard let first = knownSections.first else { throw ParseError.missingSections }
+            throw ParseError.missingPowerModeKey(section: first)
         }
-        guard let ac = values[acSectionHeader] else {
-            throw ParseError.missingPowerModeKey(section: acSectionHeader)
-        }
+    }
 
-        return PowerModeState(
-            battery: battery.mode,
-            ac: ac.mode,
-            usesLegacyLowPowerKey: battery.legacy || ac.legacy)
+    /// Whether a line introduces a section rather than carrying a key. `pmset`
+    /// indents every key under its header, so a flush-left label - or anything
+    /// ending in "Power:" - starts a section, known or not.
+    private static func isSectionHeader(rawLine: Substring, line: String) -> Bool {
+        if line.hasSuffix("Power:") { return true }
+        guard let first = rawLine.first else { return false }
+        return !first.isWhitespace
     }
 }

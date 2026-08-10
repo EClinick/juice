@@ -134,6 +134,7 @@ struct PopoverView: View {
                     } else {
                         loadTask?.cancel()
                         loadTask = Task { await loadEnergy() }
+                        Task { await energyMode.refresh() }
                     }
                 }
                 Button("Stats & Settings…", action: showStatsWindow)
@@ -179,6 +180,10 @@ struct PopoverView: View {
         }
         .onChange(of: model.reading?.onAC) {
             syncDataAttachments()
+            // The two sources carry independent modes, so the displayed one
+            // changes the moment the machine is plugged in or unplugged.
+            guard !model.isMacMini else { return }
+            Task { await energyMode.refresh() }
         }
         // Energy Mode can also change from System Settings or a system prompt.
         // BatteryViewModel already observes the power-state notification, so its
@@ -193,6 +198,9 @@ struct PopoverView: View {
                 from: rangeVisibilityStorage)
         }
         .onChange(of: helper.readyGeneration) {
+            // A newly registered helper may be the build that supports Energy
+            // Mode writes, so the "restart to update" notice must not stick.
+            energyMode.helperMayHaveUpdated()
             if surfaceIsActive && origin == .unavailable {
                 retryTopApps()
             }

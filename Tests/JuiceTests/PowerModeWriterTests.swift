@@ -148,14 +148,30 @@ struct PowerModeWriterTests {
         #expect(nsError.localizedDescription.contains("must be run as root"))
     }
 
-    @Test("Treats a silently ignored write as powerSettingFailed")
-    func detectsReadBackMismatch() throws {
+    @Test("Treats a silently ignored high-power write as hardware refusal")
+    func detectsHighPowerRefusal() throws {
         let pmset = FakePMSet()
         pmset.ignoresWrites = true
         let writer = PowerModeWriter(runCommand: pmset.run)
 
         let error = #expect(throws: NSError.self) {
             try writer.setPowerMode(rawMode: 2, rawScope: "all")
+        }
+
+        // Accepted by pmset and dropped by the machine: the only honest signal
+        // that this Mac has no High Power.
+        let thrown = try #require(error)
+        #expect(HelperError.code(of: thrown) == .unsupportedPowerMode)
+    }
+
+    @Test("Treats a silently ignored write of any other mode as transient")
+    func detectsReadBackMismatch() throws {
+        let pmset = FakePMSet(battery: 2, ac: 2)
+        pmset.ignoresWrites = true
+        let writer = PowerModeWriter(runCommand: pmset.run)
+
+        let error = #expect(throws: NSError.self) {
+            try writer.setPowerMode(rawMode: 1, rawScope: "all")
         }
 
         let thrown = try #require(error)
@@ -212,6 +228,118 @@ struct PowerModeWriterTests {
         // pmset -g custom needs no privilege, so this must work in CI.
         let state = try PowerModeWriter().readState()
         #expect([PowerMode.automatic, .lowPower, .highPower].contains(state.battery))
+    }
+
+    @Test("Concurrent callers never interleave a read/write/read-back transaction")
+    func serializesTransactions() {
+        let probe = TransactionProbe()
+
+        // Separate writers on real threads, as separate XPC connections get:
+        // the guarantee has to hold process-wide, not per instance.
+        DispatchQueue.concurrentPerform(iterations: 4) { tag in
+            let writer = PowerModeWriter(runCommand: probe.run(tag: tag))
+            _ = try? writer.setPowerMode(rawMode: 1, rawScope: "battery")
+        }
+
+        let log = probe.log
+        #expect(log.count == 12)
+        // Each caller's three spawns must appear as one unbroken run.
+        let runs = log.reduce(into: [[TransactionProbe.Entry]]()) { runs, entry in
+            if var last = runs.last, last.first?.tag == entry.tag {
+                last.append(entry)
+                runs[runs.count - 1] = last
+            } else {
+                runs.append([entry])
+            }
+        }
+        #expect(runs.count == 4)
+        for run in runs {
+            #expect(run.map(\.arguments) == [
+                ["-g", "custom"], ["-b", "powermode", "1"], ["-g", "custom"]
+            ])
+        }
+    }
+}
+
+/// Records which caller spawned what, and lingers inside the write so an
+/// unserialized transaction would visibly interleave.
+private final class TransactionProbe: @unchecked Sendable {
+    struct Entry {
+        let tag: Int
+        let arguments: [String]
+    }
+
+    private let lock = NSLock()
+    private var entries: [Entry] = []
+
+    var log: [Entry] {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries
+    }
+
+    func run(tag: Int) -> (String, [String]) throws -> PowerModeWriter.CommandResult {
+        { [self] _, arguments in
+            lock.lock()
+            entries.append(Entry(tag: tag, arguments: arguments))
+            lock.unlock()
+
+            guard arguments == ["-g", "custom"] else {
+                Thread.sleep(forTimeInterval: 0.02)
+                return (0, "", "")
+            }
+            return (0, "Battery Power:\n powermode 1\nAC Power:\n powermode 0\n", "")
+        }
+    }
+}
+
+@Suite("Bounded process")
+struct BoundedProcessTests {
+    @Test("Returns status and output for a command that exits")
+    func capturesOutput() throws {
+        let result = try BoundedProcess.run("/bin/echo", ["hello"], deadline: 5)
+        #expect(result.status == 0)
+        #expect(result.stdout == "hello\n")
+        #expect(result.stderr.isEmpty)
+    }
+
+    @Test("Drains both pipes past a single pipe buffer without deadlocking")
+    func drainsBothPipes() throws {
+        // dd writes 256 KB to stdout and its summary to stderr, so reading
+        // either one to EOF before the other would wedge.
+        let result = try BoundedProcess.run(
+            "/bin/dd", ["if=/dev/zero", "bs=1024", "count=256"], deadline: 20)
+        #expect(result.status == 0)
+        #expect(result.stdout.utf8.count == 256 * 1024)
+        #expect(!result.stderr.isEmpty)
+    }
+
+    @Test("Terminates a command that outstays its deadline")
+    func enforcesDeadline() throws {
+        let started = Date()
+        let failure = #expect(throws: BoundedProcess.Failure.self) {
+            try BoundedProcess.run("/bin/sleep", ["30"], deadline: 0.2)
+        }
+
+        #expect(failure == .timedOut(seconds: 0.2))
+        // The wait is the deadline plus the kill grace, never the sleep.
+        #expect(Date().timeIntervalSince(started) < 5)
+    }
+
+    @Test("A wedged pmset surfaces as a power setting failure mentioning the timeout")
+    func spawnMapsTimeout() throws {
+        let error = #expect(throws: NSError.self) {
+            try PowerModeWriter.spawn("/bin/sleep", ["30"], deadline: 0.2)
+        }
+
+        let thrown = try #require(error)
+        #expect(HelperError.code(of: thrown) == .powerSettingFailed)
+        #expect(thrown.localizedDescription.contains("timed out"))
+    }
+
+    @Test("The production deadline is short enough to keep the helper responsive")
+    func productionDeadline() {
+        #expect(PowerModeWriter.commandDeadline == 10)
     }
 }
 

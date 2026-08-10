@@ -15,6 +15,17 @@ struct PowerModeWriter {
 
     static let pmsetPath = "/usr/bin/pmset"
 
+    /// Longest a `pmset` invocation may run before the helper gives up on it.
+    /// `pmset` returns in milliseconds; anything near this is wedged, and a root
+    /// process must not be parked on it forever.
+    static let commandDeadline: TimeInterval = 10
+
+    /// Process-wide, because every XPC connection gets its own ``HelperService``
+    /// and therefore its own writer: a per-instance lock would still let a
+    /// client that timed out and retried on a fresh connection interleave its
+    /// read/write/read-back transaction with the original one.
+    private static let transactionLock = NSLock()
+
     /// Injectable so tests can cover validation, legacy-key handling, and
     /// read-back verification without root.
     private let runCommand: (String, [String]) throws -> CommandResult
@@ -50,6 +61,15 @@ struct PowerModeWriter {
                 .unsupportedPowerMode, message: "unknown power mode scope '\(rawScope)'")
         }
 
+        // Read, write, and read-back are one transaction: two overlapping calls
+        // would otherwise verify each other's writes and report nonsense. The
+        // spawns are deadline-bounded, so the wait here is bounded too.
+        Self.transactionLock.lock()
+        defer { Self.transactionLock.unlock() }
+        return try apply(mode: mode, scope: scope)
+    }
+
+    private func apply(mode: PowerMode, scope: PowerModeScope) throws -> PowerModeState {
         // Which key exists is a hardware property, so it must be discovered
         // before writing rather than assumed.
         let before = try readState()
@@ -71,8 +91,12 @@ struct PowerModeWriter {
         // read-back is the only honest confirmation.
         let after = try readState()
         for applied in Self.affectedScopes(scope) where after.mode(for: applied) != mode {
+            // A High Power write that pmset accepted and the machine dropped is
+            // hardware refusal, not a transient failure: it is the only signal
+            // the app has that this Mac has no High Power at all. Every other
+            // mismatch stays transient so a one-off failure is retryable.
             throw HelperError.error(
-                .powerSettingFailed,
+                mode == .highPower ? .unsupportedPowerMode : .powerSettingFailed,
                 message: "pmset accepted the change but \(applied.rawValue) still reports "
                     + "mode \(after.mode(for: applied)?.rawValue ?? -1)")
         }
@@ -97,24 +121,24 @@ struct PowerModeWriter {
     /// Runs `executable` with an argv array and waits for it. Absolute path and
     /// array arguments only: no shell is involved at any point.
     static func spawn(_ executable: String, _ arguments: [String]) throws -> CommandResult {
-        let process = Process()
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        process.standardOutput = stdout
-        process.standardError = stderr
+        try spawn(executable, arguments, deadline: commandDeadline)
+    }
 
-        try process.run()
-        // pmset returns promptly; read both pipes before waiting so a verbose
-        // failure cannot fill a pipe buffer and deadlock the helper.
-        let outData = stdout.fileHandleForReading.readDataToEndOfFile()
-        let errData = stderr.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        return (
-            status: process.terminationStatus,
-            stdout: String(decoding: outData, as: UTF8.self),
-            stderr: String(decoding: errData, as: UTF8.self))
+    /// The deadline is a parameter so tests can prove the timeout path without
+    /// waiting out the production deadline.
+    static func spawn(
+        _ executable: String,
+        _ arguments: [String],
+        deadline: TimeInterval
+    ) throws -> CommandResult {
+        do {
+            let result = try BoundedProcess.run(executable, arguments, deadline: deadline)
+            return (status: result.status, stdout: result.stdout, stderr: result.stderr)
+        } catch let failure as BoundedProcess.Failure {
+            throw HelperError.error(
+                .powerSettingFailed,
+                message: "\(([executable] + arguments).joined(separator: " ")): "
+                    + failure.localizedDescription)
+        }
     }
 }

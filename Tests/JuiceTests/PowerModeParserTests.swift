@@ -95,17 +95,93 @@ struct PowerModeParserTests {
         }
     }
 
-    @Test("Throws when a section carries no power mode key")
-    func throwsWithoutKey() {
+    /// Verbatim shape of `pmset -g custom` on a desktop: no battery, so no
+    /// "Battery Power:" section at all.
+    static let acOnlyOutput = """
+    AC Power:
+     Sleep On Power Button 1
+     powermode            2
+     displaysleep         10
+    """
+
+    @Test("Mirrors the only section present on an AC-only Mac")
+    func parsesACOnlyOutput() throws {
+        let state = try PowerModeParser.parse(pmsetCustomOutput: Self.acOnlyOutput)
+        #expect(state.ac == .highPower)
+        #expect(state.battery == .highPower)
+        #expect(!state.hasBatterySource)
+        #expect(state.mode(for: .all) == .highPower)
+    }
+
+    @Test("Mirrors a lone Battery Power section too")
+    func parsesBatteryOnlyOutput() throws {
         let output = """
         Battery Power:
          powermode            1
+         displaysleep         2
+        """
+        let state = try PowerModeParser.parse(pmsetCustomOutput: output)
+        #expect(state == PowerModeState(
+            battery: .lowPower, ac: .lowPower, usesLegacyLowPowerKey: false))
+        #expect(state.hasBatterySource)
+    }
+
+    @Test("Full output records that a battery source exists")
+    func recordsBatterySource() throws {
+        #expect(try PowerModeParser.parse(pmsetCustomOutput: Self.modernOutput).hasBatterySource)
+    }
+
+    @Test("Throws when neither section carries a power mode key")
+    func throwsWithoutKey() {
+        let output = """
+        Battery Power:
+         displaysleep         2
         AC Power:
          displaysleep         10
         """
-        #expect(throws: PowerModeParser.ParseError.missingPowerModeKey(section: "AC Power:")) {
+        #expect(throws: PowerModeParser.ParseError.missingPowerModeKey(section: "Battery Power:")) {
             try PowerModeParser.parse(pmsetCustomOutput: output)
         }
+    }
+
+    @Test("Ignores keys under a section header this build does not know")
+    func ignoresUnknownSections() throws {
+        let output = """
+        Battery Power:
+         powermode            1
+        UPS Power:
+         powermode            2
+        AC Power:
+         powermode            0
+        """
+        let state = try PowerModeParser.parse(pmsetCustomOutput: output)
+        // The UPS mode must not be attributed to the battery above it.
+        #expect(state == PowerModeState(
+            battery: .lowPower, ac: .automatic, usesLegacyLowPowerKey: false))
+    }
+
+    @Test("An unknown trailing section cannot supply a missing source")
+    func unknownSectionCannotStandInForBattery() {
+        let output = """
+        UPS Power:
+         powermode            2
+        """
+        #expect(throws: PowerModeParser.ParseError.missingSections) {
+            try PowerModeParser.parse(pmsetCustomOutput: output)
+        }
+    }
+
+    @Test("Prefers powermode over lowpowermode whichever comes first", arguments: [true, false])
+    func prefersModernKey(legacyFirst: Bool) throws {
+        let modern = " powermode            2"
+        let legacy = " lowpowermode         1"
+        let keys = legacyFirst ? [legacy, modern] : [modern, legacy]
+        let output = (["Battery Power:"] + keys + ["AC Power:"] + keys).joined(separator: "\n")
+
+        let state = try PowerModeParser.parse(pmsetCustomOutput: output)
+        #expect(state == PowerModeState(
+            battery: .highPower, ac: .highPower, usesLegacyLowPowerKey: false))
+        #expect(state.pmsetKey == "powermode")
     }
 
     @Test("Throws rather than guessing at an unknown mode value")
@@ -142,8 +218,19 @@ struct PowerModeParserTests {
 
     @Test("Round-trips through JSON, the XPC payload encoding")
     func roundTripsJSON() throws {
-        let state = PowerModeState(battery: .highPower, ac: .automatic, usesLegacyLowPowerKey: false)
+        let state = PowerModeState(
+            battery: .highPower, ac: .automatic, usesLegacyLowPowerKey: false,
+            hasBatterySource: false)
         let data = try JSONEncoder().encode(state)
         #expect(try JSONDecoder().decode(PowerModeState.self, from: data) == state)
+    }
+
+    @Test("Decodes a payload from a helper that predates hasBatterySource")
+    func decodesLegacyPayload() throws {
+        let json = Data(#"{"battery":1,"ac":0,"usesLegacyLowPowerKey":false}"#.utf8)
+        let state = try JSONDecoder().decode(PowerModeState.self, from: json)
+        #expect(state == PowerModeState(
+            battery: .lowPower, ac: .automatic, usesLegacyLowPowerKey: false))
+        #expect(state.hasBatterySource)
     }
 }
