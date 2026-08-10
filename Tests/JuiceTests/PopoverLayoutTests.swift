@@ -264,25 +264,25 @@ struct PopoverLayoutTests {
         #expect(abs(hypot(badge.x, badge.y) - gauge / 2) < 0.01)
         #expect(badge.x > 0 && badge.y > 0)
 
-        for count in [1, 2] {
+        for count in [1, 2, 3] {
             let offsets = EnergyModeOrbitGeometry.fanOffsets(count: count)
             #expect(offsets.count == count)
             for offset in offsets {
-                // Outside the ring, on its trailing side.
-                #expect(offset.x > gauge / 2)
-                #expect(
-                    hypot(offset.x - badge.x, offset.y - badge.y)
-                        >= badgeRadius + fanRadius)
-                // Inside the gauge's own vertical band, so the fan never
-                // reaches the caption line under the hero.
-                #expect(abs(offset.y) + fanRadius <= gauge / 2 + 6)
-                // Inside the popover's content width beside the gauge.
+                // In the gauge's lower half, hugging the badge: close enough
+                // to read as fanned from it, far enough not to touch it.
+                #expect(offset.y > 0)
+                let badgeDistance = hypot(offset.x - badge.x, offset.y - badge.y)
+                #expect(badgeDistance >= badgeRadius + fanRadius)
+                #expect(badgeDistance <= 42)
+                // Reaches only as far as the caption line under the hero,
+                // which the open fan may cover transiently.
+                #expect(offset.y + fanRadius <= gauge / 2 + 36)
+                // Inside the popover's content width around the gauge.
+                #expect(offset.x - fanRadius >= -gauge / 2)
                 #expect(offset.x + fanRadius < 120)
             }
-            if count == 2 {
-                let gap = hypot(
-                    offsets[0].x - offsets[1].x,
-                    offsets[0].y - offsets[1].y)
+            for (a, b) in zip(offsets, offsets.dropFirst()) {
+                let gap = hypot(a.x - b.x, a.y - b.y)
                 #expect(gap >= EnergyModeOrbitGeometry.fanDiameter)
             }
         }
@@ -387,7 +387,9 @@ struct PopoverLayoutTests {
                 timeRemainingText: "3h 10m remaining",
                 controller: controller,
                 isLowPowerModeEnabled: true)
-                .frame(width: 292, height: 58)
+                // Tall enough to include the fan slots below the gauge, so
+                // the collapsed-on-first-render check can sample them.
+                .frame(width: 292, height: 96, alignment: .topLeading)
                 .background(Color.white))
         renderer.scale = 1
         return renderer.cgImage.flatMap(RenderedPixels.init)

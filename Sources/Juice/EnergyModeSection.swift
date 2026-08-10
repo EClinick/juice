@@ -222,18 +222,21 @@ enum EnergyModeOrbitGeometry {
         offset(radius: gaugeDiameter / 2, angle: badgeAngle)
     }
 
-    /// A short arc straddling the trailing horizontal. Fanning further down
-    /// would clear the badge less well and reach past the hero into the caption
-    /// line below it, so the arc stays inside the gauge's own vertical band.
-    /// A lone button takes the middle of that arc, so it never reads as the
-    /// first of a missing pair.
+    /// A short arc below the ring: the open pair hangs off the badge like a
+    /// triangle, covering the caption line transiently instead of floating
+    /// over the headline text beside the gauge. A lone button takes the
+    /// middle of that arc, so it never reads as the first of a missing pair.
     static func fanAngles(count: Int) -> [Angle] {
         switch count {
         case ..<1: return []
-        case 1: return [.zero]
+        case 1: return [.degrees(80)]
+        case 2:
+            return [.degrees(40), .degrees(95)]
         default:
-            let first = -20.0
-            let last = 24.0
+            // From the badge's trailing side down to just past vertical, so
+            // the open fan hugs the badge: right, below-right, below.
+            let first = 25.0
+            let last = 95.0
             let step = (last - first) / Double(count - 1)
             return (0..<count).map { .degrees(first + step * Double($0)) }
         }
@@ -265,9 +268,11 @@ struct EnergyModeOrbit: View {
         EnergyModePresentation.currentMode(controller.state, onAC: onAC)
     }
 
-    private var otherModes: [PowerMode] {
+    /// The full mode set: the fan always shows every available mode with the
+    /// active one marked selected, so the open state reads as a complete
+    /// picker rather than a pair of unexplained alternatives.
+    private var fanModes: [PowerMode] {
         EnergyModePresentation.modes(showsHighPower: controller.showsHighPower)
-            .filter { $0 != selection }
     }
 
     var body: some View {
@@ -277,9 +282,12 @@ struct EnergyModeOrbit: View {
             if let selection {
                 if isExpanded {
                     let offsets = EnergyModeOrbitGeometry.fanOffsets(
-                        count: otherModes.count)
-                    ForEach(Array(otherModes.enumerated()), id: \.element.rawValue) { index, mode in
-                        EnergyModeFanButton(mode: mode) { select(mode) }
+                        count: fanModes.count)
+                    ForEach(Array(fanModes.enumerated()), id: \.element.rawValue) { index, mode in
+                        EnergyModeFanButton(
+                            mode: mode,
+                            isSelected: mode == selection
+                        ) { select(mode) }
                             .transition(fanTransition(index: index))
                             .offset(x: offsets[index].x, y: offsets[index].y)
                     }
@@ -318,6 +326,8 @@ struct EnergyModeOrbit: View {
         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
             isExpanded = false
         }
+        // Re-picking the active mode is a dismissal, not a write.
+        guard mode != selection else { return }
         Task { await controller.set(mode, onAC: onAC) }
     }
 
@@ -391,9 +401,11 @@ private struct EnergyModeBadge: View {
     }
 }
 
-/// One fanned-out alternative mode, floating just outside the ring.
+/// One fanned-out mode, floating just outside the ring. The active mode is
+/// filled with the accent so the open fan reads as a complete picker.
 private struct EnergyModeFanButton: View {
     let mode: PowerMode
+    let isSelected: Bool
     let action: () -> Void
 
     @State private var isHovered = false
@@ -401,11 +413,15 @@ private struct EnergyModeFanButton: View {
     var body: some View {
         Button(action: action) {
             ZStack {
-                Circle().fill(.regularMaterial)
-                Circle().fill(.primary.opacity(isHovered ? 0.09 : 0))
+                if isSelected {
+                    Circle().fill(Color.accentColor)
+                } else {
+                    Circle().fill(.regularMaterial)
+                    Circle().fill(.primary.opacity(isHovered ? 0.09 : 0))
+                }
                 Image(systemName: EnergyModePresentation.symbol(for: mode))
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(isSelected ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
             }
             .frame(
                 width: EnergyModeOrbitGeometry.fanDiameter,
@@ -420,6 +436,7 @@ private struct EnergyModeFanButton: View {
         .onHover { isHovered = $0 }
         .help("\(mode.displayName) Energy Mode")
         .accessibilityLabel("\(mode.displayName) Energy Mode")
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 }
 

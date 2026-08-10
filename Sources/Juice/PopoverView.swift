@@ -265,10 +265,14 @@ struct PopoverView: View {
                     timeRemainingText: model.timeRemainingText,
                     controller: energyMode,
                     isLowPowerModeEnabled: model.isLowPowerModeEnabled)
+                    // The open fan hangs below the gauge over the caption
+                    // line, so the hero must paint above its later siblings.
+                    .zIndex(1)
 
                 EnergyModeCaptions(controller: energyMode, onAC: reading.onAC)
             }
             .padding(.bottom, 2)
+            .zIndex(1)
 
             // The hybrid's own section captions replace this header line;
             // rendering both would waste a row of the popover's height.
