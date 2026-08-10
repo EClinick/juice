@@ -396,6 +396,14 @@ private struct BatteryStatsDashboard: View {
                 }
             },
             summary: { EmptyView() })
+            // A LIVE W sort must not outlive its column: when live power goes
+            // away (range switch, power source change) the header disappears,
+            // leaving an invisible, uncancelable sort. Reset to natural order.
+            .onChange(of: showsLivePower) { _, showsLive in
+                if !showsLive, appTableSort?.column == .liveWatts {
+                    appTableSort = nil
+                }
+            }
     }
 
     @ViewBuilder

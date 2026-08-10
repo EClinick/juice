@@ -302,7 +302,9 @@ struct MacMiniStatsDashboard: View {
                 displayName: app.displayName,
                 liveWatts: app.liveWatts,
                 energyWh: app.energyWh,
-                detail: app.peakWatts)
+                // PEAK W renders through liveWattsText, so it sorts at the same
+                // displayed precision as LIVE W to avoid same-value row swaps.
+                detail: app.peakWatts.map(displayedLiveWatts))
         }
     }
 
