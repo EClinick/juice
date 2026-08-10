@@ -213,8 +213,9 @@ enum EnergyModeOrbitGeometry {
     static let fanDiameter: CGFloat = 24
     /// Bottom-trailing, so the badge sits on the ring rather than beside it.
     static let badgeAngle = Angle.degrees(45)
-    /// Far enough out that a fan button never touches the badge it fanned from.
-    static let fanRadius: CGFloat = 52
+    /// Distance of every fan button's centre from the badge's centre. The fan
+    /// orbits the badge, not the gauge, so its padding reads uniform.
+    static let fanOrbitRadius: CGFloat = 30
 
     /// Offset of the badge's centre from the gauge's centre, in view
     /// coordinates (positive y is down).
@@ -222,28 +223,30 @@ enum EnergyModeOrbitGeometry {
         offset(radius: gaugeDiameter / 2, angle: badgeAngle)
     }
 
-    /// A short arc below the ring: the open pair hangs off the badge like a
-    /// triangle, covering the caption line transiently instead of floating
-    /// over the headline text beside the gauge. A lone button takes the
-    /// middle of that arc, so it never reads as the first of a missing pair.
+    /// Angles around the BADGE (not the gauge): an arc from its trailing side
+    /// down to just past vertical, so the open fan hugs the badge - right,
+    /// below-right, below - without floating over the headline text. A lone
+    /// button takes the middle of that arc, so it never reads as the first
+    /// of a missing pair.
     static func fanAngles(count: Int) -> [Angle] {
         switch count {
         case ..<1: return []
-        case 1: return [.degrees(80)]
-        case 2:
-            return [.degrees(40), .degrees(95)]
+        case 1: return [.degrees(50)]
+        case 2: return [.degrees(0), .degrees(90)]
         default:
-            // From the badge's trailing side down to just past vertical, so
-            // the open fan hugs the badge: right, below-right, below.
-            let first = 25.0
-            let last = 95.0
+            let first = -5.0
+            let last = 105.0
             let step = (last - first) / Double(count - 1)
             return (0..<count).map { .degrees(first + step * Double($0)) }
         }
     }
 
-    static func fanOffsets(count: Int) -> [CGPoint] {
-        fanAngles(count: count).map { offset(radius: fanRadius, angle: $0) }
+    static func fanOffsets(count: Int, gaugeDiameter: CGFloat) -> [CGPoint] {
+        let badge = badgeOffset(gaugeDiameter: gaugeDiameter)
+        return fanAngles(count: count).map {
+            let orbit = offset(radius: fanOrbitRadius, angle: $0)
+            return CGPoint(x: badge.x + orbit.x, y: badge.y + orbit.y)
+        }
     }
 
     private static func offset(radius: CGFloat, angle: Angle) -> CGPoint {
@@ -282,7 +285,8 @@ struct EnergyModeOrbit: View {
             if let selection {
                 if isExpanded {
                     let offsets = EnergyModeOrbitGeometry.fanOffsets(
-                        count: fanModes.count)
+                        count: fanModes.count,
+                        gaugeDiameter: BatteryChargeGauge.defaultDiameter)
                     ForEach(Array(fanModes.enumerated()), id: \.element.rawValue) { index, mode in
                         EnergyModeFanButton(
                             mode: mode,

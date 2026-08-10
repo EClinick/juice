@@ -265,7 +265,7 @@ struct PopoverLayoutTests {
         #expect(badge.x > 0 && badge.y > 0)
 
         for count in [1, 2, 3] {
-            let offsets = EnergyModeOrbitGeometry.fanOffsets(count: count)
+            let offsets = EnergyModeOrbitGeometry.fanOffsets(count: count, gaugeDiameter: gauge)
             #expect(offsets.count == count)
             for offset in offsets {
                 // In the gauge's lower half, hugging the badge: close enough
@@ -287,7 +287,7 @@ struct PopoverLayoutTests {
             }
         }
 
-        #expect(EnergyModeOrbitGeometry.fanOffsets(count: 0).isEmpty)
+        #expect(EnergyModeOrbitGeometry.fanOffsets(count: 0, gaugeDiameter: gauge).isEmpty)
     }
 
     @Test("the picker drops High Power when it is unsupported")
@@ -371,7 +371,9 @@ struct PopoverLayoutTests {
             withoutBadge.color(atX: center.x + badge.x, y: center.y + badge.y)
                 != withBadge.color(atX: center.x + badge.x, y: center.y + badge.y))
 
-        for offset in EnergyModeOrbitGeometry.fanOffsets(count: 2) {
+        for offset in EnergyModeOrbitGeometry.fanOffsets(
+            count: 2,
+            gaugeDiameter: BatteryChargeGauge.defaultDiameter) {
             #expect(
                 withoutBadge.color(atX: center.x + offset.x, y: center.y + offset.y)
                     == withBadge.color(atX: center.x + offset.x, y: center.y + offset.y))
