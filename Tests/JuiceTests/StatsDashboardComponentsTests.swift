@@ -124,6 +124,9 @@ struct StatsDashboardComponentsTests {
         #expect(displayedLiveWatts(0.26) == 0.3)
         #expect(displayedLiveWatts(0.094) == 0.09)
         #expect(displayedLiveWatts(0.096) == 0.1)
+        // Exact midpoints round to even, matching %.1f's displayed value.
+        #expect(displayedLiveWatts(0.25) == 0.2)
+        #expect(displayedLiveWatts(0.35) == 0.3)
     }
 
     @Test("Live watts are compared at one decimal above the display threshold")

@@ -108,9 +108,11 @@ struct AppTableSortValues {
 /// Live watts are compared at the precision the row actually displays, so two
 /// rows showing the same number never trade places between samples.
 func displayedLiveWatts(_ watts: Double) -> Double {
+    // Ties round to even to match String(format:)'s IEEE behavior, so an
+    // exact midpoint like 0.25 W keys as the 0.2 it displays, never 0.3.
     watts >= 0.1
-        ? (watts * 10).rounded() / 10
-        : (watts * 100).rounded() / 100
+        ? (watts * 10).rounded(.toNearestOrEven) / 10
+        : (watts * 100).rounded(.toNearestOrEven) / 100
 }
 
 /// A user-chosen column sort for a Stats app table. A `nil` sort means no
