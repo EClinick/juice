@@ -124,9 +124,12 @@ struct StatsDashboardComponentsTests {
         #expect(displayedLiveWatts(0.26) == 0.3)
         #expect(displayedLiveWatts(0.094) == 0.09)
         #expect(displayedLiveWatts(0.096) == 0.1)
-        // Exact midpoints round to even, matching %.1f's displayed value.
+        // Exact binary midpoints round to even, matching %.1f's display.
         #expect(displayedLiveWatts(0.25) == 0.2)
-        #expect(displayedLiveWatts(0.35) == 0.3)
+        #expect(displayedLiveWatts(1.25) == 1.2)
+        // 0.35 is 0.35000000000000003 in binary - above the midpoint, so
+        // both the display and the sort key round up.
+        #expect(displayedLiveWatts(0.35) == 0.4)
     }
 
     @Test("Live watts are compared at one decimal above the display threshold")
