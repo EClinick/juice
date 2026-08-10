@@ -7,14 +7,26 @@ import JuiceXPCShared
 // With `--app <key>` it instead prints the per-app energy breakdown for that
 // key (bundle id, or launchd name for empty-bundle-id coalitions) - exactly
 // what the in-app detail window computes and displays.
+// With `set-powermode <0|1|2> [battery|ac|all]` it exercises the helper's
+// mutating Energy Mode operation and prints the state read back after the write.
 // The binary must be signed with the app's identifier for the helper's
 // client check to accept it (see `make dev-probe`).
 
+let usage = "usage: JuiceXPCProbe [--app <key>] | set-powermode <0|1|2> [battery|ac|all]\n"
 let arguments = CommandLine.arguments
 var appKey: String?
-if let flagIndex = arguments.firstIndex(of: "--app") {
+/// Set when invoked in `set-powermode` mode; the probe then skips the fetch.
+var powerModeRequest: (mode: Int, scope: String)?
+
+if arguments.count >= 2, arguments[1] == "set-powermode" {
+    guard arguments.count >= 3, let mode = Int(arguments[2]) else {
+        FileHandle.standardError.write(Data(usage.utf8))
+        exit(2)
+    }
+    powerModeRequest = (mode, arguments.count >= 4 ? arguments[3] : "all")
+} else if let flagIndex = arguments.firstIndex(of: "--app") {
     guard flagIndex + 1 < arguments.count else {
-        FileHandle.standardError.write(Data("usage: JuiceXPCProbe [--app <key>]\n".utf8))
+        FileHandle.standardError.write(Data(usage.utf8))
         exit(2)
     }
     appKey = arguments[flagIndex + 1]
@@ -68,8 +80,57 @@ func printBreakdown(_ intervals: [EnergyInterval], appKey: String) {
     }
 }
 
+/// Prints an Energy Mode state, tagging machines limited to Automatic/Low Power.
+func printPowerModeState(_ label: String, _ state: PowerModeState) {
+    print("\(label): battery=\(state.battery) ac=\(state.ac) key=\(state.pmsetKey)")
+}
+
+/// Reads and parses `pmset -g custom` locally; needs no privilege, so it works
+/// as a baseline even when the helper is missing.
+func localPowerModeState() -> PowerModeState? {
+    let process = Process()
+    let output = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+    process.arguments = ["-g", "custom"]
+    process.standardOutput = output
+    process.standardError = FileHandle.nullDevice
+    guard (try? process.run()) != nil else { return nil }
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    return try? PowerModeParser.parse(pmsetCustomOutput: String(decoding: data, as: UTF8.self))
+}
+
 proxy.handshake { version, helperVersion in
     print("handshake ok: protocol v\(version), helper \(helperVersion)")
+
+    if let request = powerModeRequest {
+        if let current = localPowerModeState() {
+            printPowerModeState("current", current)
+        }
+        guard version >= 4 else {
+            FileHandle.standardError.write(
+                Data("installed helper is protocol v\(version); set-powermode needs v4\n".utf8))
+            done.signal()
+            return
+        }
+        proxy.setPowerMode(request.mode, scope: request.scope) { data, error in
+            defer { done.signal() }
+            if let error {
+                FileHandle.standardError.write(
+                    Data("set-powermode error: \(error.localizedDescription)\n".utf8))
+                return
+            }
+            guard let data,
+                  let state = try? JSONDecoder().decode(PowerModeState.self, from: data) else {
+                FileHandle.standardError.write(Data("set-powermode returned undecodable payload\n".utf8))
+                return
+            }
+            printPowerModeState("after write", state)
+            exitCode = 0
+        }
+        return
+    }
+
     let since = Date().addingTimeInterval(-24 * 3600).timeIntervalSince1970
     proxy.fetchEnergyIntervals(sinceEpoch: since) { data, error in
         defer { done.signal() }

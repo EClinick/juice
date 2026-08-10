@@ -475,6 +475,25 @@ final class HelperClient: @unchecked Sendable {
         return try JSONDecoder().decode(LiveEnergySnapshot.self, from: data)
     }
 
+    /// Switches macOS Energy Mode for one power source and returns the state the
+    /// helper read back after the write, which is the only honest confirmation
+    /// that the hardware accepted it.
+    ///
+    /// Added in protocol version 4. Against an older installed helper this
+    /// throws ``HelperClientError/helperOutdated`` without ever invoking the
+    /// unknown method, exactly like ``fetchLiveEnergySample()``.
+    func setPowerMode(
+        _ mode: PowerMode,
+        scope: PowerModeScope
+    ) async throws -> PowerModeState {
+        try Task.checkCancellation()
+        let data = try await fetchData(requiringProtocolVersion: 4) { proxy, reply in
+            proxy.setPowerMode(mode.rawValue, scope: scope.rawValue, reply: reply)
+        }
+        try Task.checkCancellation()
+        return try JSONDecoder().decode(PowerModeState.self, from: data)
+    }
+
     /// Gates a versioned method on a handshake cached for the exact connection
     /// that will carry the request. If that connection changes between
     /// validation and dispatch, retry validation once on the replacement.

@@ -13,6 +13,10 @@ struct PopoverView: View {
     @ObservedObject private var live = LivePowerCoordinator.shared
     @ObservedObject private var batterySession = BatterySessionCoordinator.shared
 
+    /// Energy Mode reads cheaply from `pmset`, so a per-view controller is fine;
+    /// it re-reads whenever the popover becomes active.
+    @StateObject private var energyMode = EnergyModeController()
+
     private let selector = EnergySourceSelector()
 
     /// A per-instance live-loop identity. If SwiftUI spins up a second
@@ -149,6 +153,9 @@ struct PopoverView: View {
                     model.refresh()
                     helper.refresh()
                     applyInitialRange()
+                    if !model.isMacMini {
+                        Task { await energyMode.refresh() }
+                    }
                 } else {
                     loadTask?.cancel()
                 }
@@ -172,6 +179,13 @@ struct PopoverView: View {
         }
         .onChange(of: model.reading?.onAC) {
             syncDataAttachments()
+        }
+        // Energy Mode can also change from System Settings or a system prompt.
+        // BatteryViewModel already observes the power-state notification, so its
+        // published flag is the cheapest signal that a re-read is due.
+        .onChange(of: model.isLowPowerModeEnabled) {
+            guard !model.isMacMini else { return }
+            Task { await energyMode.refresh() }
         }
         .onChange(of: rangeVisibilityStorage) {
             range = StatsRangeVisibility.preferredRange(
@@ -242,44 +256,23 @@ struct PopoverView: View {
 
     private func batteryDashboard(_ reading: BatteryReading) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Battery - \(reading.percent)%")
-                    .font(.headline)
-                Spacer()
-                Text(model.timeRemainingText)
-                    .foregroundStyle(.secondary)
-            }
+            // Gauge and mode picker read as one block, so they stay closer to
+            // each other than to the sections below. No divider: the grouping
+            // is carried by spacing.
+            VStack(alignment: .leading, spacing: 8) {
+                BatteryHeroRow(
+                    reading: reading,
+                    timeRemainingText: model.timeRemainingText,
+                    mode: EnergyModePresentation.currentMode(
+                        energyMode.state,
+                        onAC: reading.onAC),
+                    isLowPowerModeEnabled: model.isLowPowerModeEnabled)
 
-            HStack {
-                if reading.onAC {
-                    Label(
-                        reading.isCharging
-                            ? String(format: "Charging at %.1f W", abs(reading.watts))
-                            : "Plugged in, not charging",
-                        systemImage: "powerplug")
-                } else {
-                    Label(
-                        String(format: "Drawing %.1f W", abs(reading.watts)),
-                        systemImage: "bolt")
+                if energyMode.state != nil {
+                    EnergyModePicker(controller: energyMode, onAC: reading.onAC)
                 }
-                Spacer()
             }
-            .font(.callout)
-
-            Divider()
-
-            HStack {
-                if let health = reading.healthPercent {
-                    Text("Health \(health)%")
-                    Text("·")
-                }
-                Text("\(reading.cycleCount) cycles")
-                Spacer()
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-
-            Divider()
+            .padding(.bottom, 2)
 
             // The hybrid's own section captions replace this header line;
             // rendering both would waste a row of the popover's height.

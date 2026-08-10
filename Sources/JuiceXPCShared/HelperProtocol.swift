@@ -29,4 +29,18 @@ import Foundation
     /// Added in protocol version 3; callers must gate on the handshake's
     /// reported version before invoking this against an installed helper.
     func fetchLiveEnergySample(reply: @escaping (Data?, NSError?) -> Void)
+
+    /// Sets macOS Energy Mode by invoking `pmset <scope> powermode <mode>`,
+    /// which requires root. `mode` is a ``PowerMode`` raw value (0 automatic,
+    /// 1 low power, 2 high power) and `scope` is "battery", "ac", or "all";
+    /// machines exposing only the legacy `lowpowermode` key reject high power.
+    ///
+    /// Replies with a JSON-encoded ``PowerModeState`` read back *after* the
+    /// write, so callers can verify the change actually stuck rather than
+    /// trusting the exit status.
+    ///
+    /// Added in protocol version 4 and the first mutating helper operation;
+    /// callers must gate on the handshake's reported version before invoking
+    /// this against an installed helper.
+    func setPowerMode(_ mode: Int, scope: String, reply: @escaping (Data?, NSError?) -> Void)
 }

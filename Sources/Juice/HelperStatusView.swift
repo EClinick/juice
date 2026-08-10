@@ -38,7 +38,7 @@ struct HelperStatusView: View {
         case .needsApplicationInstall:
             return "Move Juice to Applications and reopen it to enable \(purpose)."
         case .notRegistered:
-            return "Enable Juice's read-only helper to show \(purpose)."
+            return "Enable Juice's system helper to show \(purpose)."
         case .bundleMissing(let detail):
             return "This copy of Juice is missing its \(purpose) helper: \(detail)"
         case .failed(let detail):

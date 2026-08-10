@@ -4,7 +4,7 @@ import JuiceXPCShared
 /// The exported XPC object implementing ``HelperProtocol``.
 final class HelperService: NSObject, HelperProtocol {
     /// Human-readable helper build version, reported via handshake.
-    static let helperVersion = "1.2.0"
+    static let helperVersion = "1.3.0"
     /// Captured before the XPC listener starts. An old process therefore keeps
     /// reporting the bytes it actually launched from even if Sparkle replaces
     /// the app bundle at the same filesystem path later.
@@ -17,10 +17,16 @@ final class HelperService: NSObject, HelperProtocol {
 
     private let reader: PowerlogReader
     private let liveReader: LiveEnergyReader
+    private let powerModeWriter: PowerModeWriter
 
-    init(reader: PowerlogReader = PowerlogReader(), liveReader: LiveEnergyReader = LiveEnergyReader()) {
+    init(
+        reader: PowerlogReader = PowerlogReader(),
+        liveReader: LiveEnergyReader = LiveEnergyReader(),
+        powerModeWriter: PowerModeWriter = PowerModeWriter()
+    ) {
         self.reader = reader
         self.liveReader = liveReader
+        self.powerModeWriter = powerModeWriter
     }
 
     func handshake(reply: @escaping (Int, String) -> Void) {
@@ -46,6 +52,19 @@ final class HelperService: NSObject, HelperProtocol {
         do {
             let snapshot = liveReader.snapshot()
             let data = try JSONEncoder().encode(snapshot)
+            reply(data, nil)
+        } catch let error as NSError where error.domain == HelperError.domain {
+            reply(nil, error)
+        } catch {
+            reply(nil, HelperError.error(.internalError, message: error.localizedDescription))
+        }
+    }
+
+    func setPowerMode(_ mode: Int, scope: String, reply: @escaping (Data?, NSError?) -> Void) {
+        // The writer validates mode and scope; nothing here trusts the caller.
+        do {
+            let state = try powerModeWriter.setPowerMode(rawMode: mode, rawScope: scope)
+            let data = try JSONEncoder().encode(state)
             reply(data, nil)
         } catch let error as NSError where error.domain == HelperError.domain {
             reply(nil, error)
