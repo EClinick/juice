@@ -285,7 +285,7 @@ struct HelperRegistrationControllerTests {
     func lateUnregisterCallbackRecoversWithoutOverlap() async {
         let service = FakeHelperService(
             statuses: [.enabled],
-            asyncUnregisterBehaviors: [.delayedSuccess(0.05)])
+            asyncUnregisterBehaviors: [.manual])
         let controller = makeController(
             service: service,
             helperMatches: false,
@@ -303,7 +303,14 @@ struct HelperRegistrationControllerTests {
         #expect(service.registerCallCount == 0)
 
         service.setStatuses([.notFound, .requiresApproval])
-        try? await Task.sleep(for: .milliseconds(100))
+        service.completePendingUnregisters()
+        // Recovery hops through MainActor tasks; yield until it settles
+        // instead of racing a wall-clock sleep against scheduler load.
+        var attempts = 0
+        while controller.state != .requiresApproval, attempts < 10_000 {
+            attempts += 1
+            await Task.yield()
+        }
 
         #expect(service.asynchronousUnregisterCallCount == 1)
         #expect(service.registerCallCount == 1)
@@ -490,6 +497,7 @@ private final class FakeHelperService: HelperServiceManaging {
     private(set) var registerCallCount = 0
     private(set) var asynchronousUnregisterCallCount = 0
     private(set) var statusReadCount = 0
+    private var pendingUnregisterCompletions: [@Sendable (Error?) -> Void] = []
 
     init(
         statuses: [SMAppService.Status],
@@ -522,22 +530,28 @@ private final class FakeHelperService: HelperServiceManaging {
             completionHandler(error)
         case .never:
             break
-        case .delayedSuccess(let delay):
-            DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
-                completionHandler(nil)
-            }
+        case .manual:
+            pendingUnregisterCompletions.append(completionHandler)
         }
     }
 
     func setStatuses(_ statuses: [SMAppService.Status]) {
         self.statuses = statuses
     }
+
+    /// Delivers callbacks held by `.manual` unregisters, letting a test place
+    /// the "late" callback at an exact point instead of racing a timer.
+    func completePendingUnregisters(with error: Error? = nil) {
+        let completions = pendingUnregisterCompletions
+        pendingUnregisterCompletions = []
+        for completion in completions { completion(error) }
+    }
 }
 
 private enum AsyncUnregisterBehavior {
     case complete(Error?)
     case never
-    case delayedSuccess(TimeInterval)
+    case manual
 }
 
 private enum TestError: Error {

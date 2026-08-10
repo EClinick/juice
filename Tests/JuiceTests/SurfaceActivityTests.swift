@@ -83,7 +83,11 @@ struct SurfaceActivityTests {
     @Test("Visibility watch closes the MenuBarExtra notification gap")
     func visibilityWatchDeactivatesSurface() async throws {
         var changes: [Bool] = []
-        let observer = WindowActivityObserver { changes.append($0) }
+        // A yielding sleep keeps the watch's poll cadence off the wall clock,
+        // so scheduler load cannot starve its two off-screen checks.
+        let observer = WindowActivityObserver(
+            sleep: { _ in await Task.yield() },
+            onChange: { changes.append($0) })
         let retainedHiddenWindow = NSWindow()
         observer.observe(retainedHiddenWindow)
 
@@ -94,7 +98,11 @@ struct SurfaceActivityTests {
             object: retainedHiddenWindow)
         #expect(observer.isActive)
 
-        try await Task.sleep(for: .milliseconds(350))
+        var attempts = 0
+        while observer.isActive, attempts < 10_000 {
+            attempts += 1
+            await Task.yield()
+        }
 
         #expect(!observer.isActive)
         #expect(changes == [true, false])
