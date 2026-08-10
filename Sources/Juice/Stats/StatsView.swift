@@ -80,6 +80,13 @@ private struct BatteryStatsDashboard: View {
     @State private var consumerID = UUID()
 
     @State private var range: EnergyRange
+    /// `nil` until the user picks a column: each section then keeps the natural
+    /// order its data source provides.
+    @State private var appTableSort: AppTableSort?
+    @State private var appFilterQuery = ""
+    /// Shared by the Today and Session live sections: the disclosure state the
+    /// user picked survives range switches while the window stays open.
+    @State private var isLiveSectionExpanded = true
     @AppStorage(StatsRangeVisibility.storageKey)
     private var rangeVisibilityStorage = StatsRangeVisibility.defaultStorageValue
     @AppStorage(ElectricityCost.pricePerKilowattHourStorageKey)
@@ -99,9 +106,7 @@ private struct BatteryStatsDashboard: View {
     @State private var loadedHistoryRange: EnergyRange?
     @State private var appsRefreshGeneration = 0
 
-    private var replacementAnimation: Animation {
-        .timingCurve(0.23, 1, 0.32, 1, duration: 0.18)
-    }
+    private var replacementAnimation: Animation { juiceStandardEase }
 
     private var visibleRanges: [EnergyRange] {
         StatsRangeVisibility.visibleRanges(from: rangeVisibilityStorage)
@@ -365,6 +370,8 @@ private struct BatteryStatsDashboard: View {
             showsLiveActivity: showsLivePower
                 && (live.status == .sampling || live.status == .warmingUp),
             columns: .battery(showsLiveWatts: showsLivePower),
+            sort: $appTableSort,
+            query: $appFilterQuery,
             content: {
                 if range == .today, let hybrid = live.hybrid, !hybrid.active.isEmpty {
                     hybridAppTable(hybrid)
@@ -389,6 +396,14 @@ private struct BatteryStatsDashboard: View {
                 }
             },
             summary: { EmptyView() })
+            // A LIVE W sort must not outlive its column: when live power goes
+            // away (range switch, power source change) the header disappears,
+            // leaving an invisible, uncancelable sort. Reset to natural order.
+            .onChange(of: showsLivePower) { _, showsLive in
+                if !showsLive, appTableSort?.column == .liveWatts {
+                    appTableSort = nil
+                }
+            }
     }
 
     @ViewBuilder
@@ -452,6 +467,19 @@ private struct BatteryStatsDashboard: View {
 
     @ViewBuilder
     private var historicalAppTable: some View {
+        let visibleApps = AppTableSort.apply(
+            appTableSort,
+            to: apps,
+            query: appFilterQuery
+        ) { app in
+            AppTableSortValues(
+                stableID: app.bundleId,
+                displayName: app.displayName,
+                liveWatts: nil,
+                energyWh: app.energyWh,
+                detail: app.cpuHours)
+        }
+
         if origin == .loading {
             Group {
                 ProgressView()
@@ -467,16 +495,25 @@ private struct BatteryStatsDashboard: View {
                 Spacer()
             }
             .transition(.opacity)
+        } else if !apps.isEmpty, visibleApps.isEmpty {
+            Group {
+                StatsAppTableNoMatches(query: appFilterQuery)
+                Spacer()
+            }
+            .transition(.opacity)
         } else {
             ScrollView {
                 VStack(spacing: 8) {
-                    ForEach(apps) { app in
+                    ForEach(visibleApps) { app in
                         historicalAppRow(
                             app,
                             share: app.energyWh / totalEnergy)
                     }
                 }
                 .padding(.trailing, 4)
+                .animation(
+                    juiceStandardEase,
+                    value: visibleApps.map(\.id))
             }
             .transition(.opacity)
         }
@@ -512,40 +549,78 @@ private struct BatteryStatsDashboard: View {
     private func hybridAppTable(_ hybrid: HybridTodayList) -> some View {
         let maxWatts = max(hybrid.active.map(\.watts).max() ?? 0, 0.001)
         let earlierTotal = max(hybrid.earlier.reduce(0) { $0 + $1.energyWh }, 0.001)
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 4) {
-                        LiveDot()
-                        Text("DRAWING POWER NOW")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(hybrid.active) { app in
-                        activeAppRow(
-                            app,
-                            energyWh: app.todayWh,
-                            cpuHours: app.todayCpuHours,
-                            share: app.watts / maxWatts)
-                    }
-                }
+        let active = AppTableSort.apply(
+            appTableSort,
+            to: hybrid.active,
+            query: appFilterQuery
+        ) { app in
+            AppTableSortValues(
+                stableID: app.appKey,
+                displayName: app.displayName,
+                liveWatts: app.watts,
+                energyWh: app.todayWh,
+                detail: app.todayCpuHours)
+        }
+        let earlier = AppTableSort.apply(
+            appTableSort,
+            to: hybrid.earlier,
+            query: appFilterQuery
+        ) { app in
+            AppTableSortValues(
+                stableID: app.bundleId,
+                displayName: app.displayName,
+                liveWatts: nil,
+                energyWh: app.energyWh,
+                detail: app.cpuHours)
+        }
 
-                if !hybrid.earlier.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("EARLIER TODAY")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        ForEach(hybrid.earlier) { app in
-                            historicalAppRow(
-                                app,
-                                share: app.energyWh / earlierTotal)
+        if active.isEmpty, earlier.isEmpty {
+            Group {
+                StatsAppTableNoMatches(query: appFilterQuery)
+                Spacer()
+            }
+            .transition(.opacity)
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    if !active.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            CollapsibleLiveHeader(
+                                isExpanded: $isLiveSectionExpanded,
+                                appCount: active.count,
+                                totalWatts: active.reduce(0) { $0 + $1.watts })
+                            if isLiveSectionExpanded {
+                                ForEach(active) { app in
+                                    activeAppRow(
+                                        app,
+                                        energyWh: app.todayWh,
+                                        cpuHours: app.todayCpuHours,
+                                        share: app.watts / maxWatts)
+                                }
+                            }
+                        }
+                    }
+
+                    if !earlier.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("EARLIER TODAY")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            ForEach(earlier) { app in
+                                historicalAppRow(
+                                    app,
+                                    share: app.energyWh / earlierTotal)
+                            }
                         }
                     }
                 }
+                .padding(.trailing, 4)
+                .animation(
+                    juiceStandardEase,
+                    value: active.map(\.id) + earlier.map(\.id))
             }
-            .padding(.trailing, 4)
+            .transition(.opacity)
         }
-        .transition(.opacity)
 
         // The coordinator's own unattributed-system figure is shown instead of
         // a battery split.
@@ -569,42 +644,80 @@ private struct BatteryStatsDashboard: View {
         let earlier = apps.filter { !activeKeys.contains($0.bundleId) }
         let maxWatts = max(hybrid.active.map(\.watts).max() ?? 0, 0.001)
         let earlierTotal = max(earlier.reduce(0) { $0 + $1.energyWh }, 0.001)
+        let activeRows = AppTableSort.apply(
+            appTableSort,
+            to: hybrid.active,
+            query: appFilterQuery
+        ) { app in
+            let sessionEnergy = sessionByKey[app.appKey]
+            return AppTableSortValues(
+                stableID: app.appKey,
+                displayName: app.displayName,
+                liveWatts: app.watts,
+                energyWh: sessionEnergy?.energyWh,
+                detail: sessionEnergy?.cpuHours)
+        }
+        let earlierRows = AppTableSort.apply(
+            appTableSort,
+            to: earlier,
+            query: appFilterQuery
+        ) { app in
+            AppTableSortValues(
+                stableID: app.bundleId,
+                displayName: app.displayName,
+                liveWatts: nil,
+                energyWh: app.energyWh,
+                detail: app.cpuHours)
+        }
 
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 4) {
-                        LiveDot()
-                        Text("DRAWING POWER NOW")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+        if activeRows.isEmpty, earlierRows.isEmpty {
+            Group {
+                StatsAppTableNoMatches(query: appFilterQuery)
+                Spacer()
+            }
+            .transition(.opacity)
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    if !activeRows.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            CollapsibleLiveHeader(
+                                isExpanded: $isLiveSectionExpanded,
+                                appCount: activeRows.count,
+                                totalWatts: activeRows.reduce(0) { $0 + $1.watts })
+                            if isLiveSectionExpanded {
+                                ForEach(activeRows) { app in
+                                    let sessionEnergy = sessionByKey[app.appKey]
+                                    activeAppRow(
+                                        app,
+                                        energyWh: sessionEnergy?.energyWh,
+                                        cpuHours: sessionEnergy?.cpuHours,
+                                        share: app.watts / maxWatts)
+                                }
+                            }
+                        }
                     }
-                    ForEach(hybrid.active) { app in
-                        let sessionEnergy = sessionByKey[app.appKey]
-                        activeAppRow(
-                            app,
-                            energyWh: sessionEnergy?.energyWh,
-                            cpuHours: sessionEnergy?.cpuHours,
-                            share: app.watts / maxWatts)
-                    }
-                }
 
-                if !earlier.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("EARLIER IN SESSION")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        ForEach(earlier) { app in
-                            historicalAppRow(
-                                app,
-                                share: app.energyWh / earlierTotal)
+                    if !earlierRows.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("EARLIER IN SESSION")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            ForEach(earlierRows) { app in
+                                historicalAppRow(
+                                    app,
+                                    share: app.energyWh / earlierTotal)
+                            }
                         }
                     }
                 }
+                .padding(.trailing, 4)
+                .animation(
+                    juiceStandardEase,
+                    value: activeRows.map(\.id) + earlierRows.map(\.id))
             }
-            .padding(.trailing, 4)
+            .transition(.opacity)
         }
-        .transition(.opacity)
 
         if let reading = live.reading {
             Text(String(
