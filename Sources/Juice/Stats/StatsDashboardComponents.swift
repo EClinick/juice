@@ -278,13 +278,15 @@ struct StatsAppTableHeader: View {
                     .frame(width: 64, alignment: .trailing)
             }
             StatsAppTableHeaderButton(
+                // 88pt keeps this longest label (plus its sort arrow) on one
+                // line; the row's energy column below mirrors the same width.
                 title: "ENERGY / COST",
                 column: .energy,
                 alignment: .trailing,
                 indicatorBeforeLabel: true,
                 direction: direction(for: .energy),
                 onSelect: { select(.energy) })
-                .frame(width: 72, alignment: .trailing)
+                .frame(width: 88, alignment: .trailing)
             StatsAppTableHeaderButton(
                 title: columns.detailTitle,
                 column: .detail,
@@ -352,6 +354,10 @@ private struct StatsAppTableHeaderButton: View {
                 }
                 Text(title)
                     .multilineTextAlignment(textAlignment)
+                    // Column titles stay on one line, shrinking slightly
+                    // rather than wrapping if a label ever outgrows its column.
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                 if displayedDirection != nil, !indicatorBeforeLabel {
                     sortIndicator
                 }
@@ -433,6 +439,49 @@ struct StatsAppTablePane<Content: View, Summary: View>: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(16)
+    }
+}
+
+/// Shared disclosure control for every "drawing power now" section - the
+/// popover's Session and Today live layers and both Stats dashboards. Only the
+/// live rows collapse; this header always stays on screen.
+struct CollapsibleLiveHeader: View {
+    @Binding var isExpanded: Bool
+    let appCount: Int
+    let totalWatts: Double
+    /// The popover labels its cost column here; Stats has no such column.
+    var costContext: String? = nil
+
+    var body: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.16)) {
+                isExpanded.toggle()
+            }
+        } label: {
+            HStack(spacing: 5) {
+                LiveDot()
+                Text("DRAWING POWER NOW")
+                Spacer()
+                if isExpanded, let costContext {
+                    Text("\(costContext) COST")
+                        .foregroundStyle(.tertiary)
+                } else if !isExpanded {
+                    Text("\(appCount) app\(appCount == 1 ? "" : "s") · \(liveWattsText(totalWatts))")
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
+                }
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Drawing power now")
+        .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+        .accessibilityHint(isExpanded ? "Collapses live apps" : "Expands live apps")
     }
 }
 
@@ -553,7 +602,7 @@ struct StatsAppTableRow: View {
                     }
                 }
                 .monospacedDigit()
-                .frame(width: 72, alignment: .trailing)
+                .frame(width: 88, alignment: .trailing)
 
                 Text(detailText ?? "—")
                     .font(.caption)

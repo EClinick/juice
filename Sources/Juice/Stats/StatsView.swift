@@ -84,6 +84,9 @@ private struct BatteryStatsDashboard: View {
     /// order its data source provides.
     @State private var appTableSort: AppTableSort?
     @State private var appFilterQuery = ""
+    /// Shared by the Today and Session live sections: the disclosure state the
+    /// user picked survives range switches while the window stays open.
+    @State private var isLiveSectionExpanded = true
     @AppStorage(StatsRangeVisibility.storageKey)
     private var rangeVisibilityStorage = StatsRangeVisibility.defaultStorageValue
     @AppStorage(ElectricityCost.pricePerKilowattHourStorageKey)
@@ -574,18 +577,18 @@ private struct BatteryStatsDashboard: View {
                 VStack(alignment: .leading, spacing: 10) {
                     if !active.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
-                            HStack(spacing: 4) {
-                                LiveDot()
-                                Text("DRAWING POWER NOW")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            ForEach(active) { app in
-                                activeAppRow(
-                                    app,
-                                    energyWh: app.todayWh,
-                                    cpuHours: app.todayCpuHours,
-                                    share: app.watts / maxWatts)
+                            CollapsibleLiveHeader(
+                                isExpanded: $isLiveSectionExpanded,
+                                appCount: active.count,
+                                totalWatts: active.reduce(0) { $0 + $1.watts })
+                            if isLiveSectionExpanded {
+                                ForEach(active) { app in
+                                    activeAppRow(
+                                        app,
+                                        energyWh: app.todayWh,
+                                        cpuHours: app.todayCpuHours,
+                                        share: app.watts / maxWatts)
+                                }
                             }
                         }
                     }
@@ -670,19 +673,19 @@ private struct BatteryStatsDashboard: View {
                 VStack(alignment: .leading, spacing: 10) {
                     if !activeRows.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
-                            HStack(spacing: 4) {
-                                LiveDot()
-                                Text("DRAWING POWER NOW")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            ForEach(activeRows) { app in
-                                let sessionEnergy = sessionByKey[app.appKey]
-                                activeAppRow(
-                                    app,
-                                    energyWh: sessionEnergy?.energyWh,
-                                    cpuHours: sessionEnergy?.cpuHours,
-                                    share: app.watts / maxWatts)
+                            CollapsibleLiveHeader(
+                                isExpanded: $isLiveSectionExpanded,
+                                appCount: activeRows.count,
+                                totalWatts: activeRows.reduce(0) { $0 + $1.watts })
+                            if isLiveSectionExpanded {
+                                ForEach(activeRows) { app in
+                                    let sessionEnergy = sessionByKey[app.appKey]
+                                    activeAppRow(
+                                        app,
+                                        energyWh: sessionEnergy?.energyWh,
+                                        cpuHours: sessionEnergy?.cpuHours,
+                                        share: app.watts / maxWatts)
+                                }
                             }
                         }
                     }

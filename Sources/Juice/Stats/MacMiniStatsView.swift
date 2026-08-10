@@ -2,74 +2,45 @@ import SwiftUI
 import Charts
 import JuiceCore
 
-/// Mac mini-specific state and data loading for the shared Stats page. Unlike
-/// battery mode, current app watts remain visible for every history range.
-struct MacMiniStatsDashboard: View {
-    static let minimumContentWidth: CGFloat = 860
-    // The header, chart's 180-point floor, and footer need this much vertical
-    // space together. Keeping the old 500-point minimum let an autosaved frame
-    // compress the footer below the window's visible content area on reopen.
-    static let minimumContentHeight: CGFloat = 560
+/// One Mac mini app-table row: a range total joined with the app's live watts.
+struct MacMiniAppRow: Identifiable {
+    var id: String { appKey }
+    var appKey: String
+    var displayName: String
+    var liveWatts: Double?
+    var energyWh: Double?
+    var activeDuration: TimeInterval?
+    var peakWatts: Double?
+}
 
-    let store: JuiceStore?
-
-    @ObservedObject private var live = LivePowerCoordinator.shared
-    @State private var consumerID = UUID()
-    @State private var range: EnergyRange = .today
-    /// `nil` until the user picks a column: the table then keeps its natural
-    /// live-first order.
-    @State private var appTableSort: AppTableSort?
-    @State private var appFilterQuery = ""
-    @State private var data: MacMiniPowerDashboardData?
-    @State private var loadedRange: EnergyRange?
-    @State private var loadError: String?
-    @State private var refreshedAt = Date()
-    @State private var retryGeneration = 0
-    @AppStorage(StatsRangeVisibility.macMiniStorageKey)
-    private var rangeVisibilityStorage = StatsRangeVisibility.macMiniDefaultStorageValue
-    @AppStorage(ElectricityCost.pricePerKilowattHourStorageKey)
-    private var pricePerKilowattHour = ElectricityCost.defaultPricePerKilowattHour
-    @State private var isCustomizingRanges = false
-
-    private var visibleRanges: [EnergyRange] {
-        StatsRangeVisibility.visibleRanges(
-            from: rangeVisibilityStorage,
-            availableRanges: macMiniPowerRanges,
-            fallbackRanges: macMiniPowerRanges)
-    }
-
-    private struct AppRow: Identifiable {
-        var id: String { appKey }
-        var appKey: String
-        var displayName: String
-        var liveWatts: Double?
-        var energyWh: Double?
-        var activeDuration: TimeInterval?
-        var peakWatts: Double?
-    }
-
+/// Pure row assembly for the Mac mini app table, kept out of the view so the
+/// join, the natural order, and the section split stay testable.
+enum MacMiniAppRows {
     /// The table's natural order: live apps first by current watts, then the
-    /// rest by energy. Called once per body pass rather than per access.
-    private func makeAppRows() -> [AppRow] {
-        let totals = Dictionary(
-            (data?.appTotals ?? []).map { ($0.appKey, $0) },
+    /// rest by energy. `totals` is nil until the range query lands, which is
+    /// what suppresses a peak-watts column built from live samples alone.
+    static func make(
+        totals: [StoredSystemAppEnergyTotal]?,
+        liveApps: [AppPowerReading]
+    ) -> [MacMiniAppRow] {
+        let totalsByKey = Dictionary(
+            (totals ?? []).map { ($0.appKey, $0) },
             uniquingKeysWith: { first, _ in first })
-        let liveApps = Dictionary(
-            visibleLiveApps(in: live.reading)
-                .map { ($0.appKey, $0) },
+        let liveByKey = Dictionary(
+            liveApps.map { ($0.appKey, $0) },
             uniquingKeysWith: { first, _ in first })
-        let keys = Set(totals.keys).union(liveApps.keys)
+        let keys = Set(totalsByKey.keys).union(liveByKey.keys)
 
         return keys.map { key in
-            let total = totals[key]
-            let current = liveApps[key]
-            return AppRow(
+            let total = totalsByKey[key]
+            let current = liveByKey[key]
+            return MacMiniAppRow(
                 appKey: key,
                 displayName: current?.displayName ?? total?.displayName ?? key,
                 liveWatts: current?.watts,
                 energyWh: total?.energyWh,
                 activeDuration: total?.activeDuration,
-                peakWatts: data == nil
+                peakWatts: totals == nil
                     ? nil
                     : max(total?.peakWatts ?? 0, current?.watts ?? 0))
         }
@@ -89,6 +60,52 @@ struct MacMiniStatsDashboard: View {
                     == .orderedAscending
             }
         }
+    }
+
+    /// Splits the natural order into the live section and everything else,
+    /// preserving the relative order each row arrived in.
+    static func sections(
+        _ rows: [MacMiniAppRow]
+    ) -> (live: [MacMiniAppRow], earlier: [MacMiniAppRow]) {
+        (rows.filter { $0.liveWatts != nil }, rows.filter { $0.liveWatts == nil })
+    }
+}
+
+/// Mac mini-specific state and data loading for the shared Stats page. Unlike
+/// battery mode, current app watts remain visible for every history range.
+struct MacMiniStatsDashboard: View {
+    static let minimumContentWidth: CGFloat = 860
+    // The header, chart's 180-point floor, and footer need this much vertical
+    // space together. Keeping the old 500-point minimum let an autosaved frame
+    // compress the footer below the window's visible content area on reopen.
+    static let minimumContentHeight: CGFloat = 560
+
+    let store: JuiceStore?
+
+    @ObservedObject private var live = LivePowerCoordinator.shared
+    @State private var consumerID = UUID()
+    @State private var range: EnergyRange = .today
+    /// `nil` until the user picks a column: the table then keeps its natural
+    /// live-first order.
+    @State private var appTableSort: AppTableSort?
+    @State private var appFilterQuery = ""
+    @State private var isLiveSectionExpanded = true
+    @State private var data: MacMiniPowerDashboardData?
+    @State private var loadedRange: EnergyRange?
+    @State private var loadError: String?
+    @State private var refreshedAt = Date()
+    @State private var retryGeneration = 0
+    @AppStorage(StatsRangeVisibility.macMiniStorageKey)
+    private var rangeVisibilityStorage = StatsRangeVisibility.macMiniDefaultStorageValue
+    @AppStorage(ElectricityCost.pricePerKilowattHourStorageKey)
+    private var pricePerKilowattHour = ElectricityCost.defaultPricePerKilowattHour
+    @State private var isCustomizingRanges = false
+
+    private var visibleRanges: [EnergyRange] {
+        StatsRangeVisibility.visibleRanges(
+            from: rangeVisibilityStorage,
+            availableRanges: macMiniPowerRanges,
+            fallbackRanges: macMiniPowerRanges)
     }
 
     private func costText(_ wattHours: Double?) -> String? {
@@ -185,19 +202,12 @@ struct MacMiniStatsDashboard: View {
     }
 
     private var appPane: some View {
-        let allRows = makeAppRows()
-        let visibleRows = AppTableSort.apply(
-            appTableSort,
-            to: allRows,
-            query: appFilterQuery
-        ) { app in
-            AppTableSortValues(
-                stableID: app.appKey,
-                displayName: app.displayName,
-                liveWatts: app.liveWatts,
-                energyWh: app.energyWh,
-                detail: app.peakWatts)
-        }
+        let allRows = MacMiniAppRows.make(
+            totals: data?.appTotals,
+            liveApps: visibleLiveApps(in: live.reading))
+        let sections = MacMiniAppRows.sections(allRows)
+        let liveRows = sortedRows(sections.live)
+        let earlierRows = sortedRows(sections.earlier)
         // The energy bars stay comparable while a filter is active, so the
         // maximum comes from every row rather than the visible ones.
         let maxAppEnergy = max(allRows.compactMap(\.energyWh).max() ?? 0, 0.001)
@@ -225,20 +235,46 @@ struct MacMiniStatsDashboard: View {
                             .foregroundStyle(.tertiary)
                     }
                     Spacer()
-                } else if visibleRows.isEmpty {
+                } else if liveRows.isEmpty, earlierRows.isEmpty {
                     StatsAppTableNoMatches(query: appFilterQuery)
                     Spacer()
                 } else {
                     ScrollView {
-                        LazyVStack(spacing: 6) {
-                            ForEach(visibleRows) { app in
-                                appRow(app, maxAppEnergy: maxAppEnergy)
+                        // One lazy stack rather than a stack per section, so a
+                        // long history list still builds its rows on demand.
+                        LazyVStack(alignment: .leading, spacing: 6) {
+                            if !liveRows.isEmpty {
+                                CollapsibleLiveHeader(
+                                    isExpanded: $isLiveSectionExpanded,
+                                    appCount: liveRows.count,
+                                    totalWatts: liveRows.reduce(0) {
+                                        $0 + ($1.liveWatts ?? 0)
+                                    })
+                                if isLiveSectionExpanded {
+                                    ForEach(liveRows) { app in
+                                        appRow(app, maxAppEnergy: maxAppEnergy)
+                                    }
+                                }
+                            }
+
+                            if !earlierRows.isEmpty {
+                                // Without a live section the table is a single
+                                // flat list, which needs no section label.
+                                if !sections.live.isEmpty {
+                                    Text("EARLIER")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .padding(.top, 4)
+                                }
+                                ForEach(earlierRows) { app in
+                                    appRow(app, maxAppEnergy: maxAppEnergy)
+                                }
                             }
                         }
                         .padding(.trailing, 4)
                         .animation(
                             juiceStandardEase,
-                            value: visibleRows.map(\.id))
+                            value: liveRows.map(\.id) + earlierRows.map(\.id))
                     }
                 }
             },
@@ -254,7 +290,23 @@ struct MacMiniStatsDashboard: View {
             })
     }
 
-    private func appRow(_ app: AppRow, maxAppEnergy: Double) -> some View {
+    /// Sorting and filtering run per section so each keeps its own ranking.
+    private func sortedRows(_ rows: [MacMiniAppRow]) -> [MacMiniAppRow] {
+        AppTableSort.apply(
+            appTableSort,
+            to: rows,
+            query: appFilterQuery
+        ) { app in
+            AppTableSortValues(
+                stableID: app.appKey,
+                displayName: app.displayName,
+                liveWatts: app.liveWatts,
+                energyWh: app.energyWh,
+                detail: app.peakWatts)
+        }
+    }
+
+    private func appRow(_ app: MacMiniAppRow, maxAppEnergy: Double) -> some View {
         StatsAppTableRow(
             appKey: app.appKey,
             displayName: app.displayName,
@@ -268,7 +320,7 @@ struct MacMiniStatsDashboard: View {
             onTap: { showDetail(app) })
     }
 
-    private func appAccessibilityValue(_ app: AppRow) -> String {
+    private func appAccessibilityValue(_ app: MacMiniAppRow) -> String {
         let liveDescription = app.liveWatts.map(liveWattsText) ?? "not live"
         let energyDescription = app.energyWh
             .map { "\(serverEnergyText($0)) \(accessibilityRangeDescription)" }
@@ -278,7 +330,7 @@ struct MacMiniStatsDashboard: View {
         return "\(base), estimated cost \(cost) \(accessibilityRangeDescription)"
     }
 
-    private func showDetail(_ app: AppRow) {
+    private func showDetail(_ app: MacMiniAppRow) {
         AppDetailPresenter.shared.show(
             appKey: app.appKey,
             displayName: app.displayName,
