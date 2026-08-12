@@ -827,4 +827,22 @@ private final class MockHelper: NSObject, HelperProtocol, @unchecked Sendable {
             reply(try! JSONEncoder().encode(snapshot), nil)
         }
     }
+
+    func setPowerMode(
+        _ mode: Int,
+        scope: String,
+        reply: @escaping (Data?, NSError?) -> Void
+    ) {
+        // Echoes the request back as a successful read-back state.
+        guard let requested = PowerMode(rawValue: mode),
+              let requestedScope = PowerModeScope(rawValue: scope) else {
+            reply(nil, HelperError.error(.unsupportedPowerMode, message: "invalid request"))
+            return
+        }
+        let state = PowerModeState(
+            battery: requestedScope == .ac ? .automatic : requested,
+            ac: requestedScope == .battery ? .automatic : requested,
+            keyLayout: .unified)
+        reply(try! JSONEncoder().encode(state), nil)
+    }
 }

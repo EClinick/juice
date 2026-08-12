@@ -56,7 +56,7 @@ flowchart TB
   end
 
   subgraph helper["JuiceHelper (root daemon, ~350 lines)"]
-    SNAP["Read-only snapshot queries"]
+    SNAP["Read-only snapshot queries<br/>+ Energy Mode writes (pmset)"]
   end
 
   subgraph app["Juice.app (user space)"]
@@ -77,9 +77,10 @@ flowchart TB
 
 Security model for the privileged helper:
 
-- The helper exposes a version handshake plus time-bounded energy and battery-history queries, and is small enough to audit directly.
+- The helper exposes a version handshake, time-bounded energy and battery-history queries, and one mutating operation that switches macOS Energy Mode via `pmset`, and is small enough to audit directly.
 - It validates the connecting client's code signature on every message and rejects root clients.
 - It never opens the live system database in place; it snapshot-copies the database and reads the copy read-only, so it cannot contend with or corrupt the system's writer.
+- The Energy Mode write is the only thing it changes on your system: it re-validates the requested mode and power source against a closed set, spawns `/usr/bin/pmset` with an argument array rather than a shell, and reads the setting back to confirm it took.
 - If you decline to approve it, the app still works with live battery data; per-app energy and powerlog backfill remain unavailable.
 
 ## Requirements
@@ -196,6 +197,9 @@ make dev-probe
 
 # Per-app breakdown end-to-end (exactly what the detail window computes)
 ./.build/debug/JuiceXPCProbe --app com.microsoft.VSCode
+
+# Energy Mode end-to-end (0 automatic, 1 low power, 2 high power)
+./.build/debug/JuiceXPCProbe set-powermode 1 battery
 ```
 
 Layout: `Sources/Juice` is the menu bar app, `Sources/JuiceHelper` is the root daemon, `Sources/JuiceXPCShared` is the XPC protocol, and `Sources/JuiceCore` holds the pure logic (store, rollups, insights, breakdowns) that the test suite covers.

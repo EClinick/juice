@@ -13,6 +13,10 @@ struct PopoverView: View {
     @ObservedObject private var live = LivePowerCoordinator.shared
     @ObservedObject private var batterySession = BatterySessionCoordinator.shared
 
+    /// Energy Mode reads cheaply from `pmset`, so a per-view controller is fine;
+    /// it re-reads whenever the popover becomes active.
+    @StateObject private var energyMode = EnergyModeController()
+
     private let selector = EnergySourceSelector()
 
     /// A per-instance live-loop identity. If SwiftUI spins up a second
@@ -130,6 +134,7 @@ struct PopoverView: View {
                     } else {
                         loadTask?.cancel()
                         loadTask = Task { await loadEnergy() }
+                        Task { await energyMode.refresh() }
                     }
                 }
                 Button("Stats & Settings…", action: showStatsWindow)
@@ -149,6 +154,9 @@ struct PopoverView: View {
                     model.refresh()
                     helper.refresh()
                     applyInitialRange()
+                    if !model.isMacMini {
+                        Task { await energyMode.refresh() }
+                    }
                 } else {
                     loadTask?.cancel()
                 }
@@ -172,6 +180,25 @@ struct PopoverView: View {
         }
         .onChange(of: model.reading?.onAC) {
             syncDataAttachments()
+            // The two sources carry independent modes, so the displayed one
+            // changes the moment the machine is plugged in or unplugged.
+            guard !model.isMacMini else { return }
+            Task { await energyMode.refresh() }
+        }
+        // Energy Mode can also change from System Settings or a system prompt.
+        // BatteryViewModel already observes the power-state notification, so its
+        // published flag is the cheapest signal that a re-read is due.
+        .onChange(of: model.isLowPowerModeEnabled) {
+            guard !model.isMacMini else { return }
+            Task { await energyMode.refresh() }
+        }
+        // That flag is false for both Automatic and High Power, so an external
+        // switch between the two raises no notification at all. Ride the battery
+        // refresh cadence instead: ~60 s while the popover is open, and only
+        // while it is, which is cheap enough for an unprivileged pmset read.
+        .onChange(of: model.readingGeneration) {
+            guard surfaceIsActive, !model.isMacMini else { return }
+            Task { await energyMode.refresh() }
         }
         .onChange(of: rangeVisibilityStorage) {
             range = StatsRangeVisibility.preferredRange(
@@ -179,6 +206,9 @@ struct PopoverView: View {
                 from: rangeVisibilityStorage)
         }
         .onChange(of: helper.readyGeneration) {
+            // A newly registered helper may be the build that supports Energy
+            // Mode writes, so the "restart to update" notice must not stick.
+            energyMode.helperMayHaveUpdated()
             if surfaceIsActive && origin == .unavailable {
                 retryTopApps()
             }
@@ -242,44 +272,23 @@ struct PopoverView: View {
 
     private func batteryDashboard(_ reading: BatteryReading) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Battery - \(reading.percent)%")
-                    .font(.headline)
-                Spacer()
-                Text(model.timeRemainingText)
-                    .foregroundStyle(.secondary)
+            // Gauge, its docked mode control, and the mode caption read as one
+            // block, so they stay closer to each other than to the sections
+            // below. No divider: the grouping is carried by spacing.
+            VStack(alignment: .leading, spacing: 6) {
+                BatteryHeroRow(
+                    reading: reading,
+                    timeRemainingText: model.timeRemainingText,
+                    controller: energyMode,
+                    isLowPowerModeEnabled: model.isLowPowerModeEnabled)
+                    // The open fan hangs below the gauge over the caption
+                    // line, so the hero must paint above its later siblings.
+                    .zIndex(1)
+
+                EnergyModeCaptions(controller: energyMode, onAC: reading.onAC)
             }
-
-            HStack {
-                if reading.onAC {
-                    Label(
-                        reading.isCharging
-                            ? String(format: "Charging at %.1f W", abs(reading.watts))
-                            : "Plugged in, not charging",
-                        systemImage: "powerplug")
-                } else {
-                    Label(
-                        String(format: "Drawing %.1f W", abs(reading.watts)),
-                        systemImage: "bolt")
-                }
-                Spacer()
-            }
-            .font(.callout)
-
-            Divider()
-
-            HStack {
-                if let health = reading.healthPercent {
-                    Text("Health \(health)%")
-                    Text("·")
-                }
-                Text("\(reading.cycleCount) cycles")
-                Spacer()
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-
-            Divider()
+            .padding(.bottom, 2)
+            .zIndex(1)
 
             // The hybrid's own section captions replace this header line;
             // rendering both would waste a row of the popover's height.
