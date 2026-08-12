@@ -130,7 +130,7 @@ struct EnergyModeControllerTests {
         battery: PowerMode = .automatic,
         ac: PowerMode = .automatic
     ) -> PowerModeState {
-        PowerModeState(battery: battery, ac: ac, usesLegacyLowPowerKey: false)
+        PowerModeState(battery: battery, ac: ac, keyLayout: .unified)
     }
 
     private static func isolatedDefaults() -> UserDefaults {
@@ -422,16 +422,30 @@ struct EnergyModeControllerTests {
         #expect(!controller.needsHelperUpdate)
     }
 
-    @Test("High Power is never offered on a legacy lowpowermode machine")
-    func legacyMachineHidesHighPower() async {
+    @Test("High Power is never offered on a lowpowermode-only machine")
+    func lowPowerOnlyMachineHidesHighPower() async {
         let backend = FakeEnergyModeBackend(readStates: [
-            PowerModeState(battery: .lowPower, ac: .automatic, usesLegacyLowPowerKey: true)
+            PowerModeState(battery: .lowPower, ac: .automatic, keyLayout: .lowPowerOnly)
         ])
         let controller = Self.makeController(backend: backend)
 
         await controller.refresh()
 
         #expect(!controller.showsHighPower)
+    }
+
+    @Test("High Power is offered on a dual-boolean machine")
+    func dualBooleanMachineShowsHighPower() async {
+        // Those Macs publish no `powermode` key, but they do have High Power:
+        // reading their `lowpowermode` as the legacy layout used to hide it.
+        let backend = FakeEnergyModeBackend(readStates: [
+            PowerModeState(battery: .lowPower, ac: .highPower, keyLayout: .dualBoolean)
+        ])
+        let controller = Self.makeController(backend: backend)
+
+        await controller.refresh()
+
+        #expect(controller.showsHighPower)
     }
 
     @Test("A later successful write clears a stale error message")

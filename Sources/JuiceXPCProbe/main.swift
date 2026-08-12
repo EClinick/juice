@@ -80,9 +80,10 @@ func printBreakdown(_ intervals: [EnergyInterval], appKey: String) {
     }
 }
 
-/// Prints an Energy Mode state, tagging machines limited to Automatic/Low Power.
+/// Prints an Energy Mode state, including which `pmset` keys the machine speaks
+/// - `lowPowerOnly` is the layout with no High Power at all.
 func printPowerModeState(_ label: String, _ state: PowerModeState) {
-    print("\(label): battery=\(state.battery) ac=\(state.ac) key=\(state.pmsetKey)")
+    print("\(label): battery=\(state.battery) ac=\(state.ac) keys=\(state.keyLayout.rawValue)")
 }
 
 /// Reads and parses `pmset -g custom` locally; needs no privilege, so it works

@@ -842,7 +842,7 @@ private final class MockHelper: NSObject, HelperProtocol, @unchecked Sendable {
         let state = PowerModeState(
             battery: requestedScope == .ac ? .automatic : requested,
             ac: requestedScope == .battery ? .automatic : requested,
-            usesLegacyLowPowerKey: false)
+            keyLayout: .unified)
         reply(try! JSONEncoder().encode(state), nil)
     }
 }

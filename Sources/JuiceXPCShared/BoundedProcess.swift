@@ -139,7 +139,13 @@ private final class PipeDrain: @unchecked Sendable {
     func drain() {
         let descriptor = handle.fileDescriptor
         var buffer = [UInt8](repeating: 0, count: Self.bufferSize)
-        while !isStopped {
+        // One poll always happens, even on an already-stopped drain: under load
+        // this closure can start after ``stop()`` has fired, and a child that
+        // already wrote its whole answer and exited must not be reported as
+        // having said nothing.
+        var polled = false
+        while !polled || !isStopped {
+            polled = true
             var event = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
             let ready = poll(&event, 1, Self.pollInterval)
             if ready < 0 {

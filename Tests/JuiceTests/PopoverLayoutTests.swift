@@ -241,7 +241,7 @@ struct PopoverLayoutTests {
     @Test("selection and the footnote follow the active source")
     func modeSelectionFollowsPowerSource() {
         let mixed = PowerModeState(
-            battery: .lowPower, ac: .highPower, usesLegacyLowPowerKey: false)
+            battery: .lowPower, ac: .highPower, keyLayout: .unified)
 
         #expect(EnergyModePresentation.currentMode(mixed, onAC: false) == .lowPower)
         #expect(EnergyModePresentation.currentMode(mixed, onAC: true) == .highPower)
@@ -255,7 +255,7 @@ struct PopoverLayoutTests {
                 == "High Power · On battery: Low Power")
 
         let matched = PowerModeState(
-            battery: .automatic, ac: .automatic, usesLegacyLowPowerKey: false)
+            battery: .automatic, ac: .automatic, keyLayout: .unified)
         #expect(EnergyModePresentation.footnote(matched, onAC: false) == "Automatic")
         #expect(EnergyModePresentation.footnote(matched, onAC: true) == "Automatic")
         #expect(EnergyModePresentation.footnote(nil, onAC: false) == nil)
@@ -408,7 +408,7 @@ struct PopoverLayoutTests {
 
     private func energyModeController(
         state: PowerModeState? = PowerModeState(
-            battery: .lowPower, ac: .automatic, usesLegacyLowPowerKey: false)
+            battery: .lowPower, ac: .automatic, keyLayout: .unified)
     ) -> EnergyModeController {
         let suiteName = "PopoverLayoutTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -418,7 +418,7 @@ struct PopoverLayoutTests {
             readState: { state },
             writeState: { _, _ in
                 state ?? PowerModeState(
-                    battery: .lowPower, ac: .automatic, usesLegacyLowPowerKey: false)
+                    battery: .lowPower, ac: .automatic, keyLayout: .unified)
             })
         return controller
     }

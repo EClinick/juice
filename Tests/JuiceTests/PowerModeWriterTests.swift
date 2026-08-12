@@ -3,14 +3,33 @@ import Testing
 @testable import JuiceHelper
 @testable import JuiceXPCShared
 
-/// Stands in for the `pmset` process so the writer's validation, legacy-key
-/// handling, and read-back verification are testable without root.
+/// Stands in for the `pmset` process so the writer's validation, per-layout
+/// write plans, and read-back verification are testable without root.
 private final class FakePMSet {
-    /// The key this fake machine exposes.
-    let key: String
-    /// Modes reported by `pmset -g custom`, keyed by section header.
-    var battery: Int
-    var ac: Int
+    /// One power source's stored flags. Kept as the two booleans even on a
+    /// unified machine so the dual-boolean dialect can be answered honestly:
+    /// only the rendering and the accepted keys differ per layout.
+    struct Source {
+        var lowPower: Bool
+        var highPower: Bool
+
+        init(mode: Int) {
+            lowPower = mode == PowerMode.lowPower.rawValue
+            highPower = mode == PowerMode.highPower.rawValue
+        }
+
+        var mode: Int {
+            highPower
+                ? PowerMode.highPower.rawValue
+                : (lowPower ? PowerMode.lowPower.rawValue : PowerMode.automatic.rawValue)
+        }
+    }
+
+    /// The key layout this fake machine speaks.
+    let layout: PowerModeKeyLayout
+    /// State reported by `pmset -g custom`, per section header.
+    var battery: Source
+    var ac: Source
     /// When true, writes are accepted (exit 0) but change nothing, which is how
     /// hardware that silently declines a mode behaves.
     var ignoresWrites = false
@@ -27,10 +46,10 @@ private final class FakePMSet {
     /// changed the mode between the write and the verification.
     var interferingValue: Int?
 
-    init(key: String = "powermode", battery: Int = 0, ac: Int = 0) {
-        self.key = key
-        self.battery = battery
-        self.ac = ac
+    init(layout: PowerModeKeyLayout = .unified, battery: Int = 0, ac: Int = 0) {
+        self.layout = layout
+        self.battery = Source(mode: battery)
+        self.ac = Source(mode: ac)
     }
 
     var run: (String, [String], TimeInterval) throws -> PowerModeWriter.CommandResult {
@@ -42,41 +61,77 @@ private final class FakePMSet {
 
             if arguments == ["-g", "custom"] {
                 if let interfering = self.interferingValue, self.invocations.count > 1 {
-                    self.battery = interfering
-                    self.ac = interfering
+                    self.battery = Source(mode: interfering)
+                    self.ac = Source(mode: interfering)
                 }
                 return (0, self.customOutput, "")
             }
-            guard arguments.count == 3 else {
+            guard arguments.count == 3, let value = Int(arguments[2]) else {
                 return (1, "", "unexpected arguments")
             }
             guard self.writeStatus == 0 else {
                 return (self.writeStatus, "", self.writeStderr)
             }
-            if !self.ignoresWrites, let value = Int(arguments[2]) {
-                switch arguments[0] {
-                case "-b": self.battery = value
-                case "-c": self.ac = value
-                default:
-                    self.battery = value
-                    self.ac = value
+            guard !self.ignoresWrites else { return (0, "", "") }
+            let sources: [ReferenceWritableKeyPath<FakePMSet, Source>]
+            switch arguments[0] {
+            case "-b": sources = [\.battery]
+            case "-c": sources = [\.ac]
+            default: sources = [\.battery, \.ac]
+            }
+            for source in sources {
+                guard self.apply(key: arguments[1], value: value, to: source) else {
+                    return (1, "", "unsupported key \(arguments[1])")
                 }
             }
             return (0, "", "")
         }
     }
 
+    /// Applies one `pmset <key> <value>` write, or reports that this machine
+    /// does not have that key - real `pmset` rejects a key the layout lacks.
+    private func apply(
+        key: String,
+        value: Int,
+        to source: ReferenceWritableKeyPath<FakePMSet, Source>
+    ) -> Bool {
+        switch (layout, key) {
+        case (.unified, "powermode"):
+            self[keyPath: source] = Source(mode: value)
+        case (.lowPowerOnly, "lowpowermode"), (.dualBoolean, "lowpowermode"):
+            self[keyPath: source].lowPower = value != 0
+        case (.dualBoolean, "highpowermode"):
+            self[keyPath: source].highPower = value != 0
+        default:
+            return false
+        }
+        return true
+    }
+
     private var customOutput: String {
         """
         Battery Power:
          Sleep On Power Button 1
-         \(key)         \(battery)
+        \(keyLines(battery))
          displaysleep         2
         AC Power:
          Sleep On Power Button 1
-         \(key)         \(ac)
+        \(keyLines(ac))
          displaysleep         10
         """
+    }
+
+    /// The mode keys this layout publishes for one source, as `pmset` prints them.
+    private func keyLines(_ source: Source) -> String {
+        switch layout {
+        case .unified:
+            return " powermode            \(source.mode)"
+        case .lowPowerOnly:
+            return " lowpowermode         \(source.lowPower ? 1 : 0)"
+        case .dualBoolean:
+            return " lowpowermode         \(source.lowPower ? 1 : 0)\n"
+                + " highpowermode        \(source.highPower ? 1 : 0)"
+        }
     }
 }
 
@@ -90,7 +145,7 @@ struct PowerModeWriterTests {
         let state = try writer.setPowerMode(rawMode: 1, rawScope: "battery")
 
         #expect(state == PowerModeState(
-            battery: .lowPower, ac: .automatic, usesLegacyLowPowerKey: false))
+            battery: .lowPower, ac: .automatic, keyLayout: .unified))
         // Read, write, read back: the read-back is what the reply reports.
         #expect(pmset.invocations == [
             ["-g", "custom"], ["-b", "powermode", "1"], ["-g", "custom"]
@@ -117,23 +172,89 @@ struct PowerModeWriterTests {
         let state = try writer.setPowerMode(rawMode: 0, rawScope: "all")
 
         #expect(state == PowerModeState(
-            battery: .automatic, ac: .automatic, usesLegacyLowPowerKey: false))
+            battery: .automatic, ac: .automatic, keyLayout: .unified))
     }
 
-    @Test("Uses the legacy lowpowermode key on machines that expose it")
-    func writesLegacyKey() throws {
-        let pmset = FakePMSet(key: "lowpowermode")
+    @Test("Uses the lone lowpowermode key on machines that expose only it")
+    func writesLowPowerOnlyKey() throws {
+        let pmset = FakePMSet(layout: .lowPowerOnly)
         let writer = PowerModeWriter(runCommand: pmset.run)
 
         let state = try writer.setPowerMode(rawMode: 1, rawScope: "all")
 
-        #expect(pmset.invocations.contains(["-a", "lowpowermode", "1"]))
+        #expect(pmset.invocations == [
+            ["-g", "custom"], ["-a", "lowpowermode", "1"], ["-g", "custom"]
+        ])
+        #expect(state.keyLayout == .lowPowerOnly)
         #expect(state.usesLegacyLowPowerKey)
     }
 
-    @Test("Rejects high power on legacy machines without writing")
-    func rejectsHighPowerOnLegacy() throws {
-        let pmset = FakePMSet(key: "lowpowermode")
+    @Test("""
+        Writes both booleans on a dual-boolean machine, clearing the other key first
+        """, arguments: [
+        (0, PowerMode.automatic, [["-a", "lowpowermode", "0"], ["-a", "highpowermode", "0"]]),
+        (1, PowerMode.lowPower, [["-a", "highpowermode", "0"], ["-a", "lowpowermode", "1"]]),
+        (2, PowerMode.highPower, [["-a", "lowpowermode", "0"], ["-a", "highpowermode", "1"]])
+    ])
+    func writesDualBooleanPlans(
+        rawMode: Int,
+        expected: PowerMode,
+        plan: [[String]]
+    ) throws {
+        // Starts in Low Power so every target mode is an actual change.
+        let pmset = FakePMSet(layout: .dualBoolean, battery: 1, ac: 1)
+        let writer = PowerModeWriter(runCommand: pmset.run)
+
+        let state = try writer.setPowerMode(rawMode: rawMode, rawScope: "all")
+
+        // Neither key alone can express the target mode, so both are written,
+        // in an order that never claims Low Power and High Power at once.
+        #expect(pmset.invocations == [["-g", "custom"]] + plan + [["-g", "custom"]])
+        #expect(state == PowerModeState(
+            battery: expected, ac: expected, keyLayout: .dualBoolean))
+        #expect(!state.usesLegacyLowPowerKey)
+    }
+
+    @Test("A dual-boolean write is verified by reading the booleans back")
+    func verifiesDualBooleanReadBack() throws {
+        let pmset = FakePMSet(layout: .dualBoolean)
+        pmset.ignoresWrites = true
+        let writer = PowerModeWriter(runCommand: pmset.run)
+
+        let error = #expect(throws: NSError.self) {
+            try writer.setPowerMode(rawMode: 2, rawScope: "battery")
+        }
+
+        // The machine kept highpowermode at 0, which the read-back sees as
+        // Automatic: dual-boolean hardware can refuse High Power too.
+        let thrown = try #require(error)
+        #expect(HelperError.code(of: thrown) == .unsupportedPowerMode)
+        #expect(thrown.localizedDescription.contains("unchanged from before the write"))
+        #expect(pmset.invocations == [
+            ["-g", "custom"],
+            ["-b", "lowpowermode", "0"],
+            ["-b", "highpowermode", "1"],
+            ["-g", "custom"]
+        ])
+    }
+
+    @Test("A dual-boolean scope maps to the matching pmset flag", arguments: [
+        ("battery", "-b"), ("ac", "-c"), ("all", "-a")
+    ])
+    func writesEachDualBooleanScope(scope: String, flag: String) throws {
+        let pmset = FakePMSet(layout: .dualBoolean)
+        let writer = PowerModeWriter(runCommand: pmset.run)
+
+        _ = try writer.setPowerMode(rawMode: 1, rawScope: scope)
+
+        #expect(pmset.invocations.dropFirst().dropLast() == [
+            [flag, "highpowermode", "0"], [flag, "lowpowermode", "1"]
+        ])
+    }
+
+    @Test("Rejects high power on a lowpowermode-only machine without writing")
+    func rejectsHighPowerOnLowPowerOnly() throws {
+        let pmset = FakePMSet(layout: .lowPowerOnly)
         let writer = PowerModeWriter(runCommand: pmset.run)
 
         let error = #expect(throws: NSError.self) {
@@ -335,6 +456,41 @@ struct PowerModeWriterTests {
         #expect(pmset.invocations.isEmpty)
     }
 
+    @Test("A dual-boolean transaction shares one budget across its extra write")
+    func dualBooleanBudgetIsShared() throws {
+        let pmset = FakePMSet(layout: .dualBoolean)
+        pmset.secondsPerCommand = 0.15
+        let writer = PowerModeWriter(runCommand: pmset.run)
+
+        _ = try writer.setPowerMode(rawMode: 2, rawScope: "battery")
+
+        // Two reads and two writes, each handed what the ones before it left:
+        // a layout needing more commands must not get more wall clock.
+        #expect(pmset.deadlines.count == 4)
+        #expect(pmset.deadlines[0] <= PowerModeWriter.transactionDeadline)
+        for index in 1..<pmset.deadlines.count {
+            #expect(pmset.deadlines[index] <= pmset.deadlines[index - 1] - 0.1)
+        }
+        #expect(pmset.deadlines[3] > 0)
+    }
+
+    @Test("An exhausted budget refuses to start a dual-boolean machine's second write")
+    func exhaustedBudgetStopsMidPlan() throws {
+        let pmset = FakePMSet(layout: .dualBoolean)
+        pmset.secondsPerCommand = 0.2
+        // Enough for the read and the first write, spent before the second.
+        let writer = PowerModeWriter(runCommand: pmset.run, transactionBudget: 0.3)
+
+        let error = #expect(throws: NSError.self) {
+            try writer.setPowerMode(rawMode: 2, rawScope: "battery")
+        }
+
+        let thrown = try #require(error)
+        #expect(HelperError.code(of: thrown) == .powerSettingFailed)
+        #expect(thrown.localizedDescription.contains("deadline passed before the write"))
+        #expect(pmset.invocations == [["-g", "custom"], ["-b", "lowpowermode", "0"]])
+    }
+
     @Test("One budget is shared by the transaction's three commands")
     func transactionBudgetIsShared() throws {
         let pmset = FakePMSet()
@@ -495,7 +651,7 @@ struct HelperServicePowerModeTests {
 
     @Test("Passes helper-domain errors through unchanged")
     func passesHelperErrorsThrough() throws {
-        let pmset = FakePMSet(key: "lowpowermode")
+        let pmset = FakePMSet(layout: .lowPowerOnly)
         let service = HelperService(powerModeWriter: PowerModeWriter(runCommand: pmset.run))
 
         var failure: NSError?

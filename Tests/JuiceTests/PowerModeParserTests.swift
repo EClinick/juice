@@ -22,8 +22,9 @@ struct PowerModeParserTests {
      displaysleep         10
     """
 
-    /// Older machines expose a 0/1 `lowpowermode` key instead.
-    static let legacyOutput = """
+    /// The oldest layout: a 0/1 `lowpowermode` key and no `highpowermode`, so
+    /// the machine has no High Power at all.
+    static let lowPowerOnlyOutput = """
     Battery Power:
      lowpowermode         1
      displaysleep         2
@@ -32,20 +33,122 @@ struct PowerModeParserTests {
      displaysleep         10
     """
 
+    /// The dual-boolean layout documented in pmset(1) SETTINGS: separate
+    /// `lowpowermode` and `highpowermode` keys, both 0/1, and no `powermode`.
+    /// Battery is in Low Power, AC in High Power.
+    static let dualBooleanOutput = """
+    Battery Power:
+     lowpowermode         1
+     highpowermode        0
+     displaysleep         2
+    AC Power:
+     lowpowermode         0
+     highpowermode        1
+     displaysleep         10
+    """
+
     @Test("Parses powermode from both sections")
     func parsesModernOutput() throws {
         let state = try PowerModeParser.parse(pmsetCustomOutput: Self.modernOutput)
         #expect(state == PowerModeState(
-            battery: .lowPower, ac: .automatic, usesLegacyLowPowerKey: false))
-        #expect(state.pmsetKey == "powermode")
+            battery: .lowPower, ac: .automatic, keyLayout: .unified))
+        #expect(state.keyLayout == .unified)
+        #expect(!state.usesLegacyLowPowerKey)
     }
 
-    @Test("Parses the legacy lowpowermode key and flags the machine")
-    func parsesLegacyOutput() throws {
-        let state = try PowerModeParser.parse(pmsetCustomOutput: Self.legacyOutput)
+    @Test("Parses a lowpowermode-only machine and records that it has no High Power")
+    func parsesLowPowerOnlyOutput() throws {
+        let state = try PowerModeParser.parse(pmsetCustomOutput: Self.lowPowerOnlyOutput)
         #expect(state == PowerModeState(
-            battery: .lowPower, ac: .automatic, usesLegacyLowPowerKey: true))
-        #expect(state.pmsetKey == "lowpowermode")
+            battery: .lowPower, ac: .automatic, keyLayout: .lowPowerOnly))
+        #expect(state.usesLegacyLowPowerKey)
+    }
+
+    @Test("Combines the dual-boolean keys into a mode per source")
+    func parsesDualBooleanOutput() throws {
+        let state = try PowerModeParser.parse(pmsetCustomOutput: Self.dualBooleanOutput)
+        // An active highpowermode used to read as Automatic and hide the option
+        // on hardware that supports it.
+        #expect(state == PowerModeState(
+            battery: .lowPower, ac: .highPower, keyLayout: .dualBoolean))
+        // The layout is not the legacy one, so High Power stays on offer.
+        #expect(!state.usesLegacyLowPowerKey)
+    }
+
+    @Test("Both dual booleans clear means Automatic")
+    func parsesDualBooleanAutomatic() throws {
+        let output = """
+        Battery Power:
+         lowpowermode         0
+         highpowermode        0
+        AC Power:
+         lowpowermode         0
+         highpowermode        0
+        """
+        let state = try PowerModeParser.parse(pmsetCustomOutput: output)
+        #expect(state == PowerModeState(
+            battery: .automatic, ac: .automatic, keyLayout: .dualBoolean))
+    }
+
+    @Test("Both dual booleans set reads as High Power, the more specific state")
+    func dualBooleanConflictPrefersHighPower() throws {
+        let output = """
+        Battery Power:
+         lowpowermode         1
+         highpowermode        1
+        AC Power:
+         lowpowermode         1
+         highpowermode        1
+        """
+        let state = try PowerModeParser.parse(pmsetCustomOutput: output)
+        #expect(state == PowerModeState(
+            battery: .highPower, ac: .highPower, keyLayout: .dualBoolean))
+    }
+
+    @Test("A highpowermode key in either section makes the whole machine dual-boolean")
+    func dualBooleanDetectedFromOneSection() throws {
+        // The key layout is a hardware property: a section that only mentions
+        // lowpowermode must not downgrade a machine that has High Power.
+        let output = """
+        Battery Power:
+         lowpowermode         0
+         highpowermode        1
+        AC Power:
+         lowpowermode         1
+        """
+        let state = try PowerModeParser.parse(pmsetCustomOutput: output)
+        #expect(state == PowerModeState(
+            battery: .highPower, ac: .lowPower, keyLayout: .dualBoolean))
+    }
+
+    @Test("Mirrors a lone dual-boolean section onto the missing source")
+    func mirrorsDualBooleanSection() throws {
+        let output = """
+        AC Power:
+         lowpowermode         0
+         highpowermode        1
+         displaysleep         10
+        """
+        let state = try PowerModeParser.parse(pmsetCustomOutput: output)
+        #expect(state == PowerModeState(
+            battery: .highPower, ac: .highPower, keyLayout: .dualBoolean,
+            hasBatterySource: false))
+    }
+
+    @Test("Throws rather than guessing at a boolean key that is not 0 or 1")
+    func throwsOnNonBooleanFlag() {
+        let output = """
+        Battery Power:
+         lowpowermode         0
+         highpowermode        7
+        AC Power:
+         lowpowermode         0
+         highpowermode        0
+        """
+        #expect(throws: PowerModeParser.ParseError.unrecognizedValue(
+            section: "Battery Power:", value: "7")) {
+            try PowerModeParser.parse(pmsetCustomOutput: output)
+        }
     }
 
     @Test("Parses high power")
@@ -72,7 +175,7 @@ struct PowerModeParserTests {
         """
         let state = try PowerModeParser.parse(pmsetCustomOutput: output)
         #expect(state == PowerModeState(
-            battery: .highPower, ac: .highPower, usesLegacyLowPowerKey: false))
+            battery: .highPower, ac: .highPower, keyLayout: .unified))
     }
 
     @Test("Attributes a key strictly to the section header above it")
@@ -122,7 +225,7 @@ struct PowerModeParserTests {
         """
         let state = try PowerModeParser.parse(pmsetCustomOutput: output)
         #expect(state == PowerModeState(
-            battery: .lowPower, ac: .lowPower, usesLegacyLowPowerKey: false))
+            battery: .lowPower, ac: .lowPower, keyLayout: .unified))
         #expect(state.hasBatterySource)
     }
 
@@ -186,7 +289,7 @@ struct PowerModeParserTests {
         let state = try PowerModeParser.parse(pmsetCustomOutput: output)
         // The UPS mode must not be attributed to the battery above it.
         #expect(state == PowerModeState(
-            battery: .lowPower, ac: .automatic, usesLegacyLowPowerKey: false))
+            battery: .lowPower, ac: .automatic, keyLayout: .unified))
     }
 
     @Test("An unknown trailing section cannot supply a missing source")
@@ -200,7 +303,7 @@ struct PowerModeParserTests {
         }
     }
 
-    @Test("Prefers powermode over lowpowermode whichever comes first", arguments: [true, false])
+    @Test("Prefers powermode over the booleans whichever comes first", arguments: [true, false])
     func prefersModernKey(legacyFirst: Bool) throws {
         let modern = " powermode            2"
         let legacy = " lowpowermode         1"
@@ -209,8 +312,7 @@ struct PowerModeParserTests {
 
         let state = try PowerModeParser.parse(pmsetCustomOutput: output)
         #expect(state == PowerModeState(
-            battery: .highPower, ac: .highPower, usesLegacyLowPowerKey: false))
-        #expect(state.pmsetKey == "powermode")
+            battery: .highPower, ac: .highPower, keyLayout: .unified))
     }
 
     @Test("Throws rather than guessing at an unknown mode value")
@@ -236,22 +338,67 @@ struct PowerModeParserTests {
 
     @Test("Mode lookup treats .all as defined only when both sources agree")
     func modeForScope() {
-        let mixed = PowerModeState(battery: .lowPower, ac: .automatic, usesLegacyLowPowerKey: false)
+        let mixed = PowerModeState(battery: .lowPower, ac: .automatic, keyLayout: .unified)
         #expect(mixed.mode(for: .battery) == .lowPower)
         #expect(mixed.mode(for: .ac) == .automatic)
         #expect(mixed.mode(for: .all) == nil)
 
-        let agreed = PowerModeState(battery: .highPower, ac: .highPower, usesLegacyLowPowerKey: false)
+        let agreed = PowerModeState(battery: .highPower, ac: .highPower, keyLayout: .unified)
         #expect(agreed.mode(for: .all) == .highPower)
     }
 
-    @Test("Round-trips through JSON, the XPC payload encoding")
-    func roundTripsJSON() throws {
+    @Test("powermode also outranks highpowermode inside a section")
+    func prefersUnifiedKeyOverHighPowerFlag() throws {
+        let output = """
+        Battery Power:
+         powermode            1
+         highpowermode        1
+        AC Power:
+         powermode            1
+         highpowermode        1
+        """
+        let state = try PowerModeParser.parse(pmsetCustomOutput: output)
+        #expect(state == PowerModeState(
+            battery: .lowPower, ac: .lowPower, keyLayout: .unified))
+    }
+
+    @Test("Round-trips every key layout through JSON, the XPC payload encoding",
+          arguments: [PowerModeKeyLayout.unified, .dualBoolean, .lowPowerOnly])
+    func roundTripsJSON(layout: PowerModeKeyLayout) throws {
         let state = PowerModeState(
-            battery: .highPower, ac: .automatic, usesLegacyLowPowerKey: false,
+            battery: .highPower, ac: .automatic, keyLayout: layout,
             hasBatterySource: false)
         let data = try JSONEncoder().encode(state)
         #expect(try JSONDecoder().decode(PowerModeState.self, from: data) == state)
+    }
+
+    @Test("Still publishes the retired boolean for a peer that predates the layout")
+    func encodesLegacyCompatibilityFlag() throws {
+        let encoded = try JSONSerialization.jsonObject(
+            with: try JSONEncoder().encode(PowerModeState(
+                battery: .automatic, ac: .automatic, keyLayout: .lowPowerOnly)))
+        let fields = try #require(encoded as? [String: Any])
+        #expect(fields["keyLayout"] as? String == "lowPowerOnly")
+        #expect(fields["usesLegacyLowPowerKey"] as? Bool == true)
+    }
+
+    @Test("Decodes a payload from a helper that predates keyLayout",
+          arguments: [(false, PowerModeKeyLayout.unified), (true, .lowPowerOnly)])
+    func decodesPayloadWithoutKeyLayout(legacy: Bool, expected: PowerModeKeyLayout) throws {
+        // The older boolean only distinguished these two layouts; a helper that
+        // cannot say more must still decode rather than fail the write.
+        let json = Data(#"{"battery":1,"ac":0,"usesLegacyLowPowerKey":\#(legacy)}"#.utf8)
+        let state = try JSONDecoder().decode(PowerModeState.self, from: json)
+        #expect(state == PowerModeState(
+            battery: .lowPower, ac: .automatic, keyLayout: expected))
+    }
+
+    @Test("Decodes a payload carrying neither the layout nor the retired boolean")
+    func decodesPayloadWithoutEitherKey() throws {
+        let json = Data(#"{"battery":2,"ac":2}"#.utf8)
+        let state = try JSONDecoder().decode(PowerModeState.self, from: json)
+        #expect(state == PowerModeState(
+            battery: .highPower, ac: .highPower, keyLayout: .unified))
     }
 
     @Test("Decodes a payload from a helper that predates hasBatterySource")
@@ -259,7 +406,7 @@ struct PowerModeParserTests {
         let json = Data(#"{"battery":1,"ac":0,"usesLegacyLowPowerKey":false}"#.utf8)
         let state = try JSONDecoder().decode(PowerModeState.self, from: json)
         #expect(state == PowerModeState(
-            battery: .lowPower, ac: .automatic, usesLegacyLowPowerKey: false))
+            battery: .lowPower, ac: .automatic, keyLayout: .unified))
         #expect(state.hasBatterySource)
     }
 }

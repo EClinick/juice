@@ -23,14 +23,29 @@ public enum PowerModeScope: String, Codable, Sendable {
     }
 }
 
+/// Which Energy Mode keys `pmset -g custom` publishes on this machine. The
+/// layout is a hardware property, and it decides both how output is read and
+/// how a change has to be written - see pmset(1) SETTINGS.
+public enum PowerModeKeyLayout: String, Codable, Sendable {
+    /// One tri-state `powermode` key per section: 0 Automatic, 1 Low, 2 High.
+    /// Every current Mac.
+    case unified
+    /// Separate `lowpowermode` and `highpowermode` 0/1 keys per section, as
+    /// shipped on the earlier Apple silicon machines that gained High Power.
+    /// Both modes are reachable, but neither is expressed by a single key.
+    case dualBoolean
+    /// A `lowpowermode` 0/1 key with no `highpowermode` counterpart. Those
+    /// machines have no High Power at all, so it must never be offered.
+    case lowPowerOnly
+}
+
 /// The Energy Mode currently configured for each power source.
 public struct PowerModeState: Codable, Sendable, Equatable {
     public var battery: PowerMode
     public var ac: PowerMode
-    /// True when `pmset` exposes the older `lowpowermode` key instead of
-    /// `powermode`. Those machines only accept 0/1, so High Power is
-    /// unreachable and must never be offered.
-    public var usesLegacyLowPowerKey: Bool
+    /// Which `pmset` keys this machine speaks, and therefore which commands a
+    /// write has to issue.
+    public var keyLayout: PowerModeKeyLayout
     /// True when `pmset -g custom` actually reported a "Battery Power:" section.
     /// Desktops have only "AC Power:", so their ``battery`` value is the AC
     /// setting mirrored rather than a second, independently settable source.
@@ -39,34 +54,57 @@ public struct PowerModeState: Codable, Sendable, Equatable {
     public init(
         battery: PowerMode,
         ac: PowerMode,
-        usesLegacyLowPowerKey: Bool,
+        keyLayout: PowerModeKeyLayout,
         hasBatterySource: Bool = true
     ) {
         self.battery = battery
         self.ac = ac
-        self.usesLegacyLowPowerKey = usesLegacyLowPowerKey
+        self.keyLayout = keyLayout
         self.hasBatterySource = hasBatterySource
     }
 
     private enum CodingKeys: String, CodingKey {
-        case battery, ac, usesLegacyLowPowerKey, hasBatterySource
+        case battery, ac, keyLayout, usesLegacyLowPowerKey, hasBatterySource
     }
 
-    /// ``hasBatterySource`` decodes with a default: the app and helper ship
-    /// together, but the installed helper can lag the app by one launch, and a
-    /// payload without the key must still load rather than fail the write.
+    /// ``keyLayout`` and ``hasBatterySource`` decode with defaults: the app and
+    /// helper ship together, but the installed helper can lag the app by one
+    /// launch, and a payload without the key must still load rather than fail
+    /// the write. A payload that predates ``keyLayout`` carries the
+    /// `usesLegacyLowPowerKey` boolean it replaced, which distinguishes only
+    /// ``PowerModeKeyLayout/lowPowerOnly`` from ``PowerModeKeyLayout/unified``.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         battery = try container.decode(PowerMode.self, forKey: .battery)
         ac = try container.decode(PowerMode.self, forKey: .ac)
-        usesLegacyLowPowerKey = try container.decode(Bool.self, forKey: .usesLegacyLowPowerKey)
+        if let layout = try container.decodeIfPresent(
+            PowerModeKeyLayout.self, forKey: .keyLayout) {
+            keyLayout = layout
+        } else {
+            let legacy =
+                try container.decodeIfPresent(Bool.self, forKey: .usesLegacyLowPowerKey) ?? false
+            keyLayout = legacy ? .lowPowerOnly : .unified
+        }
         hasBatterySource =
             try container.decodeIfPresent(Bool.self, forKey: .hasBatterySource) ?? true
     }
 
-    /// The `pmset` key name to write for this machine.
-    public var pmsetKey: String {
-        usesLegacyLowPowerKey ? "lowpowermode" : "powermode"
+    /// Emits the retired `usesLegacyLowPowerKey` boolean alongside
+    /// ``keyLayout`` so a peer that predates the layout still reads the one
+    /// thing it acts on: whether High Power exists.
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(battery, forKey: .battery)
+        try container.encode(ac, forKey: .ac)
+        try container.encode(keyLayout, forKey: .keyLayout)
+        try container.encode(usesLegacyLowPowerKey, forKey: .usesLegacyLowPowerKey)
+        try container.encode(hasBatterySource, forKey: .hasBatterySource)
+    }
+
+    /// True when this machine exposes `lowpowermode` with no `highpowermode`
+    /// counterpart, and so only accepts Automatic and Low Power.
+    public var usesLegacyLowPowerKey: Bool {
+        keyLayout == .lowPowerOnly
     }
 
     /// The mode configured for `scope`, or nil for `.all` unless both power
@@ -85,9 +123,9 @@ public enum PowerModeParser {
     public enum ParseError: LocalizedError, Equatable {
         /// Neither the "Battery Power:" nor the "AC Power:" section was found.
         case missingSections
-        /// A known section was present without a `powermode`/`lowpowermode`
-        /// key. Names that section, or the first one seen when neither carried
-        /// a key.
+        /// A known section was present without a
+        /// `powermode`/`lowpowermode`/`highpowermode` key. Names that section,
+        /// or the first one seen when neither carried a key.
         case missingPowerModeKey(section: String)
         /// The key is present but its value is not a mode this build knows.
         case unrecognizedValue(section: String, value: String)
@@ -107,21 +145,50 @@ public enum PowerModeParser {
     private static let batterySectionHeader = "Battery Power:"
     private static let acSectionHeader = "AC Power:"
 
+    /// One section's Energy Mode keys as `pmset` published them, and the mode
+    /// they add up to.
+    private struct SectionKeys {
+        var powermode: PowerMode?
+        var lowPower: Bool?
+        var highPower: Bool?
+
+        /// The section's mode and the key layout it was read from, or nil when
+        /// the section carried no key this build knows.
+        ///
+        /// `powermode` is authoritative wherever it appears. Failing that, the
+        /// booleans are combined, and `highpowermode` is read first: a section
+        /// claiming both `lowpowermode 1` and `highpowermode 1` is reported as
+        /// High Power, because that is the more specific enabled state and
+        /// reading it as Low Power would understate what the machine is doing.
+        var resolved: (mode: PowerMode, layout: PowerModeKeyLayout)? {
+            if let powermode { return (powermode, .unified) }
+            if let highPower {
+                if highPower { return (.highPower, .dualBoolean) }
+                return (lowPower == true ? .lowPower : .automatic, .dualBoolean)
+            }
+            if let lowPower { return (lowPower ? .lowPower : .automatic, .lowPowerOnly) }
+            return nil
+        }
+    }
+
     /// Extracts both sources' Energy Mode from `pmset -g custom` output.
     ///
     /// Keys are attributed strictly to the section header above them; a header
     /// this build does not know ends attribution rather than leaking its keys
-    /// into the previous source. A machine exposing `lowpowermode` in either
-    /// section is treated as legacy throughout, because the key name is a
-    /// property of the hardware, not the source. Desktops publish only an
-    /// "AC Power:" section, so a lone section is mirrored onto the other source;
-    /// a section that is present but carries no mode key is a parse failure
-    /// rather than something to mirror over.
+    /// into the previous source. The key layout is a property of the hardware,
+    /// not of a source, so it is resolved across both sections: any section
+    /// speaking the dual-boolean dialect makes the machine dual-boolean (High
+    /// Power exists), and only a machine that offers `lowpowermode` alone
+    /// anywhere - with no `highpowermode` in sight - is treated as having no
+    /// High Power. Desktops publish only an "AC Power:" section, so a lone
+    /// section is mirrored onto the other source; a section that is present but
+    /// carries no mode key is a parse failure rather than something to mirror
+    /// over.
     public static func parse(pmsetCustomOutput: String) throws -> PowerModeState {
         // nil means "no source owns the following keys": either nothing has been
         // seen yet, or the last header was one this build does not recognise.
         var current: String?
-        var values: [String: (mode: PowerMode, legacy: Bool)] = [:]
+        var keys: [String: SectionKeys] = [:]
         var knownSections: [String] = []
 
         for rawLine in pmsetCustomOutput.split(separator: "\n", omittingEmptySubsequences: false) {
@@ -141,18 +208,37 @@ public enum PowerModeParser {
             let fields = line.split(separator: " ", omittingEmptySubsequences: true)
             guard fields.count == 2 else { continue }
             let key = String(fields[0])
-            guard key == "powermode" || key == "lowpowermode" else { continue }
-
-            // A section can carry both keys. `powermode` is the authoritative
-            // one, so it wins whichever order they appear in.
-            let legacy = key == "lowpowermode"
-            if let existing = values[section], !(existing.legacy && !legacy) { continue }
-
             let value = String(fields[1])
-            guard let raw = Int(value), let mode = PowerMode(rawValue: raw) else {
-                throw ParseError.unrecognizedValue(section: section, value: value)
+            var parsed = keys[section] ?? SectionKeys()
+
+            switch key {
+            case "powermode":
+                // First occurrence wins, here and below: a repeated key is
+                // `pmset` output this build has no rule for, and the earlier
+                // line is the one it already believed.
+                guard parsed.powermode == nil else { continue }
+                guard let raw = Int(value), let mode = PowerMode(rawValue: raw) else {
+                    throw ParseError.unrecognizedValue(section: section, value: value)
+                }
+                parsed.powermode = mode
+            case "lowpowermode", "highpowermode":
+                // Once `powermode` has spoken for the section the booleans are
+                // never consulted, so their values are not judged either.
+                guard parsed.powermode == nil else { continue }
+                let isLowPower = key == "lowpowermode"
+                guard (isLowPower ? parsed.lowPower : parsed.highPower) == nil else { continue }
+                guard let flag = boolean(value) else {
+                    throw ParseError.unrecognizedValue(section: section, value: value)
+                }
+                if isLowPower {
+                    parsed.lowPower = flag
+                } else {
+                    parsed.highPower = flag
+                }
+            default:
+                continue
             }
-            values[section] = (mode, legacy)
+            keys[section] = parsed
         }
 
         // Mirroring is only ever right when the other section does not exist -
@@ -160,12 +246,14 @@ public enum PowerModeParser {
         // and carries no mode key is output this build does not understand, and
         // guessing its value from the other source would publish a mode the
         // machine never reported.
-        switch (values[batterySectionHeader], values[acSectionHeader]) {
+        let battery = keys[batterySectionHeader]?.resolved
+        let ac = keys[acSectionHeader]?.resolved
+        switch (battery, ac) {
         case let (battery?, ac?):
             return PowerModeState(
                 battery: battery.mode,
                 ac: ac.mode,
-                usesLegacyLowPowerKey: battery.legacy || ac.legacy,
+                keyLayout: layout(of: [battery.layout, ac.layout]),
                 hasBatterySource: true)
         case let (battery?, nil):
             guard !knownSections.contains(acSectionHeader) else {
@@ -174,7 +262,7 @@ public enum PowerModeParser {
             return PowerModeState(
                 battery: battery.mode,
                 ac: battery.mode,
-                usesLegacyLowPowerKey: battery.legacy,
+                keyLayout: battery.layout,
                 hasBatterySource: true)
         case let (nil, ac?):
             guard !knownSections.contains(batterySectionHeader) else {
@@ -183,11 +271,32 @@ public enum PowerModeParser {
             return PowerModeState(
                 battery: ac.mode,
                 ac: ac.mode,
-                usesLegacyLowPowerKey: ac.legacy,
+                keyLayout: ac.layout,
                 hasBatterySource: false)
         case (nil, nil):
             guard let first = knownSections.first else { throw ParseError.missingSections }
             throw ParseError.missingPowerModeKey(section: first)
+        }
+    }
+
+    /// The machine's layout given what each section spoke. `highpowermode`
+    /// anywhere proves High Power exists, so it outranks a section that only
+    /// offered `lowpowermode`; that in turn outranks `powermode`, because a
+    /// machine still publishing the older boolean will not take a tri-state
+    /// write.
+    private static func layout(of sections: [PowerModeKeyLayout]) -> PowerModeKeyLayout {
+        if sections.contains(.dualBoolean) { return .dualBoolean }
+        if sections.contains(.lowPowerOnly) { return .lowPowerOnly }
+        return .unified
+    }
+
+    /// A `pmset` 0/1 flag. Anything else means the key is not the boolean this
+    /// build takes it for, which is not something to guess at.
+    private static func boolean(_ value: String) -> Bool? {
+        switch value {
+        case "0": return false
+        case "1": return true
+        default: return nil
         }
     }
 

@@ -17,8 +17,10 @@ struct PowerModeWriter {
 
     /// Longest a whole read/write/read-back transaction may run before the
     /// helper gives up on it. `pmset` returns in milliseconds, so anything near
-    /// this is wedged, and the budget is shared by all three commands: the
-    /// client's own timeout covers the transaction, not one command of it.
+    /// this is wedged, and the budget is shared by every command in the
+    /// transaction - the two reads and however many writes the machine's key
+    /// layout needs: the client's own timeout covers the transaction, not one
+    /// command of it.
     static let transactionDeadline: TimeInterval = 10
 
     /// Longest a transaction waits for the one ahead of it. Beyond this the
@@ -129,24 +131,22 @@ struct PowerModeWriter {
         scope: PowerModeScope,
         budget: Budget
     ) throws -> PowerModeState {
-        // Which key exists is a hardware property, so it must be discovered
+        // Which keys exist is a hardware property, so it must be discovered
         // before writing rather than assumed.
         let before = try readState(
             deadline: budget.remainingOrThrow(before: "initial read"))
-        guard !(before.usesLegacyLowPowerKey && mode == .highPower) else {
-            throw HelperError.error(
-                .unsupportedPowerMode,
-                message: "this Mac only supports Automatic and Low Power")
-        }
+        // Derived before anything is spawned, so a mode this machine cannot
+        // express is refused rather than half-written.
+        let plan = try Self.writePlan(mode: mode, scope: scope, layout: before.keyLayout)
 
-        let write = try runCommand(
-            Self.pmsetPath,
-            [scope.pmsetFlag, before.pmsetKey, String(mode.rawValue)],
-            budget.remainingOrThrow(before: "write"))
-        guard write.status == 0 else {
-            throw HelperError.error(
-                .powerSettingFailed,
-                message: "pmset exited \(write.status): \(Self.detail(write.stderr))")
+        for arguments in plan {
+            let write = try runCommand(
+                Self.pmsetPath, arguments, budget.remainingOrThrow(before: "write"))
+            guard write.status == 0 else {
+                throw HelperError.error(
+                    .powerSettingFailed,
+                    message: "pmset exited \(write.status): \(Self.detail(write.stderr))")
+            }
         }
 
         // pmset exits 0 for values the hardware silently declines, so the
@@ -170,6 +170,45 @@ struct PowerModeWriter {
                         : "; something else changed Energy Mode during the write"))
         }
         return after
+    }
+
+    /// The `pmset` invocations that put `scope` into `mode` on a machine whose
+    /// keys are laid out as `layout`, in the order they must run.
+    ///
+    /// A dual-boolean machine expresses no mode with a single key, so both are
+    /// always written and the machine is never left with only half the answer.
+    /// The key being cleared goes first: nothing then observes `lowpowermode`
+    /// and `highpowermode` set at once, and a transaction cut short mid-plan
+    /// leaves the more conservative of the two states rather than a contradiction.
+    private static func writePlan(
+        mode: PowerMode,
+        scope: PowerModeScope,
+        layout: PowerModeKeyLayout
+    ) throws -> [[String]] {
+        func command(_ key: String, _ value: Int) -> [String] {
+            [scope.pmsetFlag, key, String(value)]
+        }
+
+        switch layout {
+        case .unified:
+            return [command("powermode", mode.rawValue)]
+        case .lowPowerOnly:
+            guard mode != .highPower else {
+                throw HelperError.error(
+                    .unsupportedPowerMode,
+                    message: "this Mac only supports Automatic and Low Power")
+            }
+            return [command("lowpowermode", mode == .lowPower ? 1 : 0)]
+        case .dualBoolean:
+            switch mode {
+            case .automatic:
+                return [command("lowpowermode", 0), command("highpowermode", 0)]
+            case .lowPower:
+                return [command("highpowermode", 0), command("lowpowermode", 1)]
+            case .highPower:
+                return [command("lowpowermode", 0), command("highpowermode", 1)]
+            }
+        }
     }
 
     /// The individual power sources a scope writes, so `.all` is verified on
