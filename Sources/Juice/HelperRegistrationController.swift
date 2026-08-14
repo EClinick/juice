@@ -556,7 +556,10 @@ final class HelperRegistrationController: NSObject, ObservableObject {
             as? String ?? "unknown"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion")
             as? String ?? "unknown"
-        return "\(version)-\(build)"
+        // The defaults suite survives Dev bundle-ID rotations, so the app
+        // identity must participate in deciding whether a pending helper is
+        // the payload this app registered.
+        return "\(JuiceXPC.appBundleID)|\(version)-\(build)"
     }
 
     private static var isInstalledInApplications: Bool {

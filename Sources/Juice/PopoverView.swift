@@ -125,7 +125,7 @@ struct PopoverView: View {
 
             Divider()
 
-            HStack {
+            HStack(spacing: 6) {
                 Button("Refresh") {
                     model.refresh()
                     helper.refresh()
@@ -137,7 +137,8 @@ struct PopoverView: View {
                         Task { await energyMode.refresh() }
                     }
                 }
-                Button("Stats & Settings…", action: showStatsWindow)
+                Button("Stats", action: showStatsWindow)
+                Button("Settings", action: showSettingsWindow)
                 Spacer()
                 Button("Quit Juice") { NSApp.terminate(nil) }
             }
@@ -249,23 +250,11 @@ struct PopoverView: View {
                     }
                 }
 
-                HStack {
-                    Toggle("Automatic updates", isOn: Binding(
-                        get: { updater.automaticallyUpdates },
-                        set: { updater.automaticallyUpdates = $0 }
-                    ))
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    Spacer()
-                    if updater.readyUpdate == nil {
-                        Button("Check for Updates…") {
-                            updater.checkForUpdates()
-                        }
+                if updater.readyUpdate == nil {
+                    Button("Check for Updates…") {
+                        updater.checkForUpdates()
                     }
                 }
-                Text("Turn this off to update manually.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -359,8 +348,13 @@ struct PopoverView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// Stats and Settings intentionally share one retained AppKit window. The
-    /// kWh rate now lives in the Stats header beside the costs it controls.
+    /// Keep `MenuBarExtra` as the app's only SwiftUI scene, as required by its
+    /// removal-to-quit lifecycle. An AppKit presenter gives the same SwiftUI
+    /// settings view a regular retained window without adding another scene.
+    private func showSettingsWindow() {
+        SettingsWindowPresenter.shared.show()
+    }
+
     private func showStatsWindow() {
         if model.isMacMini {
             StatsWindowPresenter.shared.showServer(store: JuiceApp.sampler?.store)

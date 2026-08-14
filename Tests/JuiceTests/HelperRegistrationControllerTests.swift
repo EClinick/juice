@@ -1,4 +1,5 @@
 import Foundation
+import JuiceXPCShared
 import ServiceManagement
 import Testing
 @testable import Juice
@@ -53,6 +54,24 @@ struct HelperRegistrationControllerTests {
 
         #expect(controller.state == .requiresApproval)
         #expect(defaults.string(forKey: "registered_helper_app_build") != nil)
+    }
+
+    @Test("A legacy identity-blind approval record is re-registered")
+    func legacyApprovalRecordIsReregistered() async {
+        let service = FakeHelperService(statuses: [.requiresApproval, .requiresApproval])
+        let suiteName = "HelperRegistrationControllerTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defaults.set("0.1.0-1", forKey: "registered_helper_app_build")
+        let controller = makeController(service: service, defaults: defaults)
+
+        await controller.prepare()
+
+        #expect(service.asynchronousUnregisterCallCount == 1)
+        #expect(service.registerCallCount == 1)
+        #expect(controller.state == .requiresApproval)
+        #expect(defaults.string(forKey: "registered_helper_app_build")?
+            .hasPrefix("\(JuiceXPC.appBundleID)|") == true)
     }
 
     @Test("A launch-denied registration records the approval build")
