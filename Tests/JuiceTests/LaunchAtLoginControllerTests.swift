@@ -58,7 +58,25 @@ struct LaunchAtLoginControllerTests {
         #expect(service.registerCallCount == 1)
         #expect(controller.status == .requiresApproval)
         #expect(!controller.isEnabled)
+        #expect(controller.isRegistered)
         #expect(controller.requiresApproval)
+        #expect(controller.errorMessage == nil)
+    }
+
+    @Test("A pending approval registration can be cancelled")
+    func cancelPendingApproval() {
+        let service = FakeLaunchAtLoginService(
+            status: .requiresApproval,
+            statusAfterUnregister: .notRegistered)
+        let controller = makeController(service: service)
+
+        #expect(controller.isRegistered)
+
+        controller.setEnabled(false)
+
+        #expect(service.unregisterCallCount == 1)
+        #expect(controller.status == .notRegistered)
+        #expect(!controller.isRegistered)
         #expect(controller.errorMessage == nil)
     }
 

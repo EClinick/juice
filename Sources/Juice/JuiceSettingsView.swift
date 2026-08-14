@@ -107,15 +107,13 @@ private struct GeneralSettingsPage: View {
                     Toggle(
                         "Open Juice at Login",
                         isOn: Binding(
-                            get: { launchAtLogin.isEnabled },
+                            get: { launchAtLogin.isRegistered },
                             set: { launchAtLogin.setEnabled($0) }
                         )
                     )
                     .labelsHidden()
                     .toggleStyle(.switch)
-                    .disabled(
-                        launchAtLogin.isChanging
-                            || launchAtLogin.requiresApproval)
+                    .disabled(launchAtLogin.isChanging)
                 }
             }
 

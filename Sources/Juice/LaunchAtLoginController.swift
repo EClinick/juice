@@ -24,6 +24,7 @@ final class LaunchAtLoginController: NSObject, ObservableObject {
     @Published private(set) var errorMessage: String?
 
     var isEnabled: Bool { status == .enabled }
+    var isRegistered: Bool { isEnabled || status == .requiresApproval }
     var requiresApproval: Bool { status == .requiresApproval }
 
     private let service: LaunchAtLoginServiceManaging
