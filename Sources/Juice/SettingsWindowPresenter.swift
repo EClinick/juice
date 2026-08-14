@@ -18,6 +18,7 @@ final class SettingsWindowPresenter {
     private let makeRootView: () -> AnyView
     private let activateApplication: () -> Void
     private let refreshLaunchAtLogin: () -> Void
+    private let centerWindow: @MainActor (NSWindow) -> Void
     private let autosaveName: NSWindow.FrameAutosaveName
 
     private init() {
@@ -28,6 +29,7 @@ final class SettingsWindowPresenter {
         refreshLaunchAtLogin = {
             LaunchAtLoginController.shared.refresh()
         }
+        centerWindow = { $0.center() }
         autosaveName = Self.frameAutosaveName
     }
 
@@ -35,11 +37,13 @@ final class SettingsWindowPresenter {
         makeRootView: @escaping () -> AnyView,
         activateApplication: @escaping () -> Void,
         refreshLaunchAtLogin: @escaping () -> Void,
+        centerWindow: @escaping @MainActor (NSWindow) -> Void,
         autosaveName: NSWindow.FrameAutosaveName
     ) {
         self.makeRootView = makeRootView
         self.activateApplication = activateApplication
         self.refreshLaunchAtLogin = refreshLaunchAtLogin
+        self.centerWindow = centerWindow
         self.autosaveName = autosaveName
     }
 
@@ -61,13 +65,14 @@ final class SettingsWindowPresenter {
         window.styleMask = [.titled, .closable, .miniaturizable]
         window.contentMinSize = Self.contentSize
         window.contentMaxSize = Self.contentSize
-        let restoredFrame = window.setFrameAutosaveName(autosaveName)
+        let restoredFrame = window.setFrameUsingName(autosaveName)
+        window.setFrameAutosaveName(autosaveName)
         window.setContentSize(Self.contentSize)
         window.isReleasedWhenClosed = false
 
         self.window = window
         if !restoredFrame {
-            window.center()
+            centerWindow(window)
         }
         window.makeKeyAndOrderFront(nil)
     }
