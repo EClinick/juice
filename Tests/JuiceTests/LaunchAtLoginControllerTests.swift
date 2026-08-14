@@ -78,6 +78,21 @@ struct LaunchAtLoginControllerTests {
         #expect(!controller.isChanging)
     }
 
+    @Test("Enabling is refused outside the Applications folder")
+    func enableRequiresInstalledApplication() {
+        let service = FakeLaunchAtLoginService(status: .notRegistered)
+        let controller = makeController(
+            service: service,
+            installedInApplications: false)
+
+        controller.setEnabled(true)
+
+        #expect(service.registerCallCount == 0)
+        #expect(controller.status == .notRegistered)
+        #expect(controller.errorMessage ==
+            "Move Juice to the Applications folder before enabling launch at login.")
+    }
+
     @Test("An already-landed registration wins over a race error")
     func enableRaceUsesEffectiveStatus() {
         let service = FakeLaunchAtLoginService(
@@ -166,9 +181,13 @@ struct LaunchAtLoginControllerTests {
     }
 
     private func makeController(
-        service: FakeLaunchAtLoginService
+        service: FakeLaunchAtLoginService,
+        installedInApplications: Bool = true
     ) -> LaunchAtLoginController {
-        LaunchAtLoginController(service: service, notificationCenter: nil)
+        LaunchAtLoginController(
+            service: service,
+            notificationCenter: nil,
+            installedInApplications: { installedInApplications })
     }
 }
 

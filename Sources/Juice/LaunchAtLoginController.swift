@@ -27,16 +27,20 @@ final class LaunchAtLoginController: NSObject, ObservableObject {
     var requiresApproval: Bool { status == .requiresApproval }
 
     private let service: LaunchAtLoginServiceManaging
+    private let installedInApplications: () -> Bool
     private let openSystemSettingsAction: () -> Void
 
     init(
         service: LaunchAtLoginServiceManaging = SMAppService.mainApp,
         notificationCenter: NotificationCenter? = .default,
+        installedInApplications: (() -> Bool)? = nil,
         openSystemSettingsAction: @escaping () -> Void = {
             SMAppService.openSystemSettingsLoginItems()
         }
     ) {
         self.service = service
+        self.installedInApplications = installedInApplications
+            ?? { Self.isInstalledInApplications }
         self.openSystemSettingsAction = openSystemSettingsAction
         status = service.status
         super.init()
@@ -53,6 +57,10 @@ final class LaunchAtLoginController: NSObject, ObservableObject {
         errorMessage = nil
 
         if enabled {
+            guard installedInApplications() else {
+                errorMessage = "Move Juice to the Applications folder before enabling launch at login."
+                return
+            }
             guard status != .enabled, status != .requiresApproval else { return }
         } else {
             guard status == .enabled || status == .requiresApproval else { return }
@@ -98,5 +106,9 @@ final class LaunchAtLoginController: NSObject, ObservableObject {
 
     @objc private func appDidBecomeActive() {
         refresh()
+    }
+
+    private static var isInstalledInApplications: Bool {
+        Bundle.main.bundleURL.standardizedFileURL.path.hasPrefix("/Applications/")
     }
 }
