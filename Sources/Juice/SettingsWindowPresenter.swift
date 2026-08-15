@@ -10,9 +10,9 @@ import SwiftUI
 final class SettingsWindowPresenter {
     static let shared = SettingsWindowPresenter()
 
-    static let contentSize = NSSize(width: 660, height: 420)
+    static let contentSize = JuiceSettingsMetrics.contentSize
     static let frameAutosaveName: NSWindow.FrameAutosaveName =
-        "JuiceSettingsWindow"
+        "JuiceSettingsWindow.v2"
 
     private(set) var window: NSWindow?
     private let makeRootView: () -> AnyView
@@ -62,7 +62,14 @@ final class SettingsWindowPresenter {
         let controller = NSHostingController(rootView: makeRootView())
         let window = NSWindow(contentViewController: controller)
         window.title = "Juice Settings"
-        window.styleMask = [.titled, .closable, .miniaturizable]
+        window.styleMask = [
+            .titled,
+            .closable,
+            .miniaturizable,
+            .fullSizeContentView,
+        ]
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
         window.contentMinSize = Self.contentSize
         window.contentMaxSize = Self.contentSize
         let restoredFrame = window.setFrameUsingName(autosaveName)

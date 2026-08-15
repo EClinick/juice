@@ -6,7 +6,7 @@ import Testing
 @MainActor
 @Suite(.serialized)
 struct SettingsWindowPresenterTests {
-    @Test("Settings reuses one retained, fixed-size window")
+    @Test("Settings reuses one retained, fixed-size full-height window")
     func reusesRetainedWindow() throws {
         var activationCount = 0
         var refreshCount = 0
@@ -26,6 +26,11 @@ struct SettingsWindowPresenterTests {
         let firstWindow = try #require(presenter.window)
         #expect(firstWindow.title == "Juice Settings")
         #expect(!firstWindow.styleMask.contains(.resizable))
+        #expect(firstWindow.styleMask.contains(.fullSizeContentView))
+        #expect(firstWindow.titlebarAppearsTransparent)
+        #expect(firstWindow.titleVisibility == .hidden)
+        #expect(SettingsWindowPresenter.contentSize == NSSize(width: 760, height: 520))
+        #expect(SettingsWindowPresenter.frameAutosaveName == "JuiceSettingsWindow.v2")
         #expect(firstWindow.contentMinSize == SettingsWindowPresenter.contentSize)
         #expect(firstWindow.contentMaxSize == SettingsWindowPresenter.contentSize)
         #expect(centerCount == 1)

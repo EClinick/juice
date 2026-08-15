@@ -32,7 +32,7 @@ Juice surfaces that data: which apps used how many watt-hours today, over the la
 - **Charge timeline**: battery level over the last 24 hours, sampled locally every minute, with on-AC periods highlighted.
 - **Insights**: drain-rate anomalies measured against your own 7-day baseline, apps using far more than their typical energy, the energy hog of the week, and charging-habit observations.
 - **Stats window**: laptops get the full app table, 7-day charge chart, and battery health; Mac minis get a dedicated server dashboard with live app watts kept visible across Today, 1W, and All, permanent app energy totals, and system power history.
-- **In-app updates**: choose automatic downloads in Settings and get notified when an update is ready to install, or keep updates manual and use “Check for Updates…” whenever you want. Homebrew installs update directly from Juice's signed release feed.
+- **In-app updates**: choose automatic downloads from the popover or Settings and get notified when an update is ready to install, or keep updates manual and use “Check for Updates…” whenever you want. Homebrew installs update directly from Juice's signed release feed.
 - **Honest charts**: axes are pinned to the real time window, recording gaps show as gaps, and partial data is labeled as such - the charts never stretch or interpolate data to look fuller than it is.
 - **Private by default**: no telemetry, system profile, or accounts. Juice only contacts its release feed when you ask it to check for updates or enable automatic updates.
 

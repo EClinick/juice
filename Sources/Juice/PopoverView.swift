@@ -250,11 +250,24 @@ struct PopoverView: View {
                     }
                 }
 
-                if updater.readyUpdate == nil {
-                    Button("Check for Updates…") {
-                        updater.checkForUpdates()
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("Automatic updates", isOn: Binding(
+                        get: { updater.automaticallyUpdates },
+                        set: { updater.automaticallyUpdates = $0 }
+                    ))
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    if updater.readyUpdate == nil {
+                        Button("Check for Updates…") {
+                            updater.checkForUpdates()
+                        }
                     }
                 }
+                Text(updater.automaticallyUpdates
+                    ? "Juice checks for and downloads updates automatically."
+                    : "Use Check for Updates… to update manually.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         }
     }
