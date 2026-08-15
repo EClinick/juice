@@ -598,15 +598,16 @@ struct BoundedProcessTests {
     func boundsDrainByDeadline() throws {
         let started = Date()
         // sh exits at once and leaves a background sleep holding the write ends
-        // of both pipes, so draining them to EOF would take 30 s.
+        // of both pipes, so draining them to EOF would outlast the deadline.
         let result = try BoundedProcess.run(
-            "/bin/sh", ["-c", "echo hi; sleep 30 &"], deadline: 0.3)
+            "/bin/sh", ["-c", "printf out; printf err >&2; sleep 10 &"], deadline: 0.3)
         let elapsed = Date().timeIntervalSince(started)
 
         // The child exited cleanly, so what it managed to write is returned -
         // the deadline is a promise about wall clock, not about EOF.
         #expect(result.status == 0)
-        #expect(result.stdout.contains("hi"))
+        #expect(result.stdout == "out")
+        #expect(result.stderr == "err")
         #expect(elapsed < 5)
     }
 

@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Runs a child process with an absolute path and an argv array - never a shell
 /// string - under a hard deadline, draining both pipes concurrently.
@@ -66,24 +67,17 @@ public enum BoundedProcess {
         let exited = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in exited.signal() }
 
-        let out = PipeDrain(outPipe)
-        let err = PipeDrain(errPipe)
+        var output = PipeCollector(stdout: outPipe, stderr: errPipe)
         let start = DispatchTime.now()
         try process.run()
 
-        let drained = DispatchGroup()
-        let queue = DispatchQueue(
-            label: "\(JuiceXPC.helperLabel).bounded-process", attributes: .concurrent)
-        queue.async(group: drained, execute: out.drain)
-        queue.async(group: drained, execute: err.drain)
-
-        if exited.wait(timeout: start + deadline) == .timedOut {
+        if !output.waitForExit(exited, until: start + deadline) {
             process.terminate()
-            if exited.wait(timeout: .now() + terminationGrace) == .timedOut {
+            if !output.waitForExit(exited, until: .now() + terminationGrace) {
                 kill(process.processIdentifier, SIGKILL)
-                _ = exited.wait(timeout: .now() + terminationGrace)
+                _ = output.waitForExit(exited, until: .now() + terminationGrace)
             }
-            finishDraining(drained, [out, err], budget: drainGrace)
+            output.drain(until: .now() + drainGrace)
             throw Failure.timedOut(seconds: deadline)
         }
 
@@ -92,8 +86,11 @@ public enum BoundedProcess {
         // inherits them and would otherwise park this call for 30 s. Whatever
         // was captured by the time the deadline runs out is what the caller
         // gets: the deadline is a promise about wall clock, not about output.
-        finishDraining(drained, [out, err], budget: remaining(from: start, deadline: deadline))
-        return Result(status: process.terminationStatus, stdout: out.text, stderr: err.text)
+        output.drain(until: .now() + remaining(from: start, deadline: deadline))
+        return Result(
+            status: process.terminationStatus,
+            stdout: output.stdoutText,
+            stderr: output.stderrText)
     }
 
     /// Seconds left of `deadline`, plus the drain grace; never negative.
@@ -101,95 +98,131 @@ public enum BoundedProcess {
         let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1e9
         return max(deadline - elapsed, 0) + drainGrace
     }
-
-    /// Waits up to `budget` for both drains to finish, then stops them so no
-    /// reader outlives the call by more than one poll interval.
-    private static func finishDraining(
-        _ drained: DispatchGroup,
-        _ drains: [PipeDrain],
-        budget: TimeInterval
-    ) {
-        guard drained.wait(timeout: .now() + budget) == .timedOut else { return }
-        for drain in drains { drain.stop() }
-    }
 }
 
-/// Reads one pipe to EOF on a background queue. Owns its file handle so the
-/// concurrent read never has to capture a non-Sendable value.
-///
-/// The read loop polls instead of blocking in `readToEnd()`: a blocking read
-/// can only be unblocked by closing the descriptor underneath it, which races
-/// the reader, whereas a poll timeout lets ``stop()`` end the loop cleanly.
-private final class PipeDrain: @unchecked Sendable {
-    /// How long a poll waits before rechecking ``stop()``. Short enough that a
-    /// stopped drain does not outlive its run, long enough to be free while the
-    /// child is actually writing (a readable pipe returns immediately).
+/// Multiplexes stdout and stderr on the calling thread so draining never
+/// depends on a background worker being scheduled before the deadline. Each
+/// ready descriptor contributes at most one chunk per poll, preventing a busy
+/// stream from starving the other.
+private struct PipeCollector {
+    /// How long a poll waits before rechecking the process-exit semaphore.
     private static let pollInterval: Int32 = 25
     private static let bufferSize = 64 * 1024
+    private static let requestedEvents = Int16(POLLIN)
 
-    private let handle: FileHandle
-    private let lock = NSLock()
-    private var data = Data()
-    private var stopped = false
+    private let stdoutHandle: FileHandle
+    private let stderrHandle: FileHandle
+    private var stdoutData = Data()
+    private var stderrData = Data()
+    private var stdoutAtEOF = false
+    private var stderrAtEOF = false
 
-    init(_ pipe: Pipe) {
-        handle = pipe.fileHandleForReading
+    init(stdout: Pipe, stderr: Pipe) {
+        stdoutHandle = stdout.fileHandleForReading
+        stderrHandle = stderr.fileHandleForReading
     }
 
-    func drain() {
-        let descriptor = handle.fileDescriptor
-        var buffer = [UInt8](repeating: 0, count: Self.bufferSize)
-        // One poll always happens, even on an already-stopped drain: under load
-        // this closure can start after ``stop()`` has fired, and a child that
-        // already wrote its whole answer and exited must not be reported as
-        // having said nothing.
-        var polled = false
-        while !polled || !isStopped {
-            polled = true
-            var event = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
-            let ready = poll(&event, 1, Self.pollInterval)
-            if ready < 0 {
-                if errno == EINTR { continue }
-                return
+    /// Drains both pipes while waiting for the direct child to exit. Polling on
+    /// this thread keeps a child that fills either pipe able to make progress.
+    mutating func waitForExit(
+        _ exited: DispatchSemaphore,
+        until deadline: DispatchTime
+    ) -> Bool {
+        while true {
+            if exited.wait(timeout: .now()) == .success { return true }
+
+            let timeout = Self.timeout(until: deadline)
+            guard timeout > 0 else {
+                pollOnce(timeout: 0)
+                return exited.wait(timeout: .now()) == .success
             }
-            if ready == 0 { continue }
-            let count = buffer.withUnsafeMutableBytes {
-                read(descriptor, $0.baseAddress, $0.count)
-            }
-            if count < 0 {
-                if errno == EINTR || errno == EAGAIN { continue }
-                return
-            }
-            // EOF: every write end is closed, so the child and any descendant
-            // that inherited them are done.
-            if count == 0 { return }
-            append(buffer, count: count)
+            pollOnce(timeout: timeout)
         }
     }
 
-    /// Ends the read loop. The captured output stays readable; only further
-    /// reading stops.
-    func stop() {
-        lock.lock()
-        stopped = true
-        lock.unlock()
+    /// Drains until every writer closes or the absolute bound arrives. One
+    /// final nonblocking poll captures bytes already buffered at the boundary.
+    mutating func drain(until deadline: DispatchTime) {
+        while !atEOF {
+            let timeout = Self.timeout(until: deadline)
+            guard timeout > 0 else { break }
+            pollOnce(timeout: timeout)
+        }
+        pollOnce(timeout: 0)
     }
 
-    var text: String {
-        lock.lock()
-        defer { lock.unlock() }
-        return String(decoding: data, as: UTF8.self)
+    var stdoutText: String {
+        String(decoding: stdoutData, as: UTF8.self)
     }
 
-    private var isStopped: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return stopped
+    var stderrText: String {
+        String(decoding: stderrData, as: UTF8.self)
     }
 
-    private func append(_ buffer: [UInt8], count: Int) {
-        lock.lock()
-        data.append(contentsOf: buffer[0..<count])
-        lock.unlock()
+    private var atEOF: Bool {
+        stdoutAtEOF && stderrAtEOF
+    }
+
+    private static func timeout(until deadline: DispatchTime) -> Int32 {
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard deadline.uptimeNanoseconds > now else { return 0 }
+
+        let remaining = deadline.uptimeNanoseconds - now
+        let milliseconds = (remaining + 999_999) / 1_000_000
+        return min(pollInterval, Int32(clamping: milliseconds))
+    }
+
+    private mutating func pollOnce(timeout: Int32) {
+        var events = [
+            pollfd(
+                fd: stdoutAtEOF ? -1 : stdoutHandle.fileDescriptor,
+                events: Self.requestedEvents,
+                revents: 0),
+            pollfd(
+                fd: stderrAtEOF ? -1 : stderrHandle.fileDescriptor,
+                events: Self.requestedEvents,
+                revents: 0),
+        ]
+        let ready = events.withUnsafeMutableBufferPointer {
+            poll($0.baseAddress, nfds_t($0.count), timeout)
+        }
+        guard ready > 0 else { return }
+
+        var buffer = [UInt8](repeating: 0, count: Self.bufferSize)
+        if events[0].revents != 0 {
+            Self.read(
+                stdoutHandle.fileDescriptor,
+                into: &stdoutData,
+                atEOF: &stdoutAtEOF,
+                buffer: &buffer)
+        }
+        if events[1].revents != 0 {
+            Self.read(
+                stderrHandle.fileDescriptor,
+                into: &stderrData,
+                atEOF: &stderrAtEOF,
+                buffer: &buffer)
+        }
+    }
+
+    private static func read(
+        _ descriptor: Int32,
+        into data: inout Data,
+        atEOF: inout Bool,
+        buffer: inout [UInt8]
+    ) {
+        let count = buffer.withUnsafeMutableBytes {
+            Darwin.read(descriptor, $0.baseAddress, $0.count)
+        }
+        if count > 0 {
+            data.append(contentsOf: buffer[0..<count])
+        } else if count == 0 {
+            // EOF means the child and every descendant holding this write end
+            // have closed it.
+            atEOF = true
+        } else if errno != EINTR && errno != EAGAIN {
+            // A permanent read error cannot become useful output later.
+            atEOF = true
+        }
     }
 }
