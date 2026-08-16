@@ -134,6 +134,32 @@ struct PopoverLayoutTests {
         #expect(controller.view.bounds.contains(footer.convert(footer.bounds, to: controller.view)))
     }
 
+    @Test("automatic update controls share one row at the battery popover width")
+    func automaticUpdateControlsShareOneRow() {
+        var automaticallyUpdates = true
+        let controller = NSHostingController(
+            rootView: PopoverAutomaticUpdateControls(
+                automaticallyUpdates: Binding(
+                    get: { automaticallyUpdates },
+                    set: { automaticallyUpdates = $0 }
+                ),
+                showsCheckButton: true,
+                checkForUpdates: {})
+                // The 320-point battery popover has 14 points of padding on
+                // each side, leaving exactly 292 points for these controls.
+                .frame(width: 292)
+        )
+        controller.view.frame = NSRect(
+            origin: .zero,
+            size: controller.view.fittingSize)
+        controller.view.layoutSubtreeIfNeeded()
+
+        // The accessibility fallback is 52 points tall. At the standard text
+        // size, the horizontal candidate is 24 points tall and must win.
+        #expect(controller.view.fittingSize.height >= 18)
+        #expect(controller.view.fittingSize.height < 32)
+    }
+
     @Test("scroll cue button jumps the viewport to the bottom")
     func scrollCueButtonJumpsToBottom() async throws {
         let controller = NSHostingController(
