@@ -250,26 +250,47 @@ struct PopoverView: View {
                     }
                 }
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Toggle("Automatic updates", isOn: Binding(
-                        get: { updater.automaticallyUpdates },
-                        set: { updater.automaticallyUpdates = $0 }
-                    ))
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    if updater.readyUpdate == nil {
-                        Button("Check for Updates…") {
-                            updater.checkForUpdates()
+                if updater.readyUpdate == nil {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 0) {
+                            automaticUpdatesToggle
+                                .fixedSize(horizontal: true, vertical: false)
+                            Spacer(minLength: 6)
+                            checkForUpdatesButton
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            automaticUpdatesToggle
+                            HStack {
+                                Spacer(minLength: 0)
+                                checkForUpdatesButton
+                            }
                         }
                     }
+                } else {
+                    automaticUpdatesToggle
                 }
-                Text(updater.automaticallyUpdates
-                    ? "Juice checks for and downloads updates automatically."
-                    : "Use Check for Updates… to update manually.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private var automaticUpdatesToggle: some View {
+        Toggle("Automatic updates", isOn: Binding(
+            get: { updater.automaticallyUpdates },
+            set: { updater.automaticallyUpdates = $0 }
+        ))
+        .toggleStyle(.switch)
+        .controlSize(.small)
+        .accessibilityLabel("Automatic updates")
+        .accessibilityHint(
+            "Checks for and downloads updates automatically when enabled.")
+    }
+
+    private var checkForUpdatesButton: some View {
+        Button("Check for Updates…") {
+            updater.checkForUpdates()
+        }
+        .controlSize(.small)
     }
 
     private func batteryDashboard(_ reading: BatteryReading) -> some View {
