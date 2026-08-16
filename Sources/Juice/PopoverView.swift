@@ -250,26 +250,32 @@ struct PopoverView: View {
                     }
                 }
 
-                VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 0) {
                     Toggle("Automatic updates", isOn: Binding(
                         get: { updater.automaticallyUpdates },
                         set: { updater.automaticallyUpdates = $0 }
                     ))
                     .toggleStyle(.switch)
                     .controlSize(.small)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .accessibilityLabel("Automatic updates")
+                    .accessibilityHint(automaticUpdateDescription)
                     if updater.readyUpdate == nil {
+                        Spacer(minLength: 6)
                         Button("Check for Updates…") {
                             updater.checkForUpdates()
                         }
+                        .controlSize(.small)
                     }
                 }
-                Text(updater.automaticallyUpdates
-                    ? "Juice checks for and downloads updates automatically."
-                    : "Use Check for Updates… to update manually.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private var automaticUpdateDescription: String {
+        updater.automaticallyUpdates
+            ? "Juice checks for and downloads updates automatically."
+            : "Use Check for Updates… to update manually."
     }
 
     private func batteryDashboard(_ reading: BatteryReading) -> some View {
