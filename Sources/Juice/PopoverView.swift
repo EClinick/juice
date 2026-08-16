@@ -259,7 +259,8 @@ struct PopoverView: View {
                     .controlSize(.small)
                     .fixedSize(horizontal: true, vertical: false)
                     .accessibilityLabel("Automatic updates")
-                    .accessibilityHint(automaticUpdateDescription)
+                    .accessibilityHint(
+                        "Checks for and downloads updates automatically when enabled.")
                     if updater.readyUpdate == nil {
                         Spacer(minLength: 6)
                         Button("Check for Updates…") {
@@ -270,12 +271,6 @@ struct PopoverView: View {
                 }
             }
         }
-    }
-
-    private var automaticUpdateDescription: String {
-        updater.automaticallyUpdates
-            ? "Juice checks for and downloads updates automatically."
-            : "Use Check for Updates… to update manually."
     }
 
     private func batteryDashboard(_ reading: BatteryReading) -> some View {
