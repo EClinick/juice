@@ -37,11 +37,11 @@ Juice surfaces that data: which apps used how many watt-hours today, over the la
 - **Private by default**: no telemetry, system profile, or accounts. Juice only contacts its release feed when you ask it to check for updates or enable automatic updates.
 
 <p align="center">
-  <img src="docs/images/settings-about.png" width="700" alt="Juice Settings About page showing version, privacy, compatibility, and project links">
+  <a href="docs/images/settings-about.png"><img src="docs/images/settings-about.png" width="840" alt="Juice Settings About page showing version, privacy, compatibility, and a GitHub source-code link"></a>
 </p>
 
 <p align="center">
-  <img src="docs/images/stats.png" width="700" alt="Juice Stats window showing live app power, session energy, and seven-day battery history">
+  <a href="docs/images/stats.png"><img src="docs/images/stats.png" width="960" alt="Juice Stats window showing live app power, session energy, and seven-day battery history"></a>
 </p>
 
 ## Architecture
