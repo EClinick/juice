@@ -9,7 +9,7 @@ compute power draw of a Mac mini.
 ![Tests](https://img.shields.io/badge/tests-64%20passing-brightgreen)
 
 <p align="center">
-  <img src="docs/images/popover.png" width="320" alt="Juice popover showing battery status, top energy users with per-app watt-hours, a charge timeline, and insights">
+  <img src="docs/images/popover.png" width="320" alt="Juice popover showing battery life, live power draw, session energy by app, and battery history">
 </p>
 
 <p align="center"><em>Live battery status, per-app energy rankings, charge history, and plain-English insights - one click away in the menu bar.</em></p>
@@ -37,11 +37,11 @@ Juice surfaces that data: which apps used how many watt-hours today, over the la
 - **Private by default**: no telemetry, system profile, or accounts. Juice only contacts its release feed when you ask it to check for updates or enable automatic updates.
 
 <p align="center">
-  <img src="docs/images/app-detail.png" width="460" alt="Per-app detail window showing Slack energy breakdown across CPU and GPU, an hourly bar chart, explanation bullets, and contributing processes">
+  <img src="docs/images/settings-about.png" width="700" alt="Juice Settings About page showing version, privacy, compatibility, and project links">
 </p>
 
 <p align="center">
-  <img src="docs/images/stats.png" width="700" alt="Stats window showing the full app energy table and a 7-day charge chart with a recording-since annotation">
+  <img src="docs/images/stats.png" width="700" alt="Juice Stats window showing live app power, session energy, and seven-day battery history">
 </p>
 
 ## Architecture
