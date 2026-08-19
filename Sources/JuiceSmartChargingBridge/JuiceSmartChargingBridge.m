@@ -181,9 +181,11 @@ JSCChargeHoldKind JSCResolveChargeHoldKind(
     BOOL chargingOverrideAllowed
 ) {
     // These are the UI-state families consumed by Control Center in macOS 26:
-    // 6, 7, 8, 10, 11, and 12 are optimized-charging hold variants. State 13
-    // is a configured manual limit that has been reached. Unknown values are
-    // intentionally hidden rather than inferred from generic battery flags.
+    // 6, 7, 8, 10, 11, and 12 are optimized-charging hold variants. States
+    // 14, 15, and 16 are configured manual-limit variants that Control Center
+    // resolves as charged-to-limit. State 13 is charging-to-limit, so it is not
+    // actionable. Unknown values are intentionally hidden rather than inferred
+    // from generic battery flags.
     const NSUInteger optimizedHoldStates = 0x1DC0;
     BOOL optimizedHold = rawState < (sizeof(NSUInteger) * 8)
         && ((optimizedHoldStates & (((NSUInteger)1) << rawState)) != 0);
@@ -191,7 +193,7 @@ JSCChargeHoldKind JSCResolveChargeHoldKind(
     if (optimizedHold && chargingOverrideAllowed) {
         return JSCChargeHoldKindOptimized;
     }
-    if (rawState == 13) {
+    if (rawState >= 14 && rawState <= 16) {
         return JSCChargeHoldKindLimit;
     }
     return JSCChargeHoldKindNone;

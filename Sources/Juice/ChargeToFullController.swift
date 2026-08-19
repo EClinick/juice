@@ -99,7 +99,16 @@ final class ChargeToFullController: ObservableObject {
     /// Battery context can hide an action, but can never create one.
     func refresh(reading: BatteryReading?) async {
         lastReading = reading
-        guard !isRequesting else { return }
+        if isRequesting {
+            // An in-flight system request cannot make an unplugged or already
+            // charging battery actionable again. Hide the contextual row as
+            // soon as the fresh battery reading invalidates it, while letting
+            // the request finish and reconcile normally.
+            if !Self.couldBeActionable(reading) {
+                clearState()
+            }
+            return
+        }
         generation += 1
         let refreshGeneration = generation
 
@@ -190,7 +199,14 @@ final class ChargeToFullController: ObservableObject {
             generation += 1
             isRequesting = false
             clearAcceptedTransition()
-            state = .failed(reason)
+            // A battery refresh can arrive while the private request is in
+            // flight. Do not restore a retry for a hold that became ineligible
+            // in the meantime (for example, after unplugging).
+            if Self.couldBeActionable(lastReading) {
+                state = .failed(reason)
+            } else {
+                clearState()
+            }
             return false
         }
     }

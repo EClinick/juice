@@ -322,6 +322,27 @@ struct ChargeToFullControllerTests {
         #expect(controller.state == .accepted(.optimized(currentPercent: 80)))
     }
 
+    @Test("An in-flight error cannot restore a hold after unplugging")
+    func unplugDuringFailedRequest() async {
+        enum Failure: Error { case refused }
+        let hold = SystemChargeHold(kind: .optimized, chargeLimit: 100)
+        let write = GatedChargeWrite()
+        let controller = ChargeToFullController(
+            readStatus: { hold },
+            requestFullCharge: write.write)
+        await controller.refresh(reading: Self.reading())
+
+        let request = Task { await controller.chargeToFull() }
+        await write.waitForWrite()
+        await controller.refresh(reading: Self.reading(onAC: false))
+
+        #expect(controller.state == nil)
+        write.release(with: .failure(Failure.refused))
+        #expect(!(await request.value))
+        #expect(controller.state == nil)
+        #expect(!controller.isRequesting)
+    }
+
     @Test("Detection failures are quiet and fail closed")
     func detectionFailure() async {
         enum Failure: Error { case unavailable }

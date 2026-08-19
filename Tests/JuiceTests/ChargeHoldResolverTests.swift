@@ -17,13 +17,15 @@ struct ChargeHoldResolverTests {
         #expect(JSCResolveChargeHoldKind(UInt(rawState), false).rawValue == 0)
     }
 
-    @Test("A reached manual charge limit resolves independently")
-    func manualLimit() {
-        #expect(JSCResolveChargeHoldKind(13, false).rawValue == 2)
+    @Test("Reached manual charge-limit states resolve independently", arguments: [
+        14, 15, 16
+    ])
+    func manualLimit(rawState: Int) {
+        #expect(JSCResolveChargeHoldKind(UInt(rawState), false).rawValue == 2)
     }
 
     @Test("Unknown and non-hold states fail closed", arguments: [
-        0, 1, 2, 3, 4, 5, 9, 14, 63, 64, 999
+        0, 1, 2, 3, 4, 5, 9, 13, 17, 63, 64, 999
     ])
     func unknown(rawState: Int) {
         #expect(JSCResolveChargeHoldKind(UInt(rawState), true).rawValue == 0)
