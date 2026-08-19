@@ -93,6 +93,7 @@ struct BatteryHeroRow: View {
     let timeRemainingText: String
     @ObservedObject var controller: EnergyModeController
     let isLowPowerModeEnabled: Bool
+    var headlineOverride: String? = nil
 
     private var mode: PowerMode? {
         EnergyModePresentation.currentMode(controller.state, onAC: reading.onAC)
@@ -123,7 +124,7 @@ struct BatteryHeroRow: View {
                 .zIndex(1)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(EnergyModePresentation.headline(
+                Text(headlineOverride ?? EnergyModePresentation.headline(
                     reading,
                     timeRemainingText: timeRemainingText))
                     .font(.headline)
