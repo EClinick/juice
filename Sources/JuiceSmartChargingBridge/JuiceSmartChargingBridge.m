@@ -97,9 +97,12 @@ static id JSCNewClient(NSError **error) {
         return nil;
     }
 
-    id allocated = ((id (*)(id, SEL))objc_msgSend)(clientClass, @selector(alloc));
+    id allocated = [clientClass alloc];
     NSString *clientName = NSBundle.mainBundle.bundleIdentifier ?: @"Juice";
-    return ((id (*)(id, SEL, id))objc_msgSend)(
+    typedef id NS_RETURNS_RETAINED (*Initializer)(
+        id NS_RELEASES_ARGUMENT, SEL, id
+    );
+    return ((Initializer)objc_msgSend)(
         allocated,
         initializer,
         clientName
