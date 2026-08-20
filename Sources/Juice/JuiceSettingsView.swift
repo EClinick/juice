@@ -6,6 +6,30 @@ enum JuiceSettingsMetrics {
     static let sidebarWidth: CGFloat = 200
 }
 
+@MainActor
+enum SmartChargingSettingsRefreshLoop {
+    static let interval: Duration = .seconds(60)
+
+    /// Keeps temporary PowerUI states fresh only while their Settings surface
+    /// is active. The injected sleeper makes cadence and cancellation testable
+    /// without touching the machine's charging policy.
+    static func run(
+        sleep: @escaping @Sendable (Duration) async throws -> Void = {
+            try await Task.sleep(for: $0)
+        },
+        refresh: @escaping @MainActor () async -> Void
+    ) async {
+        while !Task.isCancelled {
+            await refresh()
+            do {
+                try await sleep(interval)
+            } catch {
+                return
+            }
+        }
+    }
+}
+
 private enum JuiceSettingsCategory: String, CaseIterable, Identifiable {
     case general
     case updates
@@ -88,6 +112,11 @@ struct JuiceApplicationInfo: Equatable, Sendable {
 /// The app-wide preferences hosted by ``SettingsWindowPresenter``.
 struct JuiceSettingsView: View {
     @ObservedObject private var launchAtLogin = LaunchAtLoginController.shared
+    @ObservedObject private var chargeLimit = ChargeLimitController.shared
+    @ObservedObject private var optimizedCharging =
+        OptimizedChargingController.shared
+    @ObservedObject private var smartChargingTransactions =
+        SmartChargingTransactionCoordinator.shared
     @ObservedObject private var updater = UpdateController.shared
     @State private var selection: JuiceSettingsCategory? = .general
     private let applicationInfo = JuiceApplicationInfo.current
@@ -155,7 +184,11 @@ struct JuiceSettingsView: View {
     private var detail: some View {
         switch selection ?? .general {
         case .general:
-            GeneralSettingsPage(launchAtLogin: launchAtLogin)
+            GeneralSettingsPage(
+                launchAtLogin: launchAtLogin,
+                chargeLimit: chargeLimit,
+                optimizedCharging: optimizedCharging,
+                smartChargingTransactions: smartChargingTransactions)
         case .updates:
             UpdateSettingsPage(
                 updater: updater,
@@ -191,9 +224,18 @@ private struct SettingsSidebarLabel: View {
 
 private struct GeneralSettingsPage: View {
     @ObservedObject var launchAtLogin: LaunchAtLoginController
+    @ObservedObject var chargeLimit: ChargeLimitController
+    @ObservedObject var optimizedCharging: OptimizedChargingController
+    @ObservedObject var smartChargingTransactions:
+        SmartChargingTransactionCoordinator
 
     var body: some View {
         SettingsPage(title: "General") {
+            BatteryChargingSettingsSection(
+                chargeLimit: chargeLimit,
+                optimizedCharging: optimizedCharging,
+                transactions: smartChargingTransactions)
+
             SettingsSection(title: "Startup") {
                 VStack(spacing: 12) {
                     SettingsCard {
@@ -260,6 +302,286 @@ private struct GeneralSettingsPage: View {
             return "Juice will appear in the menu bar automatically the next time you sign in."
         }
         return "Juice opens only when you launch it manually."
+    }
+}
+
+/// The persistent limit belongs in Settings because the contextual popover
+/// command exists only while macOS is actively holding a charge. Keeping this
+/// section internal also lets visual tests render its real production layout.
+struct BatteryChargingSettingsSection: View {
+    @ObservedObject var chargeLimit: ChargeLimitController
+    @ObservedObject var optimizedCharging: OptimizedChargingController
+    @ObservedObject var transactions: SmartChargingTransactionCoordinator
+    @State private var showsDisableConfirmation = false
+    @State private var surfaceIsActive = false
+
+    var body: some View {
+        SettingsSection(title: "Battery Charging") {
+            VStack(spacing: 12) {
+                SettingsCard {
+                    SettingsPreferenceRow(
+                        systemImage: "battery.75percent",
+                        iconTint: .green,
+                        title: "Charge Limit",
+                        detail: chargeLimitDetailText
+                    ) {
+                        chargeLimitAccessory
+                    }
+
+                    SettingsCardDivider()
+
+                    SettingsPreferenceRow(
+                        systemImage: "leaf.fill",
+                        iconTint: .green,
+                        title: "Optimized Battery Charging",
+                        detail: optimizedChargingDetailText
+                    ) {
+                        optimizedChargingAccessory
+                    }
+                }
+
+                if let message = chargeLimit.lastErrorMessage {
+                    SettingsNotice(
+                        systemImage: "exclamationmark.triangle.fill",
+                        message: message,
+                        tint: .red
+                    ) {
+                        Button("Open Battery Settings…") {
+                            chargeLimit.openBatterySettings()
+                        }
+                        .controlSize(.small)
+                    }
+                } else if let message = optimizedCharging.lastErrorMessage {
+                    SettingsNotice(
+                        systemImage: "exclamationmark.triangle.fill",
+                        message: message,
+                        tint: .red
+                    ) {
+                        Button("Open Battery Settings…") {
+                            optimizedCharging.openBatterySettings()
+                        }
+                        .controlSize(.small)
+                    }
+                } else if chargeLimit.status == .unavailable
+                            || optimizedCharging.status == .unavailable {
+                    SettingsNotice(
+                        systemImage: "exclamationmark.triangle.fill",
+                        message: "Juice couldn’t read the Battery Charging settings from macOS.",
+                        tint: .orange
+                    ) {
+                        Button("Retry") {
+                            Task {
+                                async let limit: Void = chargeLimit.refresh()
+                                async let optimized: Void =
+                                    optimizedCharging.refresh()
+                                _ = await (limit, optimized)
+                            }
+                        }
+                        .controlSize(.small)
+                    }
+                }
+            }
+        }
+        .background {
+            WindowActivityReader { surfaceIsActive = $0 }
+                .frame(width: 0, height: 0)
+        }
+        .task(id: surfaceIsActive) {
+            guard surfaceIsActive else { return }
+            await SmartChargingSettingsRefreshLoop.run {
+                async let limit: Void = chargeLimit.refresh()
+                async let optimized: Void = optimizedCharging.refresh()
+                _ = await (limit, optimized)
+            }
+        }
+        .confirmationDialog(
+            "Turn Off Optimized Battery Charging?",
+            isPresented: $showsDisableConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Turn Off Until Tomorrow") {
+                Task { await optimizedCharging.disableUntilTomorrow() }
+            }
+            Button("Turn Off", role: .destructive) {
+                Task { await optimizedCharging.setEnabled(false) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Optimized Battery Charging helps reduce battery aging. Turn it off until tomorrow, or until you turn it back on.")
+        }
+    }
+
+    private var chargeLimitDetailText: String {
+        if chargeLimit.isWriting,
+           let pendingLimit = chargeLimit.pendingLimit {
+            return pendingLimit == 100
+                ? "Removing the fixed limit…"
+                : "Setting the charging limit to \(pendingLimit)%…"
+        }
+
+        switch chargeLimit.status {
+        case .loading:
+            return "Reading the limit managed by macOS."
+        case .unsupported:
+            return "Charge Limit isn’t available on this Mac."
+        case .unavailable:
+            return "The current setting could not be read."
+        case .available(let configuration):
+            if configuration.selection == .chargingToFull {
+                return "Charging to full is active for this session. Choose a limit to replace it."
+            }
+            if configuration.selection == .persistent(100) {
+                return "No fixed Charge Limit is set."
+            }
+            guard let limit = configuration.selection.persistentLimit else {
+                return "The current Charge Limit could not be determined."
+            }
+            return "Your Mac stops charging near \(limit)% while connected to power."
+        }
+    }
+
+    @ViewBuilder
+    private var chargeLimitAccessory: some View {
+        switch chargeLimit.status {
+        case .loading:
+            ProgressView()
+                .controlSize(.small)
+                .accessibilityLabel("Reading Charge Limit")
+        case .unsupported:
+            Text("Not Available")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .unavailable:
+            Text("Unavailable")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .available(let configuration):
+            HStack(spacing: 8) {
+                if chargeLimit.isWriting {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Applying Charge Limit")
+                }
+
+                Menu {
+                    ForEach(configuration.availableLimits, id: \.self) { limit in
+                        Button {
+                            Task { await chargeLimit.setLimit(limit) }
+                        } label: {
+                            HStack {
+                                Text(limitLabel(limit))
+                                if configuration.selection == .persistent(limit) {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Text(menuLabel(for: configuration))
+                }
+                .controlSize(.small)
+                .fixedSize()
+                .disabled(transactions.isMutating || chargeLimit.isWriting)
+                .accessibilityLabel("Charge Limit")
+                .accessibilityValue(menuLabel(for: configuration))
+            }
+        }
+    }
+
+    private func menuLabel(for configuration: ChargeLimitConfiguration) -> String {
+        if let pendingLimit = chargeLimit.pendingLimit {
+            return limitLabel(pendingLimit)
+        }
+        if configuration.selection == .chargingToFull {
+            return "Charging to Full"
+        }
+        guard let limit = configuration.selection.persistentLimit else {
+            return "Unavailable"
+        }
+        return limitLabel(limit)
+    }
+
+    private func limitLabel(_ limit: Int) -> String {
+        limit == 100 ? "100% (No Fixed Limit)" : "\(limit)%"
+    }
+
+    private var optimizedChargingDetailText: String {
+        if optimizedCharging.isWriting,
+           let pendingMode = optimizedCharging.pendingMode {
+            return pendingMode == .enabled
+                ? "Turning on Optimized Battery Charging…"
+                : "Turning off Optimized Battery Charging…"
+        }
+
+        switch optimizedCharging.status {
+        case .loading:
+            return "Reading the setting managed by macOS."
+        case .unsupported:
+            return "Optimized Battery Charging isn’t available on this Mac."
+        case .unavailable:
+            return "The current setting could not be read."
+        case .available(let mode):
+            switch mode {
+            case .enabled:
+                return "macOS learns your routine and may delay charging to reduce battery aging."
+            case .disabled:
+                return "Routine-based charging delays are off. Charge Limit is unchanged."
+            case .chargingToFull:
+                return "Charging to full is active for this session."
+            case .disabledUntilTomorrow:
+                return "Optimized Battery Charging is off until tomorrow."
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var optimizedChargingAccessory: some View {
+        switch optimizedCharging.status {
+        case .loading:
+            ProgressView()
+                .controlSize(.small)
+                .accessibilityLabel("Reading Optimized Battery Charging")
+        case .unsupported:
+            Text("Not Available")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .unavailable:
+            Text("Unavailable")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .available:
+            HStack(spacing: 8) {
+                if optimizedCharging.isWriting {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel(
+                            "Applying Optimized Battery Charging")
+                }
+
+                Toggle(
+                    "Optimized Battery Charging",
+                    isOn: Binding(
+                        get: {
+                            optimizedCharging.displayedMode?.switchIsOn
+                                ?? false
+                        },
+                        set: { enabled in
+                            if enabled {
+                                Task {
+                                    await optimizedCharging.setEnabled(true)
+                                }
+                            } else {
+                                showsDisableConfirmation = true
+                            }
+                        }
+                    )
+                )
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .disabled(
+                    transactions.isMutating || optimizedCharging.isWriting)
+            }
+        }
     }
 }
 

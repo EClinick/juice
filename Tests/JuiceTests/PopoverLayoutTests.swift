@@ -385,6 +385,33 @@ struct PopoverLayoutTests {
         #expect(controller.view.fittingSize.height < 100)
     }
 
+    @Test("Charge to Full states fit the battery popover width")
+    func chargeToFullStatesFitPopover() {
+        let states: [ChargeToFullState] = [
+            .ready(.optimized(currentPercent: 80)),
+            .ready(.limit(percent: 85)),
+            .starting(.optimized(currentPercent: 80)),
+            .accepted(.optimized(currentPercent: 80)),
+            .failed(.limit(percent: 85))
+        ]
+
+        for state in states {
+            let controller = NSHostingController(
+                rootView: ChargeToFullRow(state: state, action: {})
+                    .frame(width: 292)
+            )
+            controller.view.frame = NSRect(
+                origin: .zero,
+                size: controller.view.fittingSize)
+            controller.view.layoutSubtreeIfNeeded()
+
+            // The selected contextual treatment costs one compact row in each
+            // transition state at the real 292-point popover content width.
+            #expect(controller.view.fittingSize.height >= 40)
+            #expect(controller.view.fittingSize.height < 70)
+        }
+    }
+
     @Test("the docked badge appears only once a mode is readable")
     func badgePresenceFollowsState() async throws {
         let unavailable = energyModeController(state: nil)

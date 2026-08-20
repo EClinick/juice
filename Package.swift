@@ -13,6 +13,10 @@ let package = Package(
         // Minimal C shim for the private coalition_info syscall and its struct,
         // which the public SDK does not expose. Only JuiceHelper depends on it.
         .target(name: "JuiceHelperCoalition"),
+        // Dynamic Objective-C bridge to the private smart-charging client used
+        // by Control Center. It carries no private headers or static linkage;
+        // unsupported or changed interfaces fail closed in the app.
+        .target(name: "JuiceSmartChargingBridge"),
         // Pure app logic (insights engine, store schema/queries) - kept out of
         // the executable so tests can import it.
         .target(
@@ -31,6 +35,7 @@ let package = Package(
             dependencies: [
                 "JuiceXPCShared",
                 "JuiceCore",
+                "JuiceSmartChargingBridge",
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Sparkle", package: "Sparkle")
             ],
@@ -42,7 +47,13 @@ let package = Package(
         ),
         .testTarget(
             name: "JuiceTests",
-            dependencies: ["JuiceCore", "JuiceXPCShared", "Juice", "JuiceHelper"]
+            dependencies: [
+                "JuiceCore",
+                "JuiceXPCShared",
+                "JuiceSmartChargingBridge",
+                "Juice",
+                "JuiceHelper"
+            ]
         )
     ]
 )

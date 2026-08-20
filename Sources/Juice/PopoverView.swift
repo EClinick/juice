@@ -12,10 +12,23 @@ struct PopoverView: View {
     /// so the two views can never disagree about which apps are live.
     @ObservedObject private var live = LivePowerCoordinator.shared
     @ObservedObject private var batterySession = BatterySessionCoordinator.shared
+    /// Settings owns the persistent policy, but both surfaces observe the same
+    /// system-backed controller so a changed limit invalidates this contextual
+    /// row immediately instead of waiting for the battery refresh cadence.
+    @ObservedObject private var chargeLimit = ChargeLimitController.shared
+    @ObservedObject private var optimizedCharging =
+        OptimizedChargingController.shared
+    @ObservedObject private var smartChargingTransactions =
+        SmartChargingTransactionCoordinator.shared
 
     /// Energy Mode reads cheaply from `pmset`, so a per-view controller is fine;
     /// it re-reads whenever the popover becomes active.
     @StateObject private var energyMode = EnergyModeController()
+    /// macOS exposes Charge to Full as contextual smart-charging state, so it
+    /// has its own fail-closed controller rather than being inferred from the
+    /// battery reader's generic AC and charging flags.
+    @StateObject private var chargeToFull = ChargeToFullController(
+        transactionCoordinator: .shared)
 
     private let selector = EnergySourceSelector()
 
@@ -51,6 +64,20 @@ struct PopoverView: View {
     @State private var surfaceIsActive = false
 
     private var replacementAnimation: Animation { juiceStandardEase }
+
+    private struct SmartChargingRefreshKey: Equatable {
+        let chargeLimitStatus: ChargeLimitStatus
+        let optimizedChargingStatus: OptimizedChargingStatus
+        let reconciliationGeneration: Int
+    }
+
+    private var smartChargingRefreshKey: SmartChargingRefreshKey {
+        SmartChargingRefreshKey(
+            chargeLimitStatus: chargeLimit.status,
+            optimizedChargingStatus: optimizedCharging.status,
+            reconciliationGeneration:
+                smartChargingTransactions.reconciliationGeneration)
+    }
 
     private var visibleRanges: [EnergyRange] {
         StatsRangeVisibility.visibleRanges(from: rangeVisibilityStorage)
@@ -135,6 +162,7 @@ struct PopoverView: View {
                         loadTask?.cancel()
                         loadTask = Task { await loadEnergy() }
                         Task { await energyMode.refresh() }
+                        Task { await chargeToFull.refresh(reading: model.reading) }
                     }
                 }
                 Button("Stats", action: showStatsWindow)
@@ -157,6 +185,7 @@ struct PopoverView: View {
                     applyInitialRange()
                     if !model.isMacMini {
                         Task { await energyMode.refresh() }
+                        Task { await chargeToFull.refresh(reading: model.reading) }
                     }
                 } else {
                     loadTask?.cancel()
@@ -185,6 +214,7 @@ struct PopoverView: View {
             // changes the moment the machine is plugged in or unplugged.
             guard !model.isMacMini else { return }
             Task { await energyMode.refresh() }
+            Task { await chargeToFull.refresh(reading: model.reading) }
         }
         // Energy Mode can also change from System Settings or a system prompt.
         // BatteryViewModel already observes the power-state notification, so its
@@ -200,6 +230,11 @@ struct PopoverView: View {
         .onChange(of: model.readingGeneration) {
             guard surfaceIsActive, !model.isMacMini else { return }
             Task { await energyMode.refresh() }
+            Task { await chargeToFull.refresh(reading: model.reading) }
+        }
+        .onChange(of: smartChargingRefreshKey) {
+            guard surfaceIsActive, !model.isMacMini else { return }
+            Task { await chargeToFull.refresh(reading: model.reading) }
         }
         .onChange(of: rangeVisibilityStorage) {
             range = StatsRangeVisibility.preferredRange(
@@ -271,7 +306,8 @@ struct PopoverView: View {
                     reading: reading,
                     timeRemainingText: model.timeRemainingText,
                     controller: energyMode,
-                    isLowPowerModeEnabled: model.isLowPowerModeEnabled)
+                    isLowPowerModeEnabled: model.isLowPowerModeEnabled,
+                    headlineOverride: chargeToFull.state?.headline)
                     // The open fan hangs below the gauge over the caption
                     // line, so the hero must paint above its later siblings.
                     .zIndex(1)
@@ -280,6 +316,21 @@ struct PopoverView: View {
             }
             .padding(.bottom, 2)
             .zIndex(1)
+
+            if let chargeState = chargeToFull.state {
+                ChargeToFullRow(
+                    state: chargeState,
+                    isMutationBlocked: smartChargingTransactions.isMutating
+                ) {
+                    Task {
+                        if await chargeToFull.chargeToFull() {
+                            // Do not wait for the normal 60-second cadence to
+                            // reflect current flow after macOS accepts the override.
+                            model.refresh()
+                        }
+                    }
+                }
+            }
 
             // The hybrid's own section captions replace this header line;
             // rendering both would waste a row of the popover's height.
