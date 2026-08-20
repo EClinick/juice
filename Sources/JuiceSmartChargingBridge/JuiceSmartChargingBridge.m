@@ -234,6 +234,13 @@ JSCChargeLimitState JSCResolveChargeLimitState(
     }
 }
 
+NSInteger JSCResolveManualHoldLimit(NSInteger chargeLimit) {
+    return chargeLimit < 100
+            && JSCChargeLimitOption(chargeLimit) != JSCChargeLimitOptionNone
+        ? chargeLimit
+        : 0;
+}
+
 JSCOptimizedChargingState JSCResolveOptimizedChargingState(
     NSUInteger rawState
 ) {
@@ -407,35 +414,10 @@ static BOOL JSCReadChargeLimitConfiguration(
     JSCChargeLimitState *state,
     NSError **error
 ) {
-    SEL supportSelector = NSSelectorFromString(@"isMCLSupported");
-    if (![client respondsToSelector:supportSelector]
-        || !JSCMethodMatches(
-            [client class],
-            supportSelector,
-            @encode(BOOL),
-            NULL,
-            0)) {
-        if (error != NULL) {
-            *error = JSCError(
-                JSCErrorUnavailable,
-                @"This macOS version does not expose Charge Limit to Juice."
-            );
-        }
-        return NO;
-    }
-
-    typedef BOOL (*SupportFunction)(id, SEL);
-    BOOL isSupported = ((SupportFunction)objc_msgSend)(
-        client,
-        supportSelector
-    );
-    if (supported != NULL) {
-        *supported = isSupported;
-    }
-    if (!isSupported) {
-        return YES;
-    }
-
+    // The no-error `isMCLSupported` getter silently collapses XPC failures to
+    // false. PowerUI's error-bearing choices call preserves the distinction:
+    // an unsupported Mac returns an empty list without an error, while service
+    // failures carry NSError.
     SEL availableSelector = NSSelectorFromString(
         @"availableChargeLimitsWithError:"
     );
@@ -474,8 +456,16 @@ static BOOL JSCReadChargeLimitConfiguration(
         return NO;
     }
 
+    NSArray *rawLimits = (NSArray *)rawAvailable;
+    if (rawLimits.count == 0) {
+        if (supported != NULL) {
+            *supported = NO;
+        }
+        return YES;
+    }
+
     JSCChargeLimitOptions options =
-        JSCResolveAvailableChargeLimits((NSArray *)rawAvailable);
+        JSCResolveAvailableChargeLimits(rawLimits);
     if (options == JSCChargeLimitOptionNone) {
         if (error != NULL) {
             *error = JSCError(
@@ -567,6 +557,9 @@ static BOOL JSCReadChargeLimitConfiguration(
             );
         }
         return NO;
+    }
+    if (supported != NULL) {
+        *supported = YES;
     }
     if (state != NULL) {
         *state = resolvedState;
@@ -676,7 +669,7 @@ static BOOL JSCReadResolvedStatus(
         &overrideAllowed,
         &callError
     );
-    if (!succeeded) {
+    if (!succeeded || callError != nil) {
         if (error != NULL) {
             *error = callError ?: JSCError(
                 JSCErrorCallFailed,
@@ -694,13 +687,17 @@ static BOOL JSCReadResolvedStatus(
         ? (NSInteger)rawLimit
         : 100;
     if (resolvedKind == JSCChargeHoldKindLimit) {
-        NSInteger manualLimit = JSCManualChargeLimit(client, resolvedLimit);
-        // State 13 without a readable configured limit is not enough to put a
-        // percentage in front of the user. Fail closed instead of inventing it.
-        if (manualLimit > 0 && manualLimit < 100) {
+        NSInteger manualLimit = JSCResolveManualHoldLimit(
+            JSCManualChargeLimit(client, resolvedLimit)
+        );
+        // A manual-hold state without a known configured limit is not enough
+        // to put a percentage in front of the user. Fail closed instead of
+        // inventing it.
+        if (manualLimit > 0) {
             resolvedLimit = manualLimit;
         } else {
             resolvedKind = JSCChargeHoldKindNone;
+            resolvedLimit = 100;
         }
     }
     if (resolvedKind != JSCChargeHoldKindNone
@@ -719,6 +716,21 @@ static BOOL JSCReadResolvedStatus(
         *chargeLimit = resolvedLimit;
     }
     return YES;
+}
+
+BOOL JSCCopyChargeHoldStatusForClient(
+    id client,
+    JSCChargeHoldKind *kind,
+    NSInteger *chargeLimit,
+    NSError **error
+) {
+    if (kind != NULL) {
+        *kind = JSCChargeHoldKindNone;
+    }
+    if (chargeLimit != NULL) {
+        *chargeLimit = 100;
+    }
+    return JSCReadResolvedStatus(client, kind, chargeLimit, error);
 }
 
 BOOL JSCCopyChargeHoldStatus(
@@ -742,7 +754,7 @@ BOOL JSCCopyChargeHoldStatus(
         return NO;
     }
 
-    return JSCReadResolvedStatus(
+    return JSCCopyChargeHoldStatusForClient(
         client,
         kind,
         chargeLimit,
@@ -835,6 +847,36 @@ BOOL JSCCopyChargeLimitConfiguration(
         return NO;
     }
 
+    return JSCCopyChargeLimitConfigurationForClient(
+        client,
+        supported,
+        currentLimit,
+        availableLimits,
+        state,
+        error
+    );
+}
+
+BOOL JSCCopyChargeLimitConfigurationForClient(
+    id client,
+    BOOL *supported,
+    NSInteger *currentLimit,
+    JSCChargeLimitOptions *availableLimits,
+    JSCChargeLimitState *state,
+    NSError **error
+) {
+    if (supported != NULL) {
+        *supported = NO;
+    }
+    if (currentLimit != NULL) {
+        *currentLimit = 100;
+    }
+    if (availableLimits != NULL) {
+        *availableLimits = JSCChargeLimitOptionNone;
+    }
+    if (state != NULL) {
+        *state = JSCChargeLimitStateUnknown;
+    }
     return JSCReadChargeLimitConfiguration(
         client,
         supported,

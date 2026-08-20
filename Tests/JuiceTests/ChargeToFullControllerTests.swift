@@ -661,6 +661,51 @@ struct ChargeToFullControllerTests {
         #expect(backend.readCount == 2)
     }
 
+    @Test("An optimized-charging change makes the same hold actionable again")
+    func sameOptimizedPolicyMutationAppliesMatchingHold() async throws {
+        let transactions = SmartChargingTransactionCoordinator()
+        let hold = SystemChargeHold(kind: .optimized, chargeLimit: 100)
+        let backend = FakeChargeToFullBackend(
+            reads: [.success(hold), .success(hold)],
+            writes: [.success(())])
+        let controller = ChargeToFullController(
+            readStatus: backend.read,
+            requestFullCharge: backend.write,
+            transactionCoordinator: transactions)
+        await controller.refresh(reading: Self.reading())
+        #expect(await controller.chargeToFull())
+
+        let transaction = try #require(
+            transactions.begin(.optimizedCharging))
+        await transactions.reconcile(transaction)
+        await controller.refresh(reading: Self.reading())
+
+        #expect(controller.state == .ready(.optimized(currentPercent: 80)))
+        #expect(backend.readCount == 2)
+    }
+
+    @Test("A Charge Limit change makes the same limit hold actionable again")
+    func sameLimitPolicyMutationAppliesMatchingHold() async throws {
+        let transactions = SmartChargingTransactionCoordinator()
+        let hold = SystemChargeHold(kind: .limit, chargeLimit: 90)
+        let backend = FakeChargeToFullBackend(
+            reads: [.success(hold), .success(hold)],
+            writes: [.success(())])
+        let controller = ChargeToFullController(
+            readStatus: backend.read,
+            requestFullCharge: backend.write,
+            transactionCoordinator: transactions)
+        await controller.refresh(reading: Self.reading(percent: 90))
+        #expect(await controller.chargeToFull())
+
+        let transaction = try #require(transactions.begin(.chargeLimit))
+        await transactions.reconcile(transaction)
+        await controller.refresh(reading: Self.reading(percent: 90))
+
+        #expect(controller.state == .ready(.limit(percent: 90)))
+        #expect(backend.readCount == 2)
+    }
+
     @Test("A Charge Limit change preserves an optimized full-charge override")
     func unrelatedLimitMutationPreservesOptimizedGrace() async throws {
         let transactions = SmartChargingTransactionCoordinator()
@@ -684,6 +729,28 @@ struct ChargeToFullControllerTests {
         #expect(backend.readCount == 2)
     }
 
+    @Test("A Charge Limit change clears a canceled optimized override")
+    func limitMutationAppliesAuthoritativeMissingOptimizedHold() async throws {
+        let transactions = SmartChargingTransactionCoordinator()
+        let hold = SystemChargeHold(kind: .optimized, chargeLimit: 100)
+        let backend = FakeChargeToFullBackend(
+            reads: [.success(hold), .success(nil)],
+            writes: [.success(())])
+        let controller = ChargeToFullController(
+            readStatus: backend.read,
+            requestFullCharge: backend.write,
+            transactionCoordinator: transactions)
+        await controller.refresh(reading: Self.reading())
+        #expect(await controller.chargeToFull())
+
+        let transaction = try #require(transactions.begin(.chargeLimit))
+        await transactions.reconcile(transaction)
+        await controller.refresh(reading: Self.reading())
+
+        #expect(controller.state == nil)
+        #expect(backend.readCount == 2)
+    }
+
     @Test("An optimized-charging change preserves a limit full-charge override")
     func unrelatedOptimizedMutationPreservesLimitGrace() async throws {
         let transactions = SmartChargingTransactionCoordinator()
@@ -704,6 +771,29 @@ struct ChargeToFullControllerTests {
         await controller.refresh(reading: Self.reading(percent: 90))
 
         #expect(controller.state == .accepted(.limit(percent: 90)))
+        #expect(backend.readCount == 2)
+    }
+
+    @Test("An optimized-charging change applies a finished limit override")
+    func optimizedMutationAppliesAuthoritativeMissingLimitHold() async throws {
+        let transactions = SmartChargingTransactionCoordinator()
+        let hold = SystemChargeHold(kind: .limit, chargeLimit: 90)
+        let backend = FakeChargeToFullBackend(
+            reads: [.success(hold), .success(nil)],
+            writes: [.success(())])
+        let controller = ChargeToFullController(
+            readStatus: backend.read,
+            requestFullCharge: backend.write,
+            transactionCoordinator: transactions)
+        await controller.refresh(reading: Self.reading(percent: 90))
+        #expect(await controller.chargeToFull())
+
+        let transaction = try #require(
+            transactions.begin(.optimizedCharging))
+        await transactions.reconcile(transaction)
+        await controller.refresh(reading: Self.reading(percent: 90))
+
+        #expect(controller.state == nil)
         #expect(backend.readCount == 2)
     }
 

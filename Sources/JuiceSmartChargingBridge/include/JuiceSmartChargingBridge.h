@@ -52,6 +52,9 @@ FOUNDATION_EXPORT JSCChargeLimitState JSCResolveChargeLimitState(
     NSUInteger rawState,
     NSInteger currentLimit
 );
+FOUNDATION_EXPORT NSInteger JSCResolveManualHoldLimit(
+    NSInteger chargeLimit
+);
 
 FOUNDATION_EXPORT JSCOptimizedChargingState
 JSCResolveOptimizedChargingState(NSUInteger rawState);
@@ -71,6 +74,16 @@ FOUNDATION_EXPORT JSCChargeHoldKind JSCResolveChargeHoldKind(
 FOUNDATION_EXPORT BOOL JSCChargeToFullActionIsAvailable(
     id client,
     JSCChargeHoldKind kind
+);
+
+/// Exercises the production hold reader against an injected client. Juice's
+/// tests use this seam to cover inconsistent private-API responses without
+/// constructing PowerUI or invoking a charging mutation.
+FOUNDATION_EXPORT BOOL JSCCopyChargeHoldStatusForClient(
+    id client,
+    JSCChargeHoldKind * _Nullable kind,
+    NSInteger * _Nullable chargeLimit,
+    NSError * _Nullable * _Nullable error
 );
 
 /// Reads the same smart-charging UI state used by Control Center.
@@ -100,6 +113,18 @@ FOUNDATION_EXPORT BOOL JSCChargeToFull(
 /// call with `supported == NO` means this Mac does not offer Charge Limit;
 /// changed, inconsistent, or missing private interfaces fail closed with `NO`.
 FOUNDATION_EXPORT BOOL JSCCopyChargeLimitConfiguration(
+    BOOL * _Nullable supported,
+    NSInteger * _Nullable currentLimit,
+    JSCChargeLimitOptions * _Nullable availableLimits,
+    JSCChargeLimitState * _Nullable state,
+    NSError * _Nullable * _Nullable error
+);
+
+/// Exercises the production Charge Limit reader against an injected client.
+/// It performs reads only and exists so support/error behavior can be tested
+/// without connecting to the machine's PowerUI service.
+FOUNDATION_EXPORT BOOL JSCCopyChargeLimitConfigurationForClient(
+    id client,
     BOOL * _Nullable supported,
     NSInteger * _Nullable currentLimit,
     JSCChargeLimitOptions * _Nullable availableLimits,

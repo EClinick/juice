@@ -81,6 +81,7 @@ final class ChargeToFullController: ObservableObject {
     private var generation = 0
     private var acceptedAt: Date?
     private var acceptedReconciliationGeneration: Int?
+    private var acceptedPolicyReconciliationGeneration: Int?
     private var lastReading: BatteryReading?
     private var confirmationTask: Task<Void, Never>?
 
@@ -107,15 +108,6 @@ final class ChargeToFullController: ObservableObject {
     /// Battery context can hide an action, but can never create one.
     func refresh(reading: BatteryReading?) async {
         lastReading = reading
-        // A Settings transaction may complete while the popover is hidden, so
-        // every refresh—not only the live onChange path—must invalidate grace
-        // from an older one-time override before applying authoritative state.
-        if case .accepted(let reason) = state,
-           acceptedReconciliationGeneration
-                != transactionCoordinator.reconciliationGeneration(
-                    for: Self.mutationKind(for: reason)) {
-            clearAcceptedTransition()
-        }
         if isRequesting {
             // An in-flight system request cannot make an unplugged or already
             // charging battery actionable again. Hide the contextual row as
@@ -155,10 +147,35 @@ final class ChargeToFullController: ObservableObject {
         _ result: Result<SystemChargeHold?, any Error>,
         reading: BatteryReading?
     ) {
-        // The PowerUI state and IOKit current do not update atomically. Keep a
-        // successful request stable briefly, even if an immediate re-read still
-        // sees the old hold, but never claim that charging itself has begun.
-        if case .accepted = state, transitionIsFresh { return }
+        // PowerUI and IOKit do not update atomically, so an ordinary immediate
+        // re-read cannot erase a successful request. A later Settings
+        // transaction is different: its authoritative hold read wins when the
+        // hold disappeared or changed, while a matching hold (or read failure)
+        // preserves the short confirmation grace.
+        if case .accepted(let acceptedReason) = state, transitionIsFresh {
+            let reconciliationGeneration =
+                transactionCoordinator.reconciliationGeneration
+            guard acceptedReconciliationGeneration
+                    != reconciliationGeneration else { return }
+            switch result {
+            case .failure:
+                return
+            case .success(let hold?):
+                let policyGeneration =
+                    transactionCoordinator.reconciliationGeneration(
+                        for: Self.mutationKind(for: acceptedReason))
+                let samePolicyChanged =
+                    acceptedPolicyReconciliationGeneration != policyGeneration
+                if !samePolicyChanged,
+                   Self.hold(hold, matches: acceptedReason) {
+                    acceptedReconciliationGeneration =
+                        reconciliationGeneration
+                    return
+                }
+            case .success(nil):
+                break
+            }
+        }
 
         clearAcceptedTransition()
         switch result {
@@ -219,6 +236,8 @@ final class ChargeToFullController: ObservableObject {
             if Self.couldBeActionable(lastReading) {
                 acceptedAt = now()
                 acceptedReconciliationGeneration =
+                    transactionCoordinator.reconciliationGeneration
+                acceptedPolicyReconciliationGeneration =
                     transactionCoordinator.reconciliationGeneration(
                         for: effectiveMutationKind)
                 state = .accepted(effectiveReason)
@@ -326,6 +345,7 @@ final class ChargeToFullController: ObservableObject {
     private func clearAcceptedTransition() {
         acceptedAt = nil
         acceptedReconciliationGeneration = nil
+        acceptedPolicyReconciliationGeneration = nil
         confirmationTask?.cancel()
         confirmationTask = nil
     }
@@ -369,6 +389,20 @@ final class ChargeToFullController: ObservableObject {
             .optimizedCharging
         case .limit:
             .chargeLimit
+        }
+    }
+
+    private static func hold(
+        _ hold: SystemChargeHold,
+        matches reason: ChargeToFullReason
+    ) -> Bool {
+        switch (hold.kind, reason) {
+        case (.optimized, .optimized):
+            return true
+        case (.limit, .limit(let percent)):
+            return hold.chargeLimit == percent
+        default:
+            return false
         }
     }
 

@@ -36,6 +36,99 @@ private final class WrongArgumentOverrideClient: NSObject {
     }
 }
 
+private final class SuccessfulUIStateWithErrorClient: NSObject {
+    @objc(smartChargingUIState:chargeLimit:chargingOverrideAllowed:withError:)
+    func smartChargingUIState(
+        _ state: UnsafeMutablePointer<UInt>?,
+        chargeLimit: UnsafeMutablePointer<UInt>?,
+        chargingOverrideAllowed: UnsafeMutablePointer<ObjCBool>?,
+        withError error: AutoreleasingUnsafeMutablePointer<NSError?>?
+    ) -> Bool {
+        state?.pointee = 6
+        chargeLimit?.pointee = 100
+        chargingOverrideAllowed?.pointee = true
+        error?.pointee = NSError(domain: "test", code: 1)
+        return true
+    }
+
+    @objc(temporarilyEnableCharging:)
+    func temporarilyEnableCharging(
+        _ error: AutoreleasingUnsafeMutablePointer<NSError?>?
+    ) -> Bool {
+        false
+    }
+}
+
+private final class UnknownManualHoldLimitClient: NSObject {
+    @objc(smartChargingUIState:chargeLimit:chargingOverrideAllowed:withError:)
+    func smartChargingUIState(
+        _ state: UnsafeMutablePointer<UInt>?,
+        chargeLimit: UnsafeMutablePointer<UInt>?,
+        chargingOverrideAllowed: UnsafeMutablePointer<ObjCBool>?,
+        withError error: AutoreleasingUnsafeMutablePointer<NSError?>?
+    ) -> Bool {
+        state?.pointee = 14
+        chargeLimit?.pointee = 75
+        chargingOverrideAllowed?.pointee = false
+        return true
+    }
+
+    @objc(getMCLLimitWithError:)
+    func getMCLLimit(
+        _ error: AutoreleasingUnsafeMutablePointer<NSError?>?
+    ) -> UInt8 {
+        75
+    }
+
+    @objc(temporarilyDisableMCL:)
+    func temporarilyDisableMCL(
+        _ error: AutoreleasingUnsafeMutablePointer<NSError?>?
+    ) -> Bool {
+        false
+    }
+}
+
+private final class KnownManualHoldFallbackClient: NSObject {
+    @objc(smartChargingUIState:chargeLimit:chargingOverrideAllowed:withError:)
+    func smartChargingUIState(
+        _ state: UnsafeMutablePointer<UInt>?,
+        chargeLimit: UnsafeMutablePointer<UInt>?,
+        chargingOverrideAllowed: UnsafeMutablePointer<ObjCBool>?,
+        withError error: AutoreleasingUnsafeMutablePointer<NSError?>?
+    ) -> Bool {
+        state?.pointee = 14
+        chargeLimit?.pointee = 90
+        chargingOverrideAllowed?.pointee = false
+        return true
+    }
+
+    @objc(temporarilyDisableMCL:)
+    func temporarilyDisableMCL(
+        _ error: AutoreleasingUnsafeMutablePointer<NSError?>?
+    ) -> Bool {
+        false
+    }
+}
+
+private final class UnsupportedMCLClient: NSObject {
+    @objc(availableChargeLimitsWithError:)
+    func availableChargeLimits(
+        _ error: AutoreleasingUnsafeMutablePointer<NSError?>?
+    ) -> NSArray {
+        []
+    }
+}
+
+private final class UnavailableMCLClient: NSObject {
+    @objc(availableChargeLimitsWithError:)
+    func availableChargeLimits(
+        _ error: AutoreleasingUnsafeMutablePointer<NSError?>?
+    ) -> NSArray {
+        error?.pointee = NSError(domain: "test", code: 2)
+        return []
+    }
+}
+
 @Suite("Smart-charging raw state resolver")
 struct ChargeHoldResolverTests {
     @Test("Only Control Center's optimized-hold states are actionable", arguments: [
@@ -85,6 +178,16 @@ struct ChargeHoldResolverTests {
         }
     }
 
+    @Test("Manual holds accept only macOS's known fixed limits")
+    func manualHoldLimit() {
+        for limit in [80, 85, 90, 95] {
+            #expect(JSCResolveManualHoldLimit(limit) == limit)
+        }
+        for limit in [0, 75, 79, 100, 105] {
+            #expect(JSCResolveManualHoldLimit(limit) == 0)
+        }
+    }
+
     @Test("Optimized charging accepts only the four macOS states")
     func optimizedChargingState() {
         for state in 0...3 {
@@ -121,6 +224,105 @@ struct ChargeHoldResolverTests {
         #expect(!JSCChargeToFullActionIsAvailable(
             WrongArgumentOverrideClient(),
             optimized))
+    }
+
+    @Test("A UI-state success carrying an error fails closed")
+    func uiStateErrorFailsClosed() {
+        var kind = JSCChargeHoldKind(rawValue: 2)!
+        var limit = 75
+        var error: NSError?
+
+        let succeeded = JSCCopyChargeHoldStatusForClient(
+            SuccessfulUIStateWithErrorClient(),
+            &kind,
+            &limit,
+            &error)
+
+        #expect(!succeeded)
+        #expect(kind.rawValue == 0)
+        #expect(limit == 100)
+        #expect(error != nil)
+    }
+
+    @Test("An unknown manual-hold percentage is not actionable")
+    func unknownManualHoldLimitFailsClosed() {
+        var kind = JSCChargeHoldKind(rawValue: 2)!
+        var limit = 75
+        var error: NSError?
+
+        let succeeded = JSCCopyChargeHoldStatusForClient(
+            UnknownManualHoldLimitClient(),
+            &kind,
+            &limit,
+            &error)
+
+        #expect(succeeded)
+        #expect(kind.rawValue == 0)
+        #expect(limit == 100)
+        #expect(error == nil)
+    }
+
+    @Test("A known UI-state limit remains authoritative without a second getter")
+    func knownManualHoldFallbackRemainsActionable() {
+        var kind = JSCChargeHoldKind(rawValue: 0)!
+        var limit = 100
+        var error: NSError?
+
+        let succeeded = JSCCopyChargeHoldStatusForClient(
+            KnownManualHoldFallbackClient(),
+            &kind,
+            &limit,
+            &error)
+
+        #expect(succeeded)
+        #expect(kind.rawValue == 2)
+        #expect(limit == 90)
+        #expect(error == nil)
+    }
+
+    @Test("Charge Limit support stays distinct from an unavailable service")
+    func mclSupportAndServiceFailureStayDistinct() {
+        var supported: ObjCBool = true
+        var limit = 80
+        var options = JSCChargeLimitOptions(rawValue: UInt.max)
+        var state = JSCChargeLimitState(rawValue: 1)!
+        var error: NSError?
+
+        let succeeded = JSCCopyChargeLimitConfigurationForClient(
+            UnsupportedMCLClient(),
+            &supported,
+            &limit,
+            &options,
+            &state,
+            &error)
+
+        #expect(succeeded)
+        #expect(!supported.boolValue)
+        #expect(limit == 100)
+        #expect(options.rawValue == 0)
+        #expect(state.rawValue == -1)
+        #expect(error == nil)
+
+        supported = true
+        limit = 80
+        options = JSCChargeLimitOptions(rawValue: UInt.max)
+        state = JSCChargeLimitState(rawValue: 1)!
+        error = nil
+
+        let unavailable = JSCCopyChargeLimitConfigurationForClient(
+            UnavailableMCLClient(),
+            &supported,
+            &limit,
+            &options,
+            &state,
+            &error)
+
+        #expect(!unavailable)
+        #expect(!supported.boolValue)
+        #expect(limit == 100)
+        #expect(options.rawValue == 0)
+        #expect(state.rawValue == -1)
+        #expect(error != nil)
     }
 
     @Test("Available Charge Limit choices reject malformed payloads as a whole")
