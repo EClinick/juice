@@ -176,6 +176,410 @@ static NSInteger JSCManualChargeLimit(id client, NSInteger fallback) {
     return value;
 }
 
+static JSCChargeLimitOptions JSCChargeLimitOption(NSInteger chargeLimit) {
+    switch (chargeLimit) {
+        case 80: return JSCChargeLimitOption80;
+        case 85: return JSCChargeLimitOption85;
+        case 90: return JSCChargeLimitOption90;
+        case 95: return JSCChargeLimitOption95;
+        case 100: return JSCChargeLimitOption100;
+        default: return JSCChargeLimitOptionNone;
+    }
+}
+
+JSCChargeLimitOptions JSCResolveAvailableChargeLimits(NSArray *rawLimits) {
+    if (![rawLimits isKindOfClass:[NSArray class]]) {
+        return JSCChargeLimitOptionNone;
+    }
+
+    JSCChargeLimitOptions options = JSCChargeLimitOptionNone;
+    for (id rawValue in rawLimits) {
+        if (![rawValue isKindOfClass:[NSNumber class]]) {
+            return JSCChargeLimitOptionNone;
+        }
+        double numericValue = [rawValue doubleValue];
+        NSInteger integerValue = [rawValue integerValue];
+        JSCChargeLimitOptions option = JSCChargeLimitOption(integerValue);
+        if (numericValue != (double)integerValue
+            || option == JSCChargeLimitOptionNone
+            || (options & option) != 0) {
+            return JSCChargeLimitOptionNone;
+        }
+        options |= option;
+    }
+    return options;
+}
+
+JSCChargeLimitState JSCResolveChargeLimitState(
+    NSUInteger rawState,
+    NSInteger currentLimit
+) {
+    switch (rawState) {
+        case JSCChargeLimitStateDisabled:
+            return currentLimit == 100
+                ? JSCChargeLimitStateDisabled
+                : JSCChargeLimitStateUnknown;
+        case JSCChargeLimitStateEnabled:
+            return currentLimit < 100
+                    && JSCChargeLimitOption(currentLimit)
+                        != JSCChargeLimitOptionNone
+                ? JSCChargeLimitStateEnabled
+                : JSCChargeLimitStateUnknown;
+        case JSCChargeLimitStateTemporarilyDisabled:
+            return currentLimit == 100
+                ? JSCChargeLimitStateTemporarilyDisabled
+                : JSCChargeLimitStateUnknown;
+        default:
+            return JSCChargeLimitStateUnknown;
+    }
+}
+
+JSCOptimizedChargingState JSCResolveOptimizedChargingState(
+    NSUInteger rawState
+) {
+    switch (rawState) {
+        case JSCOptimizedChargingStateDisabled:
+            return JSCOptimizedChargingStateDisabled;
+        case JSCOptimizedChargingStateEnabled:
+            return JSCOptimizedChargingStateEnabled;
+        case JSCOptimizedChargingStateChargingToFull:
+            return JSCOptimizedChargingStateChargingToFull;
+        case JSCOptimizedChargingStateTemporarilyDisabled:
+            return JSCOptimizedChargingStateTemporarilyDisabled;
+        default:
+            return JSCOptimizedChargingStateUnknown;
+    }
+}
+
+static BOOL JSCOptimizedChargingSetterIsAvailable(
+    id client,
+    NSString *selectorName
+) {
+    SEL selector = NSSelectorFromString(selectorName);
+    const char *arguments[] = { "^@" }; // NSError * __autoreleasing *
+    return [client respondsToSelector:selector]
+        && JSCMethodMatches(
+            [client class],
+            selector,
+            @encode(BOOL),
+            arguments,
+            1);
+}
+
+static BOOL JSCOptimizedChargingSettersAreAvailable(id client) {
+    return JSCOptimizedChargingSetterIsAvailable(
+            client,
+            @"enableSmartCharging:")
+        && JSCOptimizedChargingSetterIsAvailable(
+            client,
+            @"disableSmartCharging:")
+        && JSCOptimizedChargingSetterIsAvailable(
+            client,
+            @"temporarilyDisableSmartCharging:");
+}
+
+static BOOL JSCReadOptimizedChargingConfiguration(
+    id client,
+    BOOL *supported,
+    JSCOptimizedChargingState *state,
+    NSError **error
+) {
+    // PowerUISmartChargeClient's no-error support getter silently returns NO
+    // when its XPC lookup fails. System Settings instead uses the utility
+    // class's local hardware check, leaving the error-bearing state call below
+    // to distinguish an unavailable service from unsupported hardware.
+    Class utilitiesClass = NSClassFromString(@"PowerUISmartChargeUtilities");
+    SEL supportSelector = NSSelectorFromString(@"isOBCSupported");
+    Class utilitiesMetaClass = utilitiesClass == Nil
+        ? Nil
+        : object_getClass(utilitiesClass);
+    if (utilitiesClass == Nil
+        || ![utilitiesClass respondsToSelector:supportSelector]
+        || !JSCMethodMatches(
+            utilitiesMetaClass,
+            supportSelector,
+            @encode(BOOL),
+            NULL,
+            0)) {
+        if (error != NULL) {
+            *error = JSCError(
+                JSCErrorUnavailable,
+                @"This macOS version does not expose Optimized Battery Charging to Juice."
+            );
+        }
+        return NO;
+    }
+
+    typedef BOOL (*SupportFunction)(id, SEL);
+    BOOL isSupported = ((SupportFunction)objc_msgSend)(
+        utilitiesClass,
+        supportSelector
+    );
+    if (!isSupported) {
+        if (supported != NULL) {
+            *supported = NO;
+        }
+        return YES;
+    }
+
+    SEL stateSelector = NSSelectorFromString(
+        @"isSmartChargingCurrentlyEnabled:"
+    );
+    const char *errorArgument[] = { "^@" };
+    if (![client respondsToSelector:stateSelector]
+        || !JSCMethodMatches(
+            [client class],
+            stateSelector,
+            @encode(NSUInteger),
+            errorArgument,
+            1)) {
+        if (error != NULL) {
+            *error = JSCError(
+                JSCErrorUnavailable,
+                @"This macOS version does not expose the Optimized Battery Charging state."
+            );
+        }
+        return NO;
+    }
+
+    NSError *stateError = nil;
+    typedef NSUInteger (*StateFunction)(id, SEL, NSError **);
+    NSUInteger rawState = ((StateFunction)objc_msgSend)(
+        client,
+        stateSelector,
+        &stateError
+    );
+    JSCOptimizedChargingState resolvedState =
+        JSCResolveOptimizedChargingState(rawState);
+    if (stateError != nil
+        || resolvedState == JSCOptimizedChargingStateUnknown) {
+        if (error != NULL) {
+            *error = stateError ?: JSCError(
+                JSCErrorCallFailed,
+                @"macOS returned an unsupported Optimized Battery Charging state."
+            );
+        }
+        return NO;
+    }
+
+    // This is an editable Settings surface, so drift in any action ABI makes
+    // the whole control unavailable rather than leaving an enabled switch that
+    // can never complete one of its advertised choices.
+    if (!JSCOptimizedChargingSettersAreAvailable(client)) {
+        if (error != NULL) {
+            *error = JSCError(
+                JSCErrorUnavailable,
+                @"This macOS version cannot change Optimized Battery Charging from Juice."
+            );
+        }
+        return NO;
+    }
+
+    if (supported != NULL) {
+        *supported = YES;
+    }
+    if (state != NULL) {
+        *state = resolvedState;
+    }
+    return YES;
+}
+
+static BOOL JSCChargeLimitSetterIsAvailable(id client) {
+    SEL selector = NSSelectorFromString(@"setMCLLimit:error:");
+    const char *arguments[] = {
+        @encode(unsigned char),
+        "^@", // NSError * __autoreleasing *
+    };
+    return [client respondsToSelector:selector]
+        && JSCMethodMatches(
+            [client class],
+            selector,
+            @encode(BOOL),
+            arguments,
+            2);
+}
+
+static BOOL JSCReadChargeLimitConfiguration(
+    id client,
+    BOOL *supported,
+    NSInteger *currentLimit,
+    JSCChargeLimitOptions *availableLimits,
+    JSCChargeLimitState *state,
+    NSError **error
+) {
+    SEL supportSelector = NSSelectorFromString(@"isMCLSupported");
+    if (![client respondsToSelector:supportSelector]
+        || !JSCMethodMatches(
+            [client class],
+            supportSelector,
+            @encode(BOOL),
+            NULL,
+            0)) {
+        if (error != NULL) {
+            *error = JSCError(
+                JSCErrorUnavailable,
+                @"This macOS version does not expose Charge Limit to Juice."
+            );
+        }
+        return NO;
+    }
+
+    typedef BOOL (*SupportFunction)(id, SEL);
+    BOOL isSupported = ((SupportFunction)objc_msgSend)(
+        client,
+        supportSelector
+    );
+    if (supported != NULL) {
+        *supported = isSupported;
+    }
+    if (!isSupported) {
+        return YES;
+    }
+
+    SEL availableSelector = NSSelectorFromString(
+        @"availableChargeLimitsWithError:"
+    );
+    const char *errorArgument[] = { "^@" }; // NSError * __autoreleasing *
+    if (![client respondsToSelector:availableSelector]
+        || !JSCMethodMatches(
+            [client class],
+            availableSelector,
+            @encode(id),
+            errorArgument,
+            1)) {
+        if (error != NULL) {
+            *error = JSCError(
+                JSCErrorUnavailable,
+                @"This macOS version does not expose Charge Limit choices."
+            );
+        }
+        return NO;
+    }
+
+    NSError *availableError = nil;
+    typedef id (*AvailableFunction)(id, SEL, NSError **);
+    id rawAvailable = ((AvailableFunction)objc_msgSend)(
+        client,
+        availableSelector,
+        &availableError
+    );
+    if (availableError != nil
+        || ![rawAvailable isKindOfClass:[NSArray class]]) {
+        if (error != NULL) {
+            *error = availableError ?: JSCError(
+                JSCErrorCallFailed,
+                @"macOS did not return its available Charge Limit choices."
+            );
+        }
+        return NO;
+    }
+
+    JSCChargeLimitOptions options =
+        JSCResolveAvailableChargeLimits((NSArray *)rawAvailable);
+    if (options == JSCChargeLimitOptionNone) {
+        if (error != NULL) {
+            *error = JSCError(
+                JSCErrorCallFailed,
+                @"macOS returned no supported Charge Limit choices."
+            );
+        }
+        return NO;
+    }
+
+    SEL currentSelector = NSSelectorFromString(@"getMCLLimitWithError:");
+    if (![client respondsToSelector:currentSelector]
+        || !JSCMethodMatches(
+            [client class],
+            currentSelector,
+            @encode(unsigned char),
+            errorArgument,
+            1)) {
+        if (error != NULL) {
+            *error = JSCError(
+                JSCErrorUnavailable,
+                @"This macOS version does not expose the configured Charge Limit."
+            );
+        }
+        return NO;
+    }
+
+    NSError *currentError = nil;
+    typedef unsigned char (*CurrentFunction)(id, SEL, NSError **);
+    unsigned char rawCurrent = ((CurrentFunction)objc_msgSend)(
+        client,
+        currentSelector,
+        &currentError
+    );
+    JSCChargeLimitOptions currentOption = JSCChargeLimitOption(rawCurrent);
+    if (currentError != nil
+        || currentOption == JSCChargeLimitOptionNone
+        || (options & currentOption) == 0) {
+        if (error != NULL) {
+            *error = currentError ?: JSCError(
+                JSCErrorCallFailed,
+                @"macOS returned an unsupported configured Charge Limit."
+            );
+        }
+        return NO;
+    }
+
+    SEL stateSelector = NSSelectorFromString(@"isMCLCurrentlyEnabled:");
+    if (![client respondsToSelector:stateSelector]
+        || !JSCMethodMatches(
+            [client class],
+            stateSelector,
+            @encode(NSUInteger),
+            errorArgument,
+            1)) {
+        if (error != NULL) {
+            *error = JSCError(
+                JSCErrorUnavailable,
+                @"This macOS version does not expose the Charge Limit state."
+            );
+        }
+        return NO;
+    }
+
+    NSError *stateError = nil;
+    typedef NSUInteger (*StateFunction)(id, SEL, NSError **);
+    NSUInteger rawState = ((StateFunction)objc_msgSend)(
+        client,
+        stateSelector,
+        &stateError
+    );
+    JSCChargeLimitState resolvedState =
+        JSCResolveChargeLimitState(rawState, rawCurrent);
+    if (stateError != nil
+        || resolvedState == JSCChargeLimitStateUnknown) {
+        if (error != NULL) {
+            *error = stateError ?: JSCError(
+                JSCErrorCallFailed,
+                @"macOS returned an unsupported Charge Limit state."
+            );
+        }
+        return NO;
+    }
+    if (!JSCChargeLimitSetterIsAvailable(client)) {
+        if (error != NULL) {
+            *error = JSCError(
+                JSCErrorUnavailable,
+                @"This macOS version cannot change Charge Limit from Juice."
+            );
+        }
+        return NO;
+    }
+    if (state != NULL) {
+        *state = resolvedState;
+    }
+    if (currentLimit != NULL) {
+        *currentLimit = rawCurrent;
+    }
+    if (availableLimits != NULL) {
+        *availableLimits = options;
+    }
+    return YES;
+}
+
 JSCChargeHoldKind JSCResolveChargeHoldKind(
     NSUInteger rawState,
     BOOL chargingOverrideAllowed
@@ -282,7 +686,18 @@ BOOL JSCCopyChargeHoldStatus(
     );
 }
 
-BOOL JSCChargeToFull(NSError **error) {
+BOOL JSCChargeToFull(
+    JSCChargeHoldKind *actedKind,
+    NSInteger *actedChargeLimit,
+    NSError **error
+) {
+    if (actedKind != NULL) {
+        *actedKind = JSCChargeHoldKindNone;
+    }
+    if (actedChargeLimit != NULL) {
+        *actedChargeLimit = 100;
+    }
+
     NSError *clientError = nil;
     id client = JSCNewClient(&clientError);
     if (client == nil) {
@@ -296,7 +711,8 @@ BOOL JSCChargeToFull(NSError **error) {
     // again at the point of action and select the operation from that current
     // authoritative state instead of accepting a kind captured by the UI.
     JSCChargeHoldKind kind = JSCChargeHoldKindNone;
-    if (!JSCReadResolvedStatus(client, &kind, NULL, error)) {
+    NSInteger chargeLimit = 100;
+    if (!JSCReadResolvedStatus(client, &kind, &chargeLimit, error)) {
         return NO;
     }
 
@@ -338,11 +754,282 @@ BOOL JSCChargeToFull(NSError **error) {
     NSError *callError = nil;
     typedef BOOL (*Function)(id, SEL, NSError **);
     BOOL succeeded = ((Function)objc_msgSend)(client, selector, &callError);
-    if (!succeeded && error != NULL) {
-        *error = callError ?: JSCError(
-            JSCErrorCallFailed,
-            @"macOS did not start charging to full."
-        );
+    if (!succeeded || callError != nil) {
+        if (error != NULL) {
+            *error = callError ?: JSCError(
+                JSCErrorCallFailed,
+                @"macOS did not start charging to full."
+            );
+        }
+        return NO;
     }
-    return succeeded;
+    if (actedKind != NULL) {
+        *actedKind = kind;
+    }
+    if (actedChargeLimit != NULL) {
+        *actedChargeLimit = chargeLimit;
+    }
+    return YES;
+}
+
+BOOL JSCCopyChargeLimitConfiguration(
+    BOOL *supported,
+    NSInteger *currentLimit,
+    JSCChargeLimitOptions *availableLimits,
+    JSCChargeLimitState *state,
+    NSError **error
+) {
+    if (supported != NULL) {
+        *supported = NO;
+    }
+    if (currentLimit != NULL) {
+        *currentLimit = 100;
+    }
+    if (availableLimits != NULL) {
+        *availableLimits = JSCChargeLimitOptionNone;
+    }
+    if (state != NULL) {
+        *state = JSCChargeLimitStateUnknown;
+    }
+
+    NSError *clientError = nil;
+    id client = JSCNewClient(&clientError);
+    if (client == nil) {
+        if (error != NULL) {
+            *error = clientError;
+        }
+        return NO;
+    }
+
+    return JSCReadChargeLimitConfiguration(
+        client,
+        supported,
+        currentLimit,
+        availableLimits,
+        state,
+        error
+    );
+}
+
+BOOL JSCSetChargeLimit(NSInteger chargeLimit, NSError **error) {
+    JSCChargeLimitOptions requestedOption = JSCChargeLimitOption(chargeLimit);
+    if (requestedOption == JSCChargeLimitOptionNone) {
+        if (error != NULL) {
+            *error = JSCError(
+                JSCErrorUnavailable,
+                @"That Charge Limit is not supported."
+            );
+        }
+        return NO;
+    }
+
+    NSError *clientError = nil;
+    id client = JSCNewClient(&clientError);
+    if (client == nil) {
+        if (error != NULL) {
+            *error = clientError;
+        }
+        return NO;
+    }
+
+    BOOL supported = NO;
+    NSInteger currentLimit = 100;
+    JSCChargeLimitOptions availableLimits = JSCChargeLimitOptionNone;
+    JSCChargeLimitState state = JSCChargeLimitStateUnknown;
+    if (!JSCReadChargeLimitConfiguration(
+            client,
+            &supported,
+            &currentLimit,
+            &availableLimits,
+            &state,
+            error)) {
+        return NO;
+    }
+    if (!supported || (availableLimits & requestedOption) == 0) {
+        if (error != NULL) {
+            *error = JSCError(
+                JSCErrorUnavailable,
+                @"That Charge Limit is not available on this Mac."
+            );
+        }
+        return NO;
+    }
+    if (state != JSCChargeLimitStateTemporarilyDisabled
+        && currentLimit == chargeLimit) {
+        return YES;
+    }
+
+    SEL selector = NSSelectorFromString(@"setMCLLimit:error:");
+    if (!JSCChargeLimitSetterIsAvailable(client)) {
+        if (error != NULL) {
+            *error = JSCError(
+                JSCErrorUnavailable,
+                @"This macOS version cannot change Charge Limit from Juice."
+            );
+        }
+        return NO;
+    }
+
+    NSError *callError = nil;
+    typedef BOOL (*Function)(id, SEL, unsigned char, NSError **);
+    BOOL succeeded = ((Function)objc_msgSend)(
+        client,
+        selector,
+        (unsigned char)chargeLimit,
+        &callError
+    );
+    if (!succeeded || callError != nil) {
+        if (error != NULL) {
+            *error = callError ?: JSCError(
+                JSCErrorCallFailed,
+                @"macOS did not apply the new Charge Limit."
+            );
+        }
+        return NO;
+    }
+    return YES;
+}
+
+BOOL JSCCopyOptimizedChargingConfiguration(
+    BOOL *supported,
+    JSCOptimizedChargingState *state,
+    NSError **error
+) {
+    if (supported != NULL) {
+        *supported = NO;
+    }
+    if (state != NULL) {
+        *state = JSCOptimizedChargingStateUnknown;
+    }
+
+    NSError *clientError = nil;
+    id client = JSCNewClient(&clientError);
+    if (client == nil) {
+        if (error != NULL) {
+            *error = clientError;
+        }
+        return NO;
+    }
+
+    return JSCReadOptimizedChargingConfiguration(
+        client,
+        supported,
+        state,
+        error
+    );
+}
+
+typedef NS_ENUM(NSInteger, JSCOptimizedChargingAction) {
+    JSCOptimizedChargingActionEnable,
+    JSCOptimizedChargingActionDisable,
+    JSCOptimizedChargingActionTemporarilyDisable,
+};
+
+static BOOL JSCPerformOptimizedChargingAction(
+    JSCOptimizedChargingAction action,
+    NSError **error
+) {
+    NSError *clientError = nil;
+    id client = JSCNewClient(&clientError);
+    if (client == nil) {
+        if (error != NULL) {
+            *error = clientError;
+        }
+        return NO;
+    }
+
+    BOOL supported = NO;
+    JSCOptimizedChargingState state = JSCOptimizedChargingStateUnknown;
+    if (!JSCReadOptimizedChargingConfiguration(
+            client,
+            &supported,
+            &state,
+            error)) {
+        return NO;
+    }
+    if (!supported) {
+        if (error != NULL) {
+            *error = JSCError(
+                JSCErrorUnavailable,
+                @"Optimized Battery Charging is not available on this Mac."
+            );
+        }
+        return NO;
+    }
+
+    NSString *selectorName;
+    switch (action) {
+        case JSCOptimizedChargingActionEnable:
+            if (state == JSCOptimizedChargingStateEnabled) {
+                return YES;
+            }
+            selectorName = @"enableSmartCharging:";
+            break;
+        case JSCOptimizedChargingActionDisable:
+            if (state == JSCOptimizedChargingStateDisabled) {
+                return YES;
+            }
+            selectorName = @"disableSmartCharging:";
+            break;
+        case JSCOptimizedChargingActionTemporarilyDisable:
+            if (state == JSCOptimizedChargingStateTemporarilyDisabled) {
+                return YES;
+            }
+            if (state != JSCOptimizedChargingStateEnabled) {
+                if (error != NULL) {
+                    *error = JSCError(
+                        JSCErrorUnavailable,
+                        @"Optimized Battery Charging cannot be turned off temporarily in its current state."
+                    );
+                }
+                return NO;
+            }
+            selectorName = @"temporarilyDisableSmartCharging:";
+            break;
+    }
+
+    if (!JSCOptimizedChargingSetterIsAvailable(client, selectorName)) {
+        if (error != NULL) {
+            *error = JSCError(
+                JSCErrorUnavailable,
+                @"This macOS version cannot change Optimized Battery Charging from Juice."
+            );
+        }
+        return NO;
+    }
+
+    SEL selector = NSSelectorFromString(selectorName);
+    NSError *callError = nil;
+    typedef BOOL (*Function)(id, SEL, NSError **);
+    BOOL succeeded = ((Function)objc_msgSend)(
+        client,
+        selector,
+        &callError
+    );
+    if (!succeeded || callError != nil) {
+        if (error != NULL) {
+            *error = callError ?: JSCError(
+                JSCErrorCallFailed,
+                @"macOS did not change Optimized Battery Charging."
+            );
+        }
+        return NO;
+    }
+    return YES;
+}
+
+BOOL JSCSetOptimizedChargingEnabled(BOOL enabled, NSError **error) {
+    return JSCPerformOptimizedChargingAction(
+        enabled
+            ? JSCOptimizedChargingActionEnable
+            : JSCOptimizedChargingActionDisable,
+        error
+    );
+}
+
+BOOL JSCTemporarilyDisableOptimizedCharging(NSError **error) {
+    return JSCPerformOptimizedChargingAction(
+        JSCOptimizedChargingActionTemporarilyDisable,
+        error
+    );
 }

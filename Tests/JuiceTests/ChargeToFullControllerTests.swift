@@ -6,22 +6,28 @@ import Testing
 private final class FakeChargeToFullBackend {
     private var reads: [Result<SystemChargeHold?, Error>]
     private var writes: [Result<Void, Error>]
+    private var actedHolds: [SystemChargeHold]
+    private var lastReadHold: SystemChargeHold?
     private(set) var readCount = 0
     private(set) var writeCount = 0
 
     init(
         reads: [Result<SystemChargeHold?, Error>],
-        writes: [Result<Void, Error>] = []
+        writes: [Result<Void, Error>] = [],
+        actedHolds: [SystemChargeHold] = []
     ) {
         self.reads = reads
         self.writes = writes
+        self.actedHolds = actedHolds
     }
 
     nonisolated var read: @Sendable () async throws -> SystemChargeHold? {
         { try await self.nextRead() }
     }
 
-    nonisolated var write: @Sendable () async throws -> Void {
+    nonisolated var write:
+        @Sendable () async throws -> SystemChargeHold
+    {
         { try await self.nextWrite() }
     }
 
@@ -29,19 +35,29 @@ private final class FakeChargeToFullBackend {
         readCount += 1
         guard !reads.isEmpty else { return nil }
         let result = reads.count == 1 ? reads[0] : reads.removeFirst()
-        return try result.get()
+        let hold = try result.get()
+        lastReadHold = hold
+        return hold
     }
 
-    private func nextWrite() throws {
+    private func nextWrite() throws -> SystemChargeHold {
         writeCount += 1
         guard !writes.isEmpty else {
             throw TestFailure.noQueuedWrite
         }
         try writes.removeFirst().get()
+        if !actedHolds.isEmpty {
+            return actedHolds.removeFirst()
+        }
+        guard let lastReadHold else {
+            throw TestFailure.noAuthoritativeHold
+        }
+        return lastReadHold
     }
 
     private enum TestFailure: Error {
         case noQueuedWrite
+        case noAuthoritativeHold
     }
 }
 
@@ -123,6 +139,25 @@ private final class GatedChargeStatusReader: @unchecked Sendable {
     }
 }
 
+private final class OptimizedModeSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var modes: [OptimizedChargingMode]
+
+    init(_ modes: [OptimizedChargingMode]) {
+        self.modes = modes
+    }
+
+    var read: @Sendable () async throws -> OptimizedChargingMode? {
+        {
+            self.lock.withLock {
+                self.modes.count == 1
+                    ? self.modes[0]
+                    : self.modes.removeFirst()
+            }
+        }
+    }
+}
+
 /// Records entry into a write and parks it until the test supplies the result.
 private final class GatedChargeWrite: @unchecked Sendable {
     private let lock = NSLock()
@@ -130,8 +165,17 @@ private final class GatedChargeWrite: @unchecked Sendable {
     private var result: Result<Void, Error>?
     private var writer: CheckedContinuation<Void, Never>?
     private var arrival: CheckedContinuation<Void, Never>?
+    private let actedHold: SystemChargeHold
 
-    var write: @Sendable () async throws -> Void {
+    init(
+        actedHold: SystemChargeHold = SystemChargeHold(
+            kind: .optimized,
+            chargeLimit: 100)
+    ) {
+        self.actedHold = actedHold
+    }
+
+    var write: @Sendable () async throws -> SystemChargeHold {
         { try await self.perform() }
     }
 
@@ -161,7 +205,7 @@ private final class GatedChargeWrite: @unchecked Sendable {
         waiting?.resume()
     }
 
-    private func perform() async throws {
+    private func perform() async throws -> SystemChargeHold {
         let arrived = beginWrite()
         arrived?.resume()
 
@@ -178,6 +222,7 @@ private final class GatedChargeWrite: @unchecked Sendable {
 
         let outcome = lock.withLock { self.result }
         try outcome!.get()
+        return actedHold
     }
 
     private func beginWrite() -> CheckedContinuation<Void, Never>? {
@@ -362,7 +407,7 @@ struct ChargeToFullControllerTests {
             gatedCall: 1)
         let controller = ChargeToFullController(
             readStatus: reader.read,
-            requestFullCharge: {})
+            requestFullCharge: { hold })
 
         let older = Task { await controller.refresh(reading: Self.reading()) }
         await reader.waitForGatedRead()
@@ -384,7 +429,7 @@ struct ChargeToFullControllerTests {
             gatedCall: 2)
         let controller = ChargeToFullController(
             readStatus: reader.read,
-            requestFullCharge: {})
+            requestFullCharge: { hold })
         await controller.refresh(reading: Self.reading())
 
         let staleRefresh = Task {
@@ -396,7 +441,7 @@ struct ChargeToFullControllerTests {
         reader.release()
         await staleRefresh.value
 
-        #expect(controller.state == .accepted(.optimized(currentPercent: 80)))
+        #expect(controller.state == .accepted(.optimized(currentPercent: 79)))
     }
 
     @Test("Double taps dispatch only one macOS request")
@@ -501,6 +546,199 @@ struct ChargeToFullControllerTests {
 
         currentDate.addTimeInterval(ChargeToFullController.confirmationGrace)
         await controller.refresh(reading: Self.reading())
+
+        #expect(controller.state == nil)
+    }
+
+    @Test("A concurrent smart-charging transaction blocks the request")
+    func sharedTransactionBlocksRequest() async throws {
+        let transactions = SmartChargingTransactionCoordinator()
+        let backend = FakeChargeToFullBackend(
+            reads: [
+                .success(SystemChargeHold(
+                    kind: .optimized,
+                    chargeLimit: 100))
+            ],
+            writes: [.success(())])
+        let controller = ChargeToFullController(
+            readStatus: backend.read,
+            requestFullCharge: backend.write,
+            transactionCoordinator: transactions)
+        await controller.refresh(reading: Self.reading())
+        let transaction = try #require(
+            transactions.begin(.optimizedCharging))
+
+        #expect(!(await controller.chargeToFull()))
+        #expect(backend.writeCount == 0)
+
+        transactions.cancelBeforeMutation(transaction)
+    }
+
+    @Test("Charge to Full reconciles Settings before releasing its transaction")
+    func requestReconcilesSettings() async {
+        let transactions = SmartChargingTransactionCoordinator()
+        let backend = FakeChargeToFullBackend(
+            reads: [
+                .success(SystemChargeHold(
+                    kind: .optimized,
+                    chargeLimit: 100))
+            ],
+            writes: [.success(())])
+        let optimizedReads = OptimizedModeSequence([
+            .enabled,
+            .chargingToFull,
+        ])
+        let optimized = OptimizedChargingController(
+            readConfiguration: optimizedReads.read,
+            writeAction: { _ in },
+            transactionCoordinator: transactions)
+        let controller = ChargeToFullController(
+            readStatus: backend.read,
+            requestFullCharge: backend.write,
+            transactionCoordinator: transactions)
+        await optimized.refresh()
+        await controller.refresh(reading: Self.reading())
+
+        #expect(await controller.chargeToFull())
+
+        #expect(optimized.status == .available(.chargingToFull))
+        #expect(transactions.reconciliationGeneration == 1)
+        #expect(!transactions.isMutating)
+    }
+
+    @Test("A later Settings mutation immediately replaces accepted grace state")
+    func settingsMutationReconcilesAcceptedStateImmediately() async throws {
+        let transactions = SmartChargingTransactionCoordinator()
+        let backend = FakeChargeToFullBackend(
+            reads: [
+                .success(SystemChargeHold(
+                    kind: .optimized,
+                    chargeLimit: 100)),
+                .success(nil),
+            ],
+            writes: [.success(())])
+        let controller = ChargeToFullController(
+            readStatus: backend.read,
+            requestFullCharge: backend.write,
+            transactionCoordinator: transactions)
+        await controller.refresh(reading: Self.reading())
+        #expect(await controller.chargeToFull())
+        #expect(controller.state == .accepted(.optimized(currentPercent: 80)))
+
+        let settingsTransaction = try #require(
+            transactions.begin(.optimizedCharging))
+        await transactions.reconcile(settingsTransaction)
+        // The popover may have been hidden for the transaction and therefore
+        // missed its onChange callback. Its ordinary activation refresh must
+        // still invalidate the older accepted transition.
+        await controller.refresh(reading: Self.reading())
+
+        #expect(controller.state == nil)
+        #expect(backend.readCount == 2)
+    }
+
+    @Test("A Charge Limit change preserves an optimized full-charge override")
+    func unrelatedLimitMutationPreservesOptimizedGrace() async throws {
+        let transactions = SmartChargingTransactionCoordinator()
+        let hold = SystemChargeHold(kind: .optimized, chargeLimit: 100)
+        let backend = FakeChargeToFullBackend(
+            reads: [.success(hold), .success(hold)],
+            writes: [.success(())])
+        let controller = ChargeToFullController(
+            readStatus: backend.read,
+            requestFullCharge: backend.write,
+            transactionCoordinator: transactions)
+        await controller.refresh(reading: Self.reading())
+        #expect(await controller.chargeToFull())
+
+        let unrelatedTransaction = try #require(
+            transactions.begin(.chargeLimit))
+        await transactions.reconcile(unrelatedTransaction)
+        await controller.refresh(reading: Self.reading())
+
+        #expect(controller.state == .accepted(.optimized(currentPercent: 80)))
+        #expect(backend.readCount == 2)
+    }
+
+    @Test("An optimized-charging change preserves a limit full-charge override")
+    func unrelatedOptimizedMutationPreservesLimitGrace() async throws {
+        let transactions = SmartChargingTransactionCoordinator()
+        let hold = SystemChargeHold(kind: .limit, chargeLimit: 90)
+        let backend = FakeChargeToFullBackend(
+            reads: [.success(hold), .success(hold)],
+            writes: [.success(())])
+        let controller = ChargeToFullController(
+            readStatus: backend.read,
+            requestFullCharge: backend.write,
+            transactionCoordinator: transactions)
+        await controller.refresh(reading: Self.reading(percent: 90))
+        #expect(await controller.chargeToFull())
+
+        let unrelatedTransaction = try #require(
+            transactions.begin(.optimizedCharging))
+        await transactions.reconcile(unrelatedTransaction)
+        await controller.refresh(reading: Self.reading(percent: 90))
+
+        #expect(controller.state == .accepted(.limit(percent: 90)))
+        #expect(backend.readCount == 2)
+    }
+
+    @Test("Action-time limit state replaces a stale optimized snapshot")
+    func actionKindFlipsFromOptimizedToLimit() async throws {
+        let transactions = SmartChargingTransactionCoordinator()
+        let backend = FakeChargeToFullBackend(
+            reads: [
+                .success(SystemChargeHold(
+                    kind: .optimized,
+                    chargeLimit: 100)),
+                .success(nil),
+            ],
+            writes: [.success(())],
+            actedHolds: [
+                SystemChargeHold(kind: .limit, chargeLimit: 90)
+            ])
+        let controller = ChargeToFullController(
+            readStatus: backend.read,
+            requestFullCharge: backend.write,
+            transactionCoordinator: transactions)
+        await controller.refresh(reading: Self.reading(percent: 90))
+
+        #expect(await controller.chargeToFull())
+        #expect(controller.state == .accepted(.limit(percent: 90)))
+
+        let limitTransaction = try #require(
+            transactions.begin(.chargeLimit))
+        await transactions.reconcile(limitTransaction)
+        await controller.refresh(reading: Self.reading(percent: 90))
+
+        #expect(controller.state == nil)
+    }
+
+    @Test("Action-time optimized state replaces a stale limit snapshot")
+    func actionKindFlipsFromLimitToOptimized() async throws {
+        let transactions = SmartChargingTransactionCoordinator()
+        let backend = FakeChargeToFullBackend(
+            reads: [
+                .success(SystemChargeHold(kind: .limit, chargeLimit: 90)),
+                .success(nil),
+            ],
+            writes: [.success(())],
+            actedHolds: [
+                SystemChargeHold(kind: .optimized, chargeLimit: 100)
+            ])
+        let controller = ChargeToFullController(
+            readStatus: backend.read,
+            requestFullCharge: backend.write,
+            transactionCoordinator: transactions)
+        await controller.refresh(reading: Self.reading(percent: 90))
+
+        #expect(await controller.chargeToFull())
+        #expect(controller.state == .accepted(.optimized(currentPercent: 90)))
+
+        let optimizedTransaction = try #require(
+            transactions.begin(.optimizedCharging))
+        await transactions.reconcile(optimizedTransaction)
+        await controller.refresh(reading: Self.reading(percent: 90))
 
         #expect(controller.state == nil)
     }

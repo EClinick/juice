@@ -74,10 +74,13 @@ final class ChargeToFullController: ObservableObject {
     @Published private(set) var isRequesting = false
 
     private let readStatus: @Sendable () async throws -> SystemChargeHold?
-    private let requestFullCharge: @Sendable () async throws -> Void
+    private let requestFullCharge:
+        @Sendable () async throws -> SystemChargeHold
+    private let transactionCoordinator: SmartChargingTransactionCoordinator
     private let now: () -> Date
     private var generation = 0
     private var acceptedAt: Date?
+    private var acceptedReconciliationGeneration: Int?
     private var lastReading: BatteryReading?
     private var confirmationTask: Task<Void, Never>?
 
@@ -85,13 +88,18 @@ final class ChargeToFullController: ObservableObject {
 
     init(
         readStatus: (@Sendable () async throws -> SystemChargeHold?)? = nil,
-        requestFullCharge: (@Sendable () async throws -> Void)? = nil,
+        requestFullCharge: (
+            @Sendable () async throws -> SystemChargeHold
+        )? = nil,
+        transactionCoordinator: SmartChargingTransactionCoordinator? = nil,
         now: @escaping () -> Date = Date.init
     ) {
         self.readStatus = readStatus ?? { try await Self.readSystemStatus() }
         self.requestFullCharge = requestFullCharge ?? {
             try await Self.requestSystemFullCharge()
         }
+        self.transactionCoordinator = transactionCoordinator
+            ?? SmartChargingTransactionCoordinator()
         self.now = now
     }
 
@@ -99,6 +107,15 @@ final class ChargeToFullController: ObservableObject {
     /// Battery context can hide an action, but can never create one.
     func refresh(reading: BatteryReading?) async {
         lastReading = reading
+        // A Settings transaction may complete while the popover is hidden, so
+        // every refresh—not only the live onChange path—must invalidate grace
+        // from an older one-time override before applying authoritative state.
+        if case .accepted(let reason) = state,
+           acceptedReconciliationGeneration
+                != transactionCoordinator.reconciliationGeneration(
+                    for: Self.mutationKind(for: reason)) {
+            clearAcceptedTransition()
+        }
         if isRequesting {
             // An in-flight system request cannot make an unplugged or already
             // charging battery actionable again. Hide the contextual row as
@@ -116,6 +133,8 @@ final class ChargeToFullController: ObservableObject {
             clearState()
             return
         }
+        guard !transactionCoordinator.isMutating else { return }
+        let transactionEpoch = transactionCoordinator.epoch
 
         let result: Result<SystemChargeHold?, any Error>
         do {
@@ -123,7 +142,11 @@ final class ChargeToFullController: ObservableObject {
         } catch {
             result = .failure(error)
         }
-        guard generation == refreshGeneration, !isRequesting else { return }
+        guard generation == refreshGeneration,
+              transactionEpoch == transactionCoordinator.epoch,
+              !transactionCoordinator.isMutating,
+              !isRequesting
+        else { return }
 
         apply(result, reading: reading)
     }
@@ -162,21 +185,43 @@ final class ChargeToFullController: ObservableObject {
         case .starting, .accepted:
             return false
         }
+        let initialMutationKind = Self.mutationKind(for: reason)
+        guard let transaction =
+                transactionCoordinator.begin(initialMutationKind)
+        else {
+            return false
+        }
 
         generation += 1
         isRequesting = true
         state = .starting(reason)
         var requestWasInvoked = false
+        var effectiveReason = reason
+        var effectiveMutationKind = initialMutationKind
 
         do {
             try Task.checkCancellation()
             requestWasInvoked = true
-            try await requestFullCharge()
+            let actedHold = try await requestFullCharge()
+            guard let actedReason = Self.reason(
+                for: actedHold,
+                reading: lastReading
+            ) else {
+                throw ChargeToFullRequestError.invalidActedHold
+            }
+            effectiveReason = actedReason
+            effectiveMutationKind = Self.mutationKind(for: actedReason)
+            await transactionCoordinator.reconcile(
+                transaction,
+                mutationKind: effectiveMutationKind)
             generation += 1
             isRequesting = false
             if Self.couldBeActionable(lastReading) {
                 acceptedAt = now()
-                state = .accepted(reason)
+                acceptedReconciliationGeneration =
+                    transactionCoordinator.reconciliationGeneration(
+                        for: effectiveMutationKind)
+                state = .accepted(effectiveReason)
                 scheduleConfirmationRefresh()
             } else {
                 clearState()
@@ -191,11 +236,22 @@ final class ChargeToFullController: ObservableObject {
                 // have crossed the process boundary. Re-read in a detached task
                 // instead of pretending the request definitely did not happen.
                 await reconcileAfterUncertainRequest(reading: lastReading)
+                await transactionCoordinator.reconcile(
+                    transaction,
+                    mutationKind: effectiveMutationKind)
             } else {
+                transactionCoordinator.cancelBeforeMutation(transaction)
                 state = .ready(reason)
             }
             return false
         } catch {
+            if requestWasInvoked {
+                await transactionCoordinator.reconcile(
+                    transaction,
+                    mutationKind: effectiveMutationKind)
+            } else {
+                transactionCoordinator.cancelBeforeMutation(transaction)
+            }
             generation += 1
             isRequesting = false
             clearAcceptedTransition()
@@ -250,6 +306,7 @@ final class ChargeToFullController: ObservableObject {
 
     private func clearAcceptedTransition() {
         acceptedAt = nil
+        acceptedReconciliationGeneration = nil
         confirmationTask?.cancel()
         confirmationTask = nil
     }
@@ -285,6 +342,21 @@ final class ChargeToFullController: ObservableObject {
         }
     }
 
+    private static func mutationKind(
+        for reason: ChargeToFullReason
+    ) -> SmartChargingTransactionCoordinator.MutationKind {
+        switch reason {
+        case .optimized:
+            .optimizedCharging
+        case .limit:
+            .chargeLimit
+        }
+    }
+
+    private enum ChargeToFullRequestError: Error {
+        case invalidActedHold
+    }
+
     // MARK: - Dynamic macOS bridge
 
     private nonisolated static func readSystemStatus() async throws -> SystemChargeHold? {
@@ -309,14 +381,28 @@ final class ChargeToFullController: ObservableObject {
         }.value
     }
 
-    private nonisolated static func requestSystemFullCharge() async throws {
+    private nonisolated static func requestSystemFullCharge() async throws
+        -> SystemChargeHold
+    {
         try Task.checkCancellation()
-        try await Task.detached(priority: .userInitiated) {
+        return try await Task.detached(priority: .userInitiated) {
+            var kind = JSCChargeHoldKind(rawValue: 0)!
+            var limit = 100
             var error: NSError?
-            guard JSCChargeToFull(&error) else {
+            guard JSCChargeToFull(&kind, &limit, &error) else {
                 throw error ?? NSError(
                     domain: "com.eclinick.juice.smart-charging",
                     code: 2)
+            }
+            switch kind.rawValue {
+            case 1:
+                return SystemChargeHold(
+                    kind: .optimized,
+                    chargeLimit: limit)
+            case 2:
+                return SystemChargeHold(kind: .limit, chargeLimit: limit)
+            default:
+                throw ChargeToFullRequestError.invalidActedHold
             }
         }.value
     }

@@ -5,6 +5,7 @@ import SwiftUI
 /// whenever macOS has no authoritative one-time override to offer.
 struct ChargeToFullRow: View {
     let state: ChargeToFullState
+    var isMutationBlocked = false
     let action: () -> Void
 
     private var title: String {
@@ -85,7 +86,7 @@ struct ChargeToFullRow: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
-            .disabled(isStarting)
+            .disabled(isStarting || isMutationBlocked)
         }
     }
 
@@ -108,11 +109,9 @@ struct ChargeToFullRow: View {
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 8)
-        .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 9))
-        .overlay {
-            RoundedRectangle(cornerRadius: 9)
-                .strokeBorder(.quaternary, lineWidth: 0.5)
-        }
+        .background(
+            Color.primary.opacity(0.055),
+            in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .accessibilityElement(children: .contain)
     }
 }
