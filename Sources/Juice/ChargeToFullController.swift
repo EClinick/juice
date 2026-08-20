@@ -245,11 +245,19 @@ final class ChargeToFullController: ObservableObject {
             }
             return false
         } catch {
+            let authoritativeResult: Result<SystemChargeHold?, any Error>?
             if requestWasInvoked {
+                // The action performs its own hold read. A stale popover can
+                // therefore reach this path because the hold disappeared before
+                // any override selector was invoked. Re-read while the shared
+                // transaction is still held so a stale reason never becomes a
+                // retry button.
+                authoritativeResult = await readStatusResult()
                 await transactionCoordinator.reconcile(
                     transaction,
                     mutationKind: effectiveMutationKind)
             } else {
+                authoritativeResult = nil
                 transactionCoordinator.cancelBeforeMutation(transaction)
             }
             generation += 1
@@ -258,7 +266,13 @@ final class ChargeToFullController: ObservableObject {
             // A battery refresh can arrive while the private request is in
             // flight. Do not restore a retry for a hold that became ineligible
             // in the meantime (for example, after unplugging).
-            if Self.couldBeActionable(lastReading) {
+            if requestWasInvoked,
+               Self.couldBeActionable(lastReading),
+               case .success(let hold?) = authoritativeResult,
+               let freshReason = Self.reason(for: hold, reading: lastReading) {
+                state = .failed(freshReason)
+            } else if !requestWasInvoked,
+                      Self.couldBeActionable(lastReading) {
                 state = .failed(reason)
             } else {
                 clearState()
@@ -275,17 +289,22 @@ final class ChargeToFullController: ObservableObject {
             return
         }
 
-        let reader = readStatus
-        let result = await Task.detached(priority: .userInitiated) {
-            do {
-                return Result<SystemChargeHold?, any Error>.success(
-                    try await reader())
-            } catch {
-                return Result<SystemChargeHold?, any Error>.failure(error)
-            }
-        }.value
+        let result = await readStatusResult()
         guard generation == refreshGeneration, !isRequesting else { return }
         apply(result, reading: reading)
+    }
+
+    private func readStatusResult() async
+        -> Result<SystemChargeHold?, any Error>
+    {
+        let reader = readStatus
+        return await Task.detached(priority: .userInitiated) {
+            do {
+                return .success(try await reader())
+            } catch {
+                return .failure(error)
+            }
+        }.value
     }
 
     private func scheduleConfirmationRefresh() {

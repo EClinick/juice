@@ -361,10 +361,34 @@ struct ChargeToFullControllerTests {
 
         #expect(!(await controller.chargeToFull()))
         #expect(controller.state == .failed(.optimized(currentPercent: 80)))
+        #expect(backend.readCount == 2)
 
         #expect(await controller.chargeToFull())
         #expect(backend.writeCount == 2)
         #expect(controller.state == .accepted(.optimized(currentPercent: 80)))
+    }
+
+    @Test("An action-time hold disappearance does not leave a stale retry")
+    func actionTimeHoldDisappearanceClearsRetry() async {
+        enum Failure: Error { case noLongerHeld }
+        let hold = SystemChargeHold(kind: .optimized, chargeLimit: 100)
+        let transactions = SmartChargingTransactionCoordinator()
+        let backend = FakeChargeToFullBackend(
+            reads: [.success(hold), .success(nil)],
+            writes: [.failure(Failure.noLongerHeld)])
+        let controller = ChargeToFullController(
+            readStatus: backend.read,
+            requestFullCharge: backend.write,
+            transactionCoordinator: transactions)
+        await controller.refresh(reading: Self.reading())
+
+        #expect(!(await controller.chargeToFull()))
+
+        #expect(backend.writeCount == 1)
+        #expect(backend.readCount == 2)
+        #expect(controller.state == nil)
+        #expect(!controller.isRequesting)
+        #expect(!transactions.isMutating)
     }
 
     @Test("An in-flight error cannot restore a hold after unplugging")

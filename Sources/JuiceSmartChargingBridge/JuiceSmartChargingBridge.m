@@ -603,6 +603,62 @@ JSCChargeHoldKind JSCResolveChargeHoldKind(
     return JSCChargeHoldKindNone;
 }
 
+static BOOL JSCResolveChargeToFullSelector(
+    id client,
+    JSCChargeHoldKind kind,
+    SEL *selector,
+    NSError **error
+) {
+    SEL resolvedSelector = NULL;
+    switch (kind) {
+        case JSCChargeHoldKindOptimized:
+            resolvedSelector = NSSelectorFromString(
+                @"temporarilyEnableCharging:"
+            );
+            break;
+        case JSCChargeHoldKindLimit:
+            resolvedSelector = NSSelectorFromString(@"temporarilyDisableMCL:");
+            break;
+        case JSCChargeHoldKindNone:
+            if (error != NULL) {
+                *error = JSCError(
+                    JSCErrorUnavailable,
+                    @"There is no charging hold to override."
+                );
+            }
+            return NO;
+    }
+
+    const char *arguments[] = { "^@" }; // NSError * __autoreleasing *
+    if (![client respondsToSelector:resolvedSelector]
+        || !JSCMethodMatches(
+            [client class],
+            resolvedSelector,
+            @encode(BOOL),
+            arguments,
+            1)) {
+        if (error != NULL) {
+            *error = JSCError(
+                JSCErrorUnavailable,
+                @"This macOS version cannot temporarily override charging."
+            );
+        }
+        return NO;
+    }
+
+    if (selector != NULL) {
+        *selector = resolvedSelector;
+    }
+    return YES;
+}
+
+BOOL JSCChargeToFullActionIsAvailable(
+    id client,
+    JSCChargeHoldKind kind
+) {
+    return JSCResolveChargeToFullSelector(client, kind, NULL, NULL);
+}
+
 static BOOL JSCReadResolvedStatus(
     id client,
     JSCChargeHoldKind *kind,
@@ -646,6 +702,14 @@ static BOOL JSCReadResolvedStatus(
         } else {
             resolvedKind = JSCChargeHoldKindNone;
         }
+    }
+    if (resolvedKind != JSCChargeHoldKindNone
+        && !JSCResolveChargeToFullSelector(
+            client,
+            resolvedKind,
+            NULL,
+            error)) {
+        return NO;
     }
 
     if (kind != NULL) {
@@ -716,38 +780,8 @@ BOOL JSCChargeToFull(
         return NO;
     }
 
-    SEL selector;
-    switch (kind) {
-        case JSCChargeHoldKindOptimized:
-            selector = NSSelectorFromString(@"temporarilyEnableCharging:");
-            break;
-        case JSCChargeHoldKindLimit:
-            selector = NSSelectorFromString(@"temporarilyDisableMCL:");
-            break;
-        case JSCChargeHoldKindNone:
-            if (error != NULL) {
-                *error = JSCError(
-                    JSCErrorUnavailable,
-                    @"There is no charging hold to override."
-                );
-            }
-            return NO;
-    }
-
-    const char *arguments[] = { "^@" }; // NSError * __autoreleasing *
-    if (![client respondsToSelector:selector]
-        || !JSCMethodMatches(
-            [client class],
-            selector,
-            @encode(BOOL),
-            arguments,
-            1)) {
-        if (error != NULL) {
-            *error = JSCError(
-                JSCErrorUnavailable,
-                @"This macOS version cannot temporarily override charging."
-            );
-        }
+    SEL selector = NULL;
+    if (!JSCResolveChargeToFullSelector(client, kind, &selector, error)) {
         return NO;
     }
 

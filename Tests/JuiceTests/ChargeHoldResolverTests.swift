@@ -1,5 +1,40 @@
+import Foundation
 import JuiceSmartChargingBridge
 import Testing
+
+private final class CompatibleOptimizedOverrideClient: NSObject {
+    @objc(temporarilyEnableCharging:)
+    func temporarilyEnableCharging(
+        _ error: AutoreleasingUnsafeMutablePointer<NSError?>?
+    ) -> Bool {
+        false
+    }
+}
+
+private final class CompatibleLimitOverrideClient: NSObject {
+    @objc(temporarilyDisableMCL:)
+    func temporarilyDisableMCL(
+        _ error: AutoreleasingUnsafeMutablePointer<NSError?>?
+    ) -> Bool {
+        false
+    }
+}
+
+private final class WrongReturnOverrideClient: NSObject {
+    @objc(temporarilyEnableCharging:)
+    func temporarilyEnableCharging(
+        _ error: AutoreleasingUnsafeMutablePointer<NSError?>?
+    ) -> Int {
+        0
+    }
+}
+
+private final class WrongArgumentOverrideClient: NSObject {
+    @objc(temporarilyEnableCharging:)
+    func temporarilyEnableCharging(_ value: Int) -> Bool {
+        false
+    }
+}
 
 @Suite("Smart-charging raw state resolver")
 struct ChargeHoldResolverTests {
@@ -62,6 +97,30 @@ struct ChargeHoldResolverTests {
                 JSCResolveOptimizedChargingState(UInt(state)).rawValue
                     == -1)
         }
+    }
+
+    @Test("Charge to Full capability requires the selected action's exact ABI")
+    func chargeToFullActionCapability() {
+        let optimized = JSCChargeHoldKind(rawValue: 1)!
+        let limit = JSCChargeHoldKind(rawValue: 2)!
+        let none = JSCChargeHoldKind(rawValue: 0)!
+
+        let optimizedClient = CompatibleOptimizedOverrideClient()
+        #expect(JSCChargeToFullActionIsAvailable(optimizedClient, optimized))
+        #expect(!JSCChargeToFullActionIsAvailable(optimizedClient, limit))
+        #expect(!JSCChargeToFullActionIsAvailable(optimizedClient, none))
+
+        let limitClient = CompatibleLimitOverrideClient()
+        #expect(JSCChargeToFullActionIsAvailable(limitClient, limit))
+        #expect(!JSCChargeToFullActionIsAvailable(limitClient, optimized))
+
+        #expect(!JSCChargeToFullActionIsAvailable(NSObject(), optimized))
+        #expect(!JSCChargeToFullActionIsAvailable(
+            WrongReturnOverrideClient(),
+            optimized))
+        #expect(!JSCChargeToFullActionIsAvailable(
+            WrongArgumentOverrideClient(),
+            optimized))
     }
 
     @Test("Available Charge Limit choices reject malformed payloads as a whole")

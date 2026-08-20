@@ -3,6 +3,55 @@ import SwiftUI
 import Testing
 @testable import Juice
 
+private final class TwoTickSettingsRefreshSleeper: @unchecked Sendable {
+    private let lock = NSLock()
+    private var callCountStorage = 0
+    private var durationsStorage: [Duration] = []
+
+    var sleep: @Sendable (Duration) async throws -> Void {
+        { duration in
+            let shouldStop = self.lock.withLock {
+                self.callCountStorage += 1
+                self.durationsStorage.append(duration)
+                return self.callCountStorage >= 2
+            }
+            if shouldStop {
+                throw CancellationError()
+            }
+        }
+    }
+
+    var callCount: Int {
+        lock.withLock { callCountStorage }
+    }
+
+    var durations: [Duration] {
+        lock.withLock { durationsStorage }
+    }
+
+}
+
+private final class SettingsRefreshSequence<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Value]
+    private(set) var readCount = 0
+
+    init(_ values: [Value]) {
+        self.values = values
+    }
+
+    var read: @Sendable () async throws -> Value? {
+        {
+            self.lock.withLock {
+                self.readCount += 1
+                return self.values.count == 1
+                    ? self.values[0]
+                    : self.values.removeFirst()
+            }
+        }
+    }
+}
+
 @MainActor
 struct ChargeLimitSettingsVisualProofTests {
     private struct PreviewCase {
@@ -122,6 +171,55 @@ struct ChargeLimitSettingsVisualProofTests {
 
         #expect(abs(hostingController.view.fittingSize.width - 511) < 1)
         #expect(hostingController.view.fittingSize.height < 250)
+    }
+
+    @Test("Active Settings periodically refreshes temporary charging modes")
+    func temporaryModesRefreshOnCadence() async {
+        let transactions = SmartChargingTransactionCoordinator()
+        let limits = SettingsRefreshSequence([
+            Self.configuration(100, temporarilyOverridden: true),
+            Self.configuration(90),
+        ])
+        let optimizedModes = SettingsRefreshSequence([
+            OptimizedChargingMode.disabledUntilTomorrow,
+            .enabled,
+        ])
+        let chargeLimit = ChargeLimitController(
+            readConfiguration: limits.read,
+            writeLimit: { _ in },
+            transactionCoordinator: transactions)
+        let optimizedCharging = OptimizedChargingController(
+            readConfiguration: optimizedModes.read,
+            writeAction: { _ in },
+            transactionCoordinator: transactions)
+        let sleeper = TwoTickSettingsRefreshSleeper()
+        var limitStatuses: [ChargeLimitStatus] = []
+        var optimizedStatuses: [OptimizedChargingStatus] = []
+
+        await SmartChargingSettingsRefreshLoop.run(sleep: sleeper.sleep) {
+            async let limit: Void = chargeLimit.refresh()
+            async let optimized: Void = optimizedCharging.refresh()
+            _ = await (limit, optimized)
+            limitStatuses.append(chargeLimit.status)
+            optimizedStatuses.append(optimizedCharging.status)
+        }
+
+        #expect(limitStatuses == [
+            .available(Self.configuration(
+                100,
+                temporarilyOverridden: true)),
+            .available(Self.configuration(90)),
+        ])
+        #expect(optimizedStatuses == [
+            .available(.disabledUntilTomorrow),
+            .available(.enabled),
+        ])
+        #expect(chargeLimit.status == .available(Self.configuration(90)))
+        #expect(optimizedCharging.status == .available(.enabled))
+        #expect(limits.readCount == 2)
+        #expect(optimizedModes.readCount == 2)
+        #expect(sleeper.callCount == 2)
+        #expect(sleeper.durations == [.seconds(60), .seconds(60)])
     }
 
     private func content(

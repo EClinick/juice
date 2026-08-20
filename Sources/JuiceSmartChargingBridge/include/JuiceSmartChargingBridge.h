@@ -64,6 +64,15 @@ FOUNDATION_EXPORT JSCChargeHoldKind JSCResolveChargeHoldKind(
     BOOL chargingOverrideAllowed
 );
 
+/// Verifies that an object exposes the exact temporary-override selector ABI
+/// required for the selected hold. This only inspects Objective-C metadata and
+/// never invokes the action; the bridge uses the same check before publishing
+/// an actionable hold.
+FOUNDATION_EXPORT BOOL JSCChargeToFullActionIsAvailable(
+    id client,
+    JSCChargeHoldKind kind
+);
+
 /// Reads the same smart-charging UI state used by Control Center.
 ///
 /// A successful call can still return ``JSCChargeHoldKindNone``. That means

@@ -6,6 +6,30 @@ enum JuiceSettingsMetrics {
     static let sidebarWidth: CGFloat = 200
 }
 
+@MainActor
+enum SmartChargingSettingsRefreshLoop {
+    static let interval: Duration = .seconds(60)
+
+    /// Keeps temporary PowerUI states fresh only while their Settings surface
+    /// is active. The injected sleeper makes cadence and cancellation testable
+    /// without touching the machine's charging policy.
+    static func run(
+        sleep: @escaping @Sendable (Duration) async throws -> Void = {
+            try await Task.sleep(for: $0)
+        },
+        refresh: @escaping @MainActor () async -> Void
+    ) async {
+        while !Task.isCancelled {
+            await refresh()
+            do {
+                try await sleep(interval)
+            } catch {
+                return
+            }
+        }
+    }
+}
+
 private enum JuiceSettingsCategory: String, CaseIterable, Identifiable {
     case general
     case updates
@@ -289,6 +313,7 @@ struct BatteryChargingSettingsSection: View {
     @ObservedObject var optimizedCharging: OptimizedChargingController
     @ObservedObject var transactions: SmartChargingTransactionCoordinator
     @State private var showsDisableConfirmation = false
+    @State private var surfaceIsActive = false
 
     var body: some View {
         SettingsSection(title: "Battery Charging") {
@@ -357,15 +382,13 @@ struct BatteryChargingSettingsSection: View {
                 }
             }
         }
-        .task {
-            async let limit: Void = chargeLimit.refresh()
-            async let optimized: Void = optimizedCharging.refresh()
-            _ = await (limit, optimized)
+        .background {
+            WindowActivityReader { surfaceIsActive = $0 }
+                .frame(width: 0, height: 0)
         }
-        .onReceive(NotificationCenter.default.publisher(
-            for: NSApplication.didBecomeActiveNotification
-        )) { _ in
-            Task {
+        .task(id: surfaceIsActive) {
+            guard surfaceIsActive else { return }
+            await SmartChargingSettingsRefreshLoop.run {
                 async let limit: Void = chargeLimit.refresh()
                 async let optimized: Void = optimizedCharging.refresh()
                 _ = await (limit, optimized)
