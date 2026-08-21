@@ -470,46 +470,6 @@ func chartWattsText(_ watts: Double) -> String {
     return "<0.01 mW"
 }
 
-/// Shared disclosure control for the popover's Session and Today live layers.
-private struct CollapsibleLiveHeader: View {
-    @Binding var isExpanded: Bool
-    let appCount: Int
-    let totalWatts: Double
-    let costContext: String?
-
-    var body: some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.16)) {
-                isExpanded.toggle()
-            }
-        } label: {
-            HStack(spacing: 5) {
-                LiveDot()
-                Text("DRAWING POWER NOW")
-                Spacer()
-                if isExpanded, let costContext {
-                    Text("\(costContext) COST")
-                        .foregroundStyle(.tertiary)
-                } else if !isExpanded {
-                    Text("\(appCount) app\(appCount == 1 ? "" : "s") · \(liveWattsText(totalWatts))")
-                        .foregroundStyle(.tertiary)
-                        .monospacedDigit()
-                }
-                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Drawing power now")
-        .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
-        .accessibilityHint(isExpanded ? "Collapses live apps" : "Expands live apps")
-    }
-}
-
 /// One active-power row in the hybrid Today view: 18 px icon, name with an
 /// optional "· X.X Wh today" subtext, a bar scaled to the section max, and a
 /// green watts value. Tapping opens the per-app detail window.

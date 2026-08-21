@@ -9,7 +9,7 @@ compute power draw of a Mac mini.
 ![Tests](https://img.shields.io/badge/tests-64%20passing-brightgreen)
 
 <p align="center">
-  <img src="docs/images/popover.png" width="320" alt="Juice popover showing battery status, top energy users with per-app watt-hours, a charge timeline, and insights">
+  <img src="docs/images/popover.png" width="320" alt="Juice popover showing battery life, live power draw, session energy by app, and battery history">
 </p>
 
 <p align="center"><em>Live battery status, per-app energy rankings, charge history, and plain-English insights - one click away in the menu bar.</em></p>
@@ -25,22 +25,23 @@ Juice surfaces that data: which apps used how many watt-hours today, over the la
 ## Features
 
 - **Menu bar live readout**: battery percent and live watts drawn (or charging wattage), updated continuously.
+- **Optional launch at login**: enable Juice from its Settings window to restore the menu-bar app automatically after you sign in.
 - **Mac mini server mode**: detects both legacy and current Mac mini models, then records combined and per-app CPU, GPU, and Neural Engine power every minute. Today, 1-week, and All views lead with the original battery-style app ranking, including live watts, accumulated Wh, real app icons, and clickable details. Server-wide average/peak watts, Wh/kWh, coverage, history, and projected 30-day energy remain underneath.
 - **Top energy users**: per-app watt-hours for the current or last battery session, Today, 3 Days, Week, or All Time, with real app icons.
 - **Per-app detail**: click any app to see where its energy went (CPU vs GPU vs Neural Engine), an hour-by-hour usage chart, and a plain-English explanation of the usage pattern.
 - **Charge timeline**: battery level over the last 24 hours, sampled locally every minute, with on-AC periods highlighted.
 - **Insights**: drain-rate anomalies measured against your own 7-day baseline, apps using far more than their typical energy, the energy hog of the week, and charging-habit observations.
 - **Stats window**: laptops get the full app table, 7-day charge chart, and battery health; Mac minis get a dedicated server dashboard with live app watts kept visible across Today, 1W, and All, permanent app energy totals, and system power history.
-- **In-app updates**: choose automatic downloads and get notified when an update is ready to install, or keep updates manual and use “Check for Updates…” whenever you want. Homebrew installs update directly from Juice's signed release feed.
+- **In-app updates**: choose automatic downloads from the popover or Settings and get notified when an update is ready to install, or keep updates manual and use “Check for Updates…” whenever you want. Homebrew installs update directly from Juice's signed release feed.
 - **Honest charts**: axes are pinned to the real time window, recording gaps show as gaps, and partial data is labeled as such - the charts never stretch or interpolate data to look fuller than it is.
 - **Private by default**: no telemetry, system profile, or accounts. Juice only contacts its release feed when you ask it to check for updates or enable automatic updates.
 
 <p align="center">
-  <img src="docs/images/app-detail.png" width="460" alt="Per-app detail window showing Slack energy breakdown across CPU and GPU, an hourly bar chart, explanation bullets, and contributing processes">
+  <a href="docs/images/settings-about.png"><img src="docs/images/settings-about.png" width="840" alt="Juice Settings About page showing version, privacy, compatibility, and a GitHub source-code link"></a>
 </p>
 
 <p align="center">
-  <img src="docs/images/stats.png" width="700" alt="Stats window showing the full app energy table and a 7-day charge chart with a recording-since annotation">
+  <a href="docs/images/stats.png"><img src="docs/images/stats.png" width="960" alt="Juice Stats window showing live app power, session energy, and seven-day battery history"></a>
 </p>
 
 ## Architecture
@@ -56,7 +57,7 @@ flowchart TB
   end
 
   subgraph helper["JuiceHelper (root daemon, ~350 lines)"]
-    SNAP["Read-only snapshot queries"]
+    SNAP["Read-only snapshot queries<br/>+ Energy Mode writes (pmset)"]
   end
 
   subgraph app["Juice.app (user space)"]
@@ -77,17 +78,26 @@ flowchart TB
 
 Security model for the privileged helper:
 
-- The helper exposes a version handshake plus time-bounded energy and battery-history queries, and is small enough to audit directly.
+- The helper exposes a version handshake, time-bounded energy and battery-history queries, and one mutating operation that switches macOS Energy Mode via `pmset`, and is small enough to audit directly.
 - It validates the connecting client's code signature on every message and rejects root clients.
 - It never opens the live system database in place; it snapshot-copies the database and reads the copy read-only, so it cannot contend with or corrupt the system's writer.
+- The Energy Mode write is the only thing it changes on your system: it re-validates the requested mode and power source against a closed set, spawns `/usr/bin/pmset` with an argument array rather than a shell, and reads the setting back to confirm it took.
 - If you decline to approve it, the app still works with live battery data; per-app energy and powerlog backfill remain unavailable.
 
 ## Requirements
 
 - macOS 14 (Sonoma) or later, Apple Silicon or Intel.
-- A Swift 6 toolchain (Xcode 16 or later) to build from source.
+- A Swift 6 toolchain (Xcode 16 or later) when building from source.
 
-## Install (from source)
+## Install
+
+Install the signed and notarized release with Homebrew:
+
+```bash
+brew install --cask EClinick/tap/juice
+```
+
+## Build from source
 
 Juice can be packaged as a normal macOS application bundle for local use. A
 Developer ID certificate is required to distribute a notarized release to other
@@ -117,7 +127,7 @@ ditto "dist/Juice Dev.app" "/Applications/Juice Dev.app"
 open "/Applications/Juice Dev.app"
 ```
 
-Development builds use `com.eclinick.juice.dev`, the helper/Mach service
+Development builds use `com.eclinick.juice.dev.v2`, the helper/Mach service
 `com.eclinick.juice.dev.helper`, and a separate defaults suite, so they can
 coexist with the released Juice app without replacing its Login Item.
 
@@ -196,6 +206,9 @@ make dev-probe
 
 # Per-app breakdown end-to-end (exactly what the detail window computes)
 ./.build/debug/JuiceXPCProbe --app com.microsoft.VSCode
+
+# Energy Mode end-to-end (0 automatic, 1 low power, 2 high power)
+./.build/debug/JuiceXPCProbe set-powermode 1 battery
 ```
 
 Layout: `Sources/Juice` is the menu bar app, `Sources/JuiceHelper` is the root daemon, `Sources/JuiceXPCShared` is the XPC protocol, and `Sources/JuiceCore` holds the pure logic (store, rollups, insights, breakdowns) that the test suite covers.

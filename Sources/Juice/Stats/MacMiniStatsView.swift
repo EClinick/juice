@@ -2,58 +2,45 @@ import SwiftUI
 import Charts
 import JuiceCore
 
-/// Full server dashboard. Unlike the battery Stats window, current app watts
-/// remain visible for every selected history range.
-struct MacMiniStatsView: View {
-    static let minimumContentWidth: CGFloat = 860
-    // The header, chart's 180-point floor, and footer need this much vertical
-    // space together. Keeping the old 500-point minimum let an autosaved frame
-    // compress the footer below the window's visible content area on reopen.
-    static let minimumContentHeight: CGFloat = 560
+/// One Mac mini app-table row: a range total joined with the app's live watts.
+struct MacMiniAppRow: Identifiable {
+    var id: String { appKey }
+    var appKey: String
+    var displayName: String
+    var liveWatts: Double?
+    var energyWh: Double?
+    var activeDuration: TimeInterval?
+    var peakWatts: Double?
+}
 
-    let store: JuiceStore?
-
-    @ObservedObject private var live = LivePowerCoordinator.shared
-    @State private var consumerID = UUID()
-    @State private var range: EnergyRange = .today
-    @State private var data: MacMiniPowerDashboardData?
-    @State private var loadedRange: EnergyRange?
-    @State private var loadError: String?
-    @State private var refreshedAt = Date()
-    @State private var retryGeneration = 0
-    @AppStorage(ElectricityCost.pricePerKilowattHourStorageKey)
-    private var pricePerKilowattHour = ElectricityCost.defaultPricePerKilowattHour
-
-    private struct AppRow: Identifiable {
-        var id: String { appKey }
-        var appKey: String
-        var displayName: String
-        var liveWatts: Double?
-        var energyWh: Double?
-        var activeDuration: TimeInterval?
-        var peakWatts: Double?
-    }
-
-    private var appRows: [AppRow] {
-        let totals = Dictionary(
-            (data?.appTotals ?? []).map { ($0.appKey, $0) },
+/// Pure row assembly for the Mac mini app table, kept out of the view so the
+/// join, the natural order, and the section split stay testable.
+enum MacMiniAppRows {
+    /// The table's natural order: live apps first by current watts, then the
+    /// rest by energy. `totals` is nil until the range query lands, which is
+    /// what suppresses a peak-watts column built from live samples alone.
+    static func make(
+        totals: [StoredSystemAppEnergyTotal]?,
+        liveApps: [AppPowerReading]
+    ) -> [MacMiniAppRow] {
+        let totalsByKey = Dictionary(
+            (totals ?? []).map { ($0.appKey, $0) },
             uniquingKeysWith: { first, _ in first })
-        let liveApps = Dictionary(
-            visibleLiveApps(in: live.reading)
-                .map { ($0.appKey, $0) },
+        let liveByKey = Dictionary(
+            liveApps.map { ($0.appKey, $0) },
             uniquingKeysWith: { first, _ in first })
-        let keys = Set(totals.keys).union(liveApps.keys)
+        let keys = Set(totalsByKey.keys).union(liveByKey.keys)
 
         return keys.map { key in
-            let total = totals[key]
-            let current = liveApps[key]
-            return AppRow(
+            let total = totalsByKey[key]
+            let current = liveByKey[key]
+            return MacMiniAppRow(
                 appKey: key,
                 displayName: current?.displayName ?? total?.displayName ?? key,
                 liveWatts: current?.watts,
                 energyWh: total?.energyWh,
                 activeDuration: total?.activeDuration,
-                peakWatts: data == nil
+                peakWatts: totals == nil
                     ? nil
                     : max(total?.peakWatts ?? 0, current?.watts ?? 0))
         }
@@ -75,8 +62,50 @@ struct MacMiniStatsView: View {
         }
     }
 
-    private var maxAppEnergy: Double {
-        max(appRows.compactMap(\.energyWh).max() ?? 0, 0.001)
+    /// Splits the natural order into the live section and everything else,
+    /// preserving the relative order each row arrived in.
+    static func sections(
+        _ rows: [MacMiniAppRow]
+    ) -> (live: [MacMiniAppRow], earlier: [MacMiniAppRow]) {
+        (rows.filter { $0.liveWatts != nil }, rows.filter { $0.liveWatts == nil })
+    }
+}
+
+/// Mac mini-specific state and data loading for the shared Stats page. Unlike
+/// battery mode, current app watts remain visible for every history range.
+struct MacMiniStatsDashboard: View {
+    static let minimumContentWidth: CGFloat = 860
+    // The header, chart's 180-point floor, and footer need this much vertical
+    // space together. Keeping the old 500-point minimum let an autosaved frame
+    // compress the footer below the window's visible content area on reopen.
+    static let minimumContentHeight: CGFloat = 560
+
+    let store: JuiceStore?
+
+    @ObservedObject private var live = LivePowerCoordinator.shared
+    @State private var consumerID = UUID()
+    @State private var range: EnergyRange = .today
+    /// `nil` until the user picks a column: the table then keeps its natural
+    /// live-first order.
+    @State private var appTableSort: AppTableSort?
+    @State private var appFilterQuery = ""
+    @State private var isLiveSectionExpanded = true
+    @State private var data: MacMiniPowerDashboardData?
+    @State private var loadedRange: EnergyRange?
+    @State private var loadError: String?
+    @State private var refreshedAt = Date()
+    @State private var retryGeneration = 0
+    @AppStorage(StatsRangeVisibility.macMiniStorageKey)
+    private var rangeVisibilityStorage = StatsRangeVisibility.macMiniDefaultStorageValue
+    @AppStorage(ElectricityCost.pricePerKilowattHourStorageKey)
+    private var pricePerKilowattHour = ElectricityCost.defaultPricePerKilowattHour
+    @State private var isCustomizingRanges = false
+
+    private var visibleRanges: [EnergyRange] {
+        StatsRangeVisibility.visibleRanges(
+            from: rangeVisibilityStorage,
+            availableRanges: macMiniPowerRanges,
+            fallbackRanges: macMiniPowerRanges)
     }
 
     private func costText(_ wattHours: Double?) -> String? {
@@ -87,24 +116,15 @@ struct MacMiniStatsView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider()
-
-            HStack(alignment: .top, spacing: 0) {
-                appPane
-                    .frame(minWidth: 500)
-                Divider()
-                powerPane
-                    .frame(minWidth: 320)
-            }
-
-            Divider()
-            footer
-        }
-        .frame(
-            minWidth: Self.minimumContentWidth,
-            minHeight: Self.minimumContentHeight)
+        StatsDashboardLayout(
+            minimumContentWidth: Self.minimumContentWidth,
+            minimumAppPaneWidth: 500,
+            minimumDetailPaneWidth: 320,
+            minimumContentHeight: Self.minimumContentHeight,
+            header: { header },
+            appPane: { appPane },
+            detailPane: { powerPane },
+            footer: { footer })
         .task(id: LoadRequest(range: range, retryGeneration: retryGeneration)) {
             attachLive()
             await load()
@@ -114,23 +134,23 @@ struct MacMiniStatsView: View {
                 await load()
             }
         }
-        .onAppear { attachLive() }
+        .onAppear {
+            range = preferredVisibleRange()
+            attachLive()
+        }
+        .onChange(of: rangeVisibilityStorage) {
+            range = preferredVisibleRange()
+        }
         .onDisappear {
             live.setAttached(false, for: .stats(consumerID))
         }
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Mac mini Stats")
-                        .font(.title2.weight(.semibold))
-                    Text("Current app watts and \(rangeDescription) energy")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
+        StatsDashboardHeader(
+            title: "Mac mini Stats",
+            subtitle: "Current app watts and \(rangeDescription) energy",
+            actions: {
                 if let watts = live.reading?.totalMeteredWatts {
                     VStack(alignment: .trailing, spacing: 1) {
                         Text(liveWattsText(watts))
@@ -142,27 +162,38 @@ struct MacMiniStatsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                StatsRangeCustomizationButton(
+                    isCustomizing: $isCustomizingRanges)
                 Button("Refresh") {
                     retryGeneration &+= 1
                 }
                 .controlSize(.small)
-            }
-
-            HStack(spacing: 16) {
-                Picker("Server history range", selection: $range) {
-                    ForEach(macMiniPowerRanges, id: \.self) {
-                        Text($0.macMiniPickerLabel).tag($0)
-                    }
+            },
+            controls: {
+                if isCustomizingRanges {
+                    StatsRangeSettings(
+                        availableRanges: macMiniPowerRanges,
+                        fallbackRanges: macMiniPowerRanges,
+                        selection: $range,
+                        storageValue: $rangeVisibilityStorage)
+                        .transition(.move(edge: .top).combined(with: .opacity))
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 360, alignment: .leading)
 
-                Spacer(minLength: 0)
-                ElectricityRateControl()
-            }
-        }
-        .padding(16)
+                StatsRangePickerRow(
+                    title: "Server history range",
+                    selection: $range,
+                    ranges: visibleRanges,
+                    pickerWidth: 360,
+                    label: \.macMiniPickerLabel)
+            })
+    }
+
+    private func preferredVisibleRange() -> EnergyRange {
+        StatsRangeVisibility.preferredRange(
+            range,
+            from: rangeVisibilityStorage,
+            availableRanges: macMiniPowerRanges,
+            fallbackRanges: macMiniPowerRanges)
     }
 
     private struct LoadRequest: Hashable {
@@ -171,84 +202,127 @@ struct MacMiniStatsView: View {
     }
 
     private var appPane: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Apps using power")
-                    .font(.headline)
-                if live.status == .sampling || live.status == .warmingUp {
-                    LiveHint()
-                }
-                Spacer()
-            }
+        let allRows = MacMiniAppRows.make(
+            totals: data?.appTotals,
+            liveApps: visibleLiveApps(in: live.reading))
+        let sections = MacMiniAppRows.sections(allRows)
+        let liveRows = sortedRows(sections.live)
+        let earlierRows = sortedRows(sections.earlier)
+        // The energy bars stay comparable while a filter is active, so the
+        // maximum comes from every row rather than the visible ones.
+        let maxAppEnergy = max(allRows.compactMap(\.energyWh).max() ?? 0, 0.001)
 
-            HStack(spacing: 10) {
-                Text("APP")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Text("LIVE W")
-                    .frame(width: 64, alignment: .trailing)
-                Text("ENERGY / COST")
-                    .frame(width: 72, alignment: .trailing)
-                Text("PEAK W")
-                    .frame(width: 64, alignment: .trailing)
-                Color.clear.frame(width: 10, height: 1)
-            }
-            .font(.system(size: 9, weight: .semibold))
-            .foregroundStyle(.tertiary)
-
-            if let loadError {
-                Text(loadError)
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            } else if data == nil {
-                ProgressView("Loading app energy history…")
-                    .controlSize(.small)
-            }
-
-            if appRows.isEmpty {
-                if data != nil {
-                    Text("Collecting app energy—live apps appear as soon as they draw measurable power.")
+        return StatsAppTablePane(
+            title: "Apps using power",
+            showsLiveActivity: live.status == .sampling || live.status == .warmingUp,
+            columns: .server,
+            sort: $appTableSort,
+            query: $appFilterQuery,
+            content: {
+                if let loadError {
+                    Text(loadError)
                         .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.orange)
+                } else if data == nil {
+                    ProgressView("Loading app energy history…")
+                        .controlSize(.small)
                 }
-                Spacer()
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 6) {
-                        ForEach(appRows) { app in
-                            appRow(app)
-                        }
+
+                if allRows.isEmpty {
+                    if data != nil {
+                        Text("Collecting app energy—live apps appear as soon as they draw measurable power.")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
                     }
-                    .padding(.trailing, 4)
+                    Spacer()
+                } else if liveRows.isEmpty, earlierRows.isEmpty {
+                    StatsAppTableNoMatches(query: appFilterQuery)
+                    Spacer()
+                } else {
+                    ScrollView {
+                        // One lazy stack rather than a stack per section, so a
+                        // long history list still builds its rows on demand.
+                        LazyVStack(alignment: .leading, spacing: 6) {
+                            if !liveRows.isEmpty {
+                                CollapsibleLiveHeader(
+                                    isExpanded: $isLiveSectionExpanded,
+                                    appCount: liveRows.count,
+                                    totalWatts: liveRows.reduce(0) {
+                                        $0 + ($1.liveWatts ?? 0)
+                                    })
+                                if isLiveSectionExpanded {
+                                    ForEach(liveRows) { app in
+                                        appRow(app, maxAppEnergy: maxAppEnergy)
+                                    }
+                                }
+                            }
+
+                            if !earlierRows.isEmpty {
+                                // Without a live section the table is a single
+                                // flat list, which needs no section label.
+                                if !sections.live.isEmpty {
+                                    Text("EARLIER")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .padding(.top, 4)
+                                }
+                                ForEach(earlierRows) { app in
+                                    appRow(app, maxAppEnergy: maxAppEnergy)
+                                }
+                            }
+                        }
+                        .padding(.trailing, 4)
+                        .animation(
+                            juiceStandardEase,
+                            value: liveRows.map(\.id) + earlierRows.map(\.id))
+                    }
                 }
-            }
+            },
+            summary: {
+                if let reading = live.reading {
+                    Text(serverPowerBreakdownText(
+                        reading,
+                        includesMeteredTotal: true))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            })
+    }
 
-            if let reading = live.reading {
-                Text(serverPowerBreakdownText(
-                    reading,
-                    includesMeteredTotal: true))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            }
+    /// Sorting and filtering run per section so each keeps its own ranking.
+    private func sortedRows(_ rows: [MacMiniAppRow]) -> [MacMiniAppRow] {
+        AppTableSort.apply(
+            appTableSort,
+            to: rows,
+            query: appFilterQuery
+        ) { app in
+            AppTableSortValues(
+                stableID: app.appKey,
+                displayName: app.displayName,
+                liveWatts: app.liveWatts,
+                energyWh: app.energyWh,
+                // PEAK W renders through liveWattsText, so it sorts at the same
+                // displayed precision as LIVE W to avoid same-value row swaps.
+                detail: app.peakWatts.map(displayedLiveWatts))
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(16)
     }
 
-    private func appRow(_ app: AppRow) -> some View {
-        Button(action: {
-            showDetail(app)
-        }, label: {
-            appRowLabel(app)
-        })
-        .buttonStyle(.plain)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(app.displayName)
-        .accessibilityValue(appAccessibilityValue(app))
-        .accessibilityHint("Opens app energy details")
+    private func appRow(_ app: MacMiniAppRow, maxAppEnergy: Double) -> some View {
+        StatsAppTableRow(
+            appKey: app.appKey,
+            displayName: app.displayName,
+            share: (app.energyWh ?? 0) / maxAppEnergy,
+            columns: .server,
+            liveWattsText: app.liveWatts.map(liveWattsText),
+            energyText: app.energyWh.map(serverEnergyText),
+            costText: costText(app.energyWh),
+            detailText: app.peakWatts.map(liveWattsText),
+            accessibilityValue: appAccessibilityValue(app),
+            onTap: { showDetail(app) })
     }
 
-    private func appAccessibilityValue(_ app: AppRow) -> String {
+    private func appAccessibilityValue(_ app: MacMiniAppRow) -> String {
         let liveDescription = app.liveWatts.map(liveWattsText) ?? "not live"
         let energyDescription = app.energyWh
             .map { "\(serverEnergyText($0)) \(accessibilityRangeDescription)" }
@@ -258,78 +332,7 @@ struct MacMiniStatsView: View {
         return "\(base), estimated cost \(cost) \(accessibilityRangeDescription)"
     }
 
-    private func appRowLabel(_ app: AppRow) -> some View {
-        let isLive = app.liveWatts != nil
-        let liveText = app.liveWatts.map(liveWattsText) ?? "—"
-        let barFraction = CGFloat(max(0, min(1, (app.energyWh ?? 0) / maxAppEnergy)))
-        let rowBackground = isLive ? Color.green.opacity(0.06) : Color.clear
-
-        return HStack(spacing: 10) {
-            AppIconView(bundleId: app.appKey, displayName: app.displayName)
-                .frame(width: 22, height: 22)
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 5) {
-                    if isLive {
-                        Circle()
-                            .fill(.green)
-                            .frame(width: 5, height: 5)
-                    }
-                    Text(app.displayName)
-                        .font(.callout)
-                        .lineLimit(1)
-                }
-                GeometryReader { geometry in
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(Color.secondary.opacity(0.15))
-                        Capsule()
-                            .fill(isLive
-                                ? Color.accentColor
-                                : Color.accentColor.opacity(0.65))
-                            .frame(width: geometry.size.width * barFraction)
-                    }
-                }
-                .frame(height: 5)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            Text(liveText)
-                .font(isLive ? .callout.weight(.semibold) : .callout)
-                .foregroundStyle(isLive ? Color.green : Color.secondary)
-                .monospacedDigit()
-                .frame(width: 64, alignment: .trailing)
-
-            VStack(alignment: .trailing, spacing: 1) {
-                Text(app.energyWh.map(serverEnergyText) ?? "—")
-                    .font(.callout)
-                if let cost = costText(app.energyWh) {
-                    Text(cost)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
-                }
-            }
-            .monospacedDigit()
-            .frame(width: 72, alignment: .trailing)
-
-            Text(app.peakWatts.map(liveWattsText) ?? "—")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
-                .frame(width: 64, alignment: .trailing)
-
-            Image(systemName: "chevron.right")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.tertiary)
-                .frame(width: 10)
-        }
-        .padding(.vertical, 5)
-        .padding(.horizontal, 7)
-        .background(rowBackground, in: RoundedRectangle(cornerRadius: 7))
-    }
-
-    private func showDetail(_ app: AppRow) {
+    private func showDetail(_ app: MacMiniAppRow) {
         AppDetailPresenter.shared.show(
             appKey: app.appKey,
             displayName: app.displayName,

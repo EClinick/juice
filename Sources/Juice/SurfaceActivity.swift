@@ -25,9 +25,14 @@ final class WindowActivityObserver: NSObject {
     private weak var window: NSWindow?
     private var onChange: (Bool) -> Void
     private var visibilityTask: Task<Void, Never>?
+    private let sleep: (Duration) async -> Void
     private(set) var isActive = false
 
-    init(onChange: @escaping (Bool) -> Void) {
+    init(
+        sleep: @escaping (Duration) async -> Void = { try? await Task.sleep(for: $0) },
+        onChange: @escaping (Bool) -> Void
+    ) {
+        self.sleep = sleep
         self.onChange = onChange
     }
 
@@ -133,10 +138,11 @@ final class WindowActivityObserver: NSObject {
     /// work running after the panel disappears.
     private func startVisibilityWatch() {
         visibilityTask?.cancel()
+        let sleep = sleep
         visibilityTask = Task { @MainActor [weak self, weak window] in
             var consecutiveOffScreenChecks = 0
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(100))
+                await sleep(.milliseconds(100))
                 guard !Task.isCancelled, let self else { return }
                 guard let window else {
                     self.publish(false)

@@ -66,4 +66,45 @@ struct StatsRangeVisibilityTests {
             StatsRangeVisibility.preferredRange(.week, from: storage)
                 == .week)
     }
+
+    @Test("Mac mini visibility is limited to supported ranges")
+    func macMiniVisibility() {
+        let storage = StatsRangeVisibility.storageValue(
+            for: [EnergyRange.session, .today, .week])
+
+        #expect(
+            StatsRangeVisibility.visibleRanges(
+                from: storage,
+                availableRanges: macMiniPowerRanges,
+                fallbackRanges: macMiniPowerRanges)
+                == [.today, .week])
+    }
+
+    @Test("invalid Mac mini settings recover to every supported tab")
+    func invalidMacMiniStorageFallsBack() {
+        #expect(
+            StatsRangeVisibility.visibleRanges(
+                from: "session,threeDays",
+                availableRanges: macMiniPowerRanges,
+                fallbackRanges: macMiniPowerRanges)
+                == macMiniPowerRanges)
+    }
+
+    @Test("Mac mini customization keeps one supported tab visible")
+    func macMiniCannotHideLastTab() {
+        let todayOnly = StatsRangeVisibility.storageValue(for: [EnergyRange.today])
+        let updated = StatsRangeVisibility.updating(
+            .today,
+            isVisible: false,
+            in: todayOnly,
+            availableRanges: macMiniPowerRanges,
+            fallbackRanges: macMiniPowerRanges)
+
+        #expect(
+            StatsRangeVisibility.visibleRanges(
+                from: updated,
+                availableRanges: macMiniPowerRanges,
+                fallbackRanges: macMiniPowerRanges)
+                == [.today])
+    }
 }

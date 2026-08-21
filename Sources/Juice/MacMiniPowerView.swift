@@ -162,6 +162,8 @@ struct MacMiniPowerView: View {
 
     @State private var consumerID = UUID()
     @State private var range: EnergyRange = .today
+    @AppStorage(StatsRangeVisibility.macMiniStorageKey)
+    private var rangeVisibilityStorage = StatsRangeVisibility.macMiniDefaultStorageValue
     @State private var dashboard: MacMiniPowerDashboardData?
     @State private var loadError: String?
     @State private var historyApps: [AppEnergy] = []
@@ -169,6 +171,13 @@ struct MacMiniPowerView: View {
     @State private var historyError: String?
     @State private var loadedAppRange: EnergyRange?
     @State private var retryGeneration = 0
+
+    private var visibleRanges: [EnergyRange] {
+        StatsRangeVisibility.visibleRanges(
+            from: rangeVisibilityStorage,
+            availableRanges: macMiniPowerRanges,
+            fallbackRanges: macMiniPowerRanges)
+    }
 
     private var apps: [AppEnergy] { historyApps }
 
@@ -200,7 +209,7 @@ struct MacMiniPowerView: View {
             liveHeader
 
             Picker("Power history", selection: $range) {
-                ForEach(macMiniPowerRanges, id: \.self) { range in
+                ForEach(visibleRanges, id: \.self) { range in
                     Text(range.macMiniPickerLabel).tag(range)
                 }
             }
@@ -222,7 +231,7 @@ struct MacMiniPowerView: View {
                 range: $range,
                 origin: appOrigin,
                 detailOrigin: .server,
-                ranges: macMiniPowerRanges,
+                ranges: visibleRanges,
                 showsRangePicker: false,
                 showsLiveAcrossRanges: true,
                 hybrid: serverHybrid,
@@ -277,11 +286,23 @@ struct MacMiniPowerView: View {
             }
         }
         .onAppear {
+            range = preferredVisibleRange()
             syncLiveAttachment()
+        }
+        .onChange(of: rangeVisibilityStorage) {
+            range = preferredVisibleRange()
         }
         .onDisappear {
             live.setAttached(false, for: .popover(consumerID))
         }
+    }
+
+    private func preferredVisibleRange() -> EnergyRange {
+        StatsRangeVisibility.preferredRange(
+            range,
+            from: rangeVisibilityStorage,
+            availableRanges: macMiniPowerRanges,
+            fallbackRanges: macMiniPowerRanges)
     }
 
     private struct LoadRequest: Hashable {

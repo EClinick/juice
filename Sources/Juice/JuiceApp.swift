@@ -47,9 +47,10 @@ struct JuiceApp: App {
 
     init() {
         let isMacMini = MacHardware.isCurrentMacMini
-        _model = StateObject(wrappedValue: BatteryViewModel(
+        let initialModel = BatteryViewModel(
             onReading: JuiceApp.handleReading,
-            isMacMini: isMacMini))
+            isMacMini: isMacMini)
+        _model = StateObject(wrappedValue: initialModel)
 
         // Menu bar only: no Dock icon, no main window.
         NSApplication.shared.setActivationPolicy(.accessory)
@@ -74,16 +75,30 @@ struct JuiceApp: App {
                 for: .menuBar(Self.menuBarConsumerID))
         }
 
-        #if DEV_HELPER || DEBUG
+        #if DEV_BUILD || DEV_HELPER || DEBUG
         // Deterministic native-window entry point for development UI
         // verification. It is absent from production builds and does nothing
         // unless explicitly requested on the command line.
-        if isMacMini, CommandLine.arguments.contains("--show-server-stats") {
+        let shouldShowStats = CommandLine.arguments.contains("--show-stats")
+            || (isMacMini && CommandLine.arguments.contains("--show-server-stats"))
+        if shouldShowStats {
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(500))
-                StatsWindowPresenter.shared.showServer(store: Self.sampler?.store)
+                if isMacMini {
+                    StatsWindowPresenter.shared.showServer(store: Self.sampler?.store)
+                } else {
+                    StatsWindowPresenter.shared.show(
+                        selector: EnergySourceSelector(),
+                        timelineSource: Self.sampler.map {
+                            StoreEnergySource(store: $0.store)
+                        },
+                        model: initialModel)
+                }
             }
         }
+        #endif
+
+        #if DEV_HELPER || DEBUG
         if isMacMini, CommandLine.arguments.contains("--show-popover") {
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(500))

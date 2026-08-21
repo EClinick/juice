@@ -1,12 +1,58 @@
 import SwiftUI
-import AppKit
 import JuiceCore
 
-/// The standalone Stats window content: a full per-app energy table alongside a
-/// 7-day charge timeline, with a battery-health footer.
+/// The one Stats page used by both battery Macs and Mac minis. Each mode keeps
+/// its own data lifecycle, while the dashboard shell, header, and app table are
+/// shared components.
 struct StatsView: View {
+    private enum Content {
+        case battery(
+            selector: EnergySourceSelector,
+            timelineSource: EnergySource?,
+            model: BatteryViewModel)
+        case server(store: JuiceStore?)
+    }
+
+    static let batteryMinimumContentWidth = BatteryStatsDashboard.minimumContentWidth
+    static let batteryMinimumContentHeight = BatteryStatsDashboard.minimumContentHeight
+    static let serverMinimumContentWidth = MacMiniStatsDashboard.minimumContentWidth
+    static let serverMinimumContentHeight = MacMiniStatsDashboard.minimumContentHeight
+
+    private let content: Content
+
+    init(
+        selector: EnergySourceSelector,
+        timelineSource: EnergySource?,
+        model: BatteryViewModel
+    ) {
+        content = .battery(
+            selector: selector,
+            timelineSource: timelineSource,
+            model: model)
+    }
+
+    init(serverStore: JuiceStore?) {
+        content = .server(store: serverStore)
+    }
+
+    @ViewBuilder
+    var body: some View {
+        switch content {
+        case let .battery(selector, timelineSource, model):
+            BatteryStatsDashboard(
+                selector: selector,
+                timelineSource: timelineSource,
+                model: model)
+        case let .server(store):
+            MacMiniStatsDashboard(store: store)
+        }
+    }
+}
+
+/// Battery-specific state and data loading for the shared Stats page.
+private struct BatteryStatsDashboard: View {
     /// The app rows include fixed-width energy and CPU columns, and live Today
-    /// rows add a 60 pt watts column plus its 10 pt spacing. Keep enough room
+    /// rows add a 64 pt watts column plus its 10 pt spacing. Keep enough room
     /// for an app name instead of letting that column collapse first.
     static let minimumAppTableWidth: CGFloat = 462
     static let minimumTimelineWidth: CGFloat = 280
@@ -22,8 +68,9 @@ struct StatsView: View {
     @ObservedObject private var live = LivePowerCoordinator.shared
     @ObservedObject private var batterySession = BatterySessionCoordinator.shared
 
-    /// The charge timeline always covers the last 7 days.
-    private static let timelineHours = 24 * 7
+    /// Raw battery samples are retained for 90 days, so the chart fetches that
+    /// full truthful horizon and offers no range beyond it.
+    private static let timelineHours = 24 * 90
 
     /// A per-instance live-loop identity. The presenter swaps in a new
     /// StatsView on reopen while the old one tears down; distinct tokens mean
@@ -33,6 +80,13 @@ struct StatsView: View {
     @State private var consumerID = UUID()
 
     @State private var range: EnergyRange
+    /// `nil` until the user picks a column: each section then keeps the natural
+    /// order its data source provides.
+    @State private var appTableSort: AppTableSort?
+    @State private var appFilterQuery = ""
+    /// Shared by the Today and Session live sections: the disclosure state the
+    /// user picked survives range switches while the window stays open.
+    @State private var isLiveSectionExpanded = true
     @AppStorage(StatsRangeVisibility.storageKey)
     private var rangeVisibilityStorage = StatsRangeVisibility.defaultStorageValue
     @AppStorage(ElectricityCost.pricePerKilowattHourStorageKey)
@@ -41,9 +95,10 @@ struct StatsView: View {
     /// Calendar history other than Today. Today reads the coordinator's
     /// published result; Session reads its exact-window coordinator.
     @State private var historyApps: [AppEnergy] = []
-    @State private var timeline: [BatterySample] = []
+    @State private var timelinePreparedData: StatsTimelinePreparedData?
     @State private var timelineAvailability: TimelineAvailability = .loading
     @State private var timelineWindowEnd = Date()
+    @State private var timelineRevision: Date?
     @State private var refreshedAt = Date()
     @State private var historyOrigin: DataOrigin = .loading
     @State private var historyError: String?
@@ -51,9 +106,7 @@ struct StatsView: View {
     @State private var loadedHistoryRange: EnergyRange?
     @State private var appsRefreshGeneration = 0
 
-    private var replacementAnimation: Animation {
-        .timingCurve(0.23, 1, 0.32, 1, duration: 0.18)
-    }
+    private var replacementAnimation: Animation { juiceStandardEase }
 
     private var visibleRanges: [EnergyRange] {
         StatsRangeVisibility.visibleRanges(from: rangeVisibilityStorage)
@@ -116,26 +169,102 @@ struct StatsView: View {
             pricePerKilowattHour: pricePerKilowattHour)
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider()
+    private func historicalAppRow(_ app: AppEnergy, share: Double) -> some View {
+        let cost = costText(app.energyWh)
+        let energyAccessibility = String(
+            format: "%.1f watt-hours, %.1f CPU-hours",
+            app.energyWh,
+            app.cpuHours)
+        let accessibilityValue = cost.map {
+            "\(energyAccessibility), estimated cost \($0)"
+        } ?? energyAccessibility
 
-            HStack(alignment: .top, spacing: 0) {
-                appTable
-                    .frame(minWidth: Self.minimumAppTableWidth)
-                Divider()
-                timelinePane
-                    .frame(minWidth: Self.minimumTimelineWidth)
-            }
+        return StatsAppTableRow(
+            appKey: app.bundleId,
+            displayName: app.displayName,
+            share: share,
+            columns: .battery(showsLiveWatts: showsLivePower),
+            liveWattsText: nil,
+            energyText: String(format: "%.1f Wh", app.energyWh),
+            costText: cost,
+            detailText: String(format: "%.1f h", app.cpuHours),
+            accessibilityValue: accessibilityValue,
+            onTap: {
+                showAppDetail(
+                    appKey: app.bundleId,
+                    displayName: app.displayName)
+            })
+    }
 
-            Divider()
-            footer
+    private func activeAppRow(
+        _ app: HybridTodayList.ActiveApp,
+        energyWh: Double?,
+        cpuHours: Double?,
+        share: Double
+    ) -> some View {
+        let liveText = liveWattsText(app.watts)
+        let cost = costText(energyWh)
+        var accessibilityValues = [liveText]
+        if let energyWh {
+            accessibilityValues.append(
+                String(format: "%.1f watt-hours", energyWh)
+                    + " \(energyContext)")
         }
-        .frame(
-            minWidth: Self.minimumContentWidth,
-            minHeight: Self.minimumContentHeight
-        )
+        if let cost {
+            accessibilityValues.append(
+                "estimated cost \(cost) \(energyContext)")
+        }
+        if let cpuHours {
+            accessibilityValues.append(
+                String(format: "%.1f CPU-hours", cpuHours))
+        }
+
+        return StatsAppTableRow(
+            appKey: app.appKey,
+            displayName: app.displayName,
+            share: share,
+            columns: .battery(showsLiveWatts: true),
+            liveWattsText: liveText,
+            energyText: energyWh.map { String(format: "%.1f Wh", $0) },
+            costText: cost,
+            detailText: cpuHours.map { String(format: "%.1f h", $0) },
+            accessibilityValue: accessibilityValues.joined(separator: ", "),
+            onTap: {
+                showAppDetail(
+                    appKey: app.appKey,
+                    displayName: app.displayName)
+            })
+    }
+
+    private func showAppDetail(appKey: String, displayName: String) {
+        AppDetailPresenter.shared.show(
+            appKey: appKey,
+            displayName: displayName,
+            range: range,
+            origin: origin,
+            session: range == .session ? batterySession.result?.session : nil)
+    }
+
+    private var energyContext: String {
+        switch range {
+        case .session: return "for this session"
+        case .today: return "today"
+        case .threeDays: return "over three days"
+        case .week: return "over the last week"
+        case .allTime: return "over all recorded time"
+        }
+    }
+
+    var body: some View {
+        StatsDashboardLayout(
+            minimumContentWidth: Self.minimumContentWidth,
+            minimumAppPaneWidth: Self.minimumAppTableWidth,
+            minimumDetailPaneWidth: Self.minimumTimelineWidth,
+            minimumContentHeight: Self.minimumContentHeight,
+            header: { header },
+            appPane: { appTable },
+            detailPane: { timelinePane },
+            footer: { footer })
         .task(id: AppsLoadRequest(
             range: range,
             refreshGeneration: appsRefreshGeneration)
@@ -193,96 +322,29 @@ struct StatsView: View {
     // MARK: - Header
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Juice Stats")
-                        .font(.title2.weight(.semibold))
-                    Text(rangeSubtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        StatsDashboardHeader(
+            title: "Juice Stats",
+            subtitle: rangeSubtitle,
+            actions: {
+                StatsRangeCustomizationButton(
+                    isCustomizing: $isCustomizingRanges)
+            },
+            controls: {
+                if isCustomizingRanges {
+                    StatsRangeSettings(
+                        availableRanges: EnergyRange.allCases,
+                        fallbackRanges: StatsRangeVisibility.defaultRanges,
+                        selection: $range,
+                        storageValue: $rangeVisibilityStorage)
+                        .transition(.move(edge: .top).combined(with: .opacity))
                 }
-                Spacer()
-                Button {
-                    withAnimation(replacementAnimation) {
-                        isCustomizingRanges.toggle()
-                    }
-                } label: {
-                    Label(
-                        isCustomizingRanges ? "Done" : "Customize Tabs",
-                        systemImage: isCustomizingRanges
-                            ? "checkmark"
-                            : "slider.horizontal.3")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help(isCustomizingRanges ? "Finish customizing tabs" : "Choose which tabs appear")
-            }
 
-            if isCustomizingRanges {
-                rangeSettings
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
-
-            HStack(spacing: 16) {
-                Picker("Range", selection: $range) {
-                    ForEach(visibleRanges, id: \.self) { range in
-                        Text(range.pickerLabel).tag(range)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(maxWidth: 380)
-
-                Spacer(minLength: 0)
-                ElectricityRateControl()
-            }
-        }
-        .padding(16)
-    }
-
-    private var rangeSettings: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Visible tabs")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Show All") {
-                    rangeVisibilityStorage = StatsRangeVisibility.allStorageValue
-                }
-                .buttonStyle(.plain)
-                .font(.caption)
-                .disabled(visibleRanges.count == EnergyRange.allCases.count)
-            }
-
-            HStack(spacing: 14) {
-                ForEach(EnergyRange.allCases, id: \.self) { candidate in
-                    Toggle(
-                        candidate.rawValue,
-                        isOn: visibilityBinding(for: candidate))
-                    .toggleStyle(.checkbox)
-                    .disabled(
-                        visibleRanges.count == 1
-                            && visibleRanges.contains(candidate))
-                }
-            }
-        }
-        .padding(10)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func visibilityBinding(for candidate: EnergyRange) -> Binding<Bool> {
-        Binding(
-            get: { visibleRanges.contains(candidate) },
-            set: { isVisible in
-                let updated = StatsRangeVisibility.updating(
-                    candidate,
-                    isVisible: isVisible,
-                    in: rangeVisibilityStorage)
-                rangeVisibilityStorage = updated
-
-                range = StatsRangeVisibility.preferredRange(range, from: updated)
+                StatsRangePickerRow(
+                    title: "Range",
+                    selection: $range,
+                    ranges: visibleRanges,
+                    pickerWidth: 380,
+                    label: \.pickerLabel)
             })
     }
 
@@ -303,42 +365,45 @@ struct StatsView: View {
     // MARK: - App table
 
     private var appTable: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Text("Apps by energy")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if showsLivePower,
-                   live.status == .sampling || live.status == .warmingUp {
-                    LiveHint()
+        StatsAppTablePane(
+            title: showsLivePower ? "Apps using power" : "Apps by energy",
+            showsLiveActivity: showsLivePower
+                && (live.status == .sampling || live.status == .warmingUp),
+            columns: .battery(showsLiveWatts: showsLivePower),
+            sort: $appTableSort,
+            query: $appFilterQuery,
+            content: {
+                if range == .today, let hybrid = live.hybrid, !hybrid.active.isEmpty {
+                    hybridAppTable(hybrid)
+                } else if range == .session,
+                          showsLivePower,
+                          let hybrid = live.hybrid,
+                          !hybrid.active.isEmpty {
+                    liveSessionAppTable(hybrid)
+                } else {
+                    historicalAppTable
                 }
-                Spacer()
-            }
 
-            if range == .today, let hybrid = live.hybrid, !hybrid.active.isEmpty {
-                hybridAppTable(hybrid)
-            } else if range == .session,
-                      showsLivePower,
-                      let hybrid = live.hybrid,
-                      !hybrid.active.isEmpty {
-                liveSessionAppTable(hybrid)
-            } else {
-                historicalAppTable
+                // Today's query status renders here, outside the hybrid-vs-history
+                // branch, so a failed or outdated-helper Today fetch is surfaced
+                // even while live rows are showing in the hybrid table (which never
+                // includes these banners). Mirrors the popover, whose banner sits
+                // unconditionally below the app list.
+                if range == .today {
+                    todayStatusBanner
+                } else if range == .session {
+                    sessionStatusBanner
+                }
+            },
+            summary: { EmptyView() })
+            // A LIVE W sort must not outlive its column: when live power goes
+            // away (range switch, power source change) the header disappears,
+            // leaving an invisible, uncancelable sort. Reset to natural order.
+            .onChange(of: showsLivePower) { _, showsLive in
+                if !showsLive, appTableSort?.column == .liveWatts {
+                    appTableSort = nil
+                }
             }
-
-            // Today's query status renders here, outside the hybrid-vs-history
-            // branch, so a failed or outdated-helper Today fetch is surfaced
-            // even while live rows are showing in the hybrid table (which never
-            // includes these banners). Mirrors the popover, whose banner sits
-            // unconditionally below the app list.
-            if range == .today {
-                todayStatusBanner
-            } else if range == .session {
-                sessionStatusBanner
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(16)
     }
 
     @ViewBuilder
@@ -402,6 +467,19 @@ struct StatsView: View {
 
     @ViewBuilder
     private var historicalAppTable: some View {
+        let visibleApps = AppTableSort.apply(
+            appTableSort,
+            to: apps,
+            query: appFilterQuery
+        ) { app in
+            AppTableSortValues(
+                stableID: app.bundleId,
+                displayName: app.displayName,
+                liveWatts: nil,
+                energyWh: app.energyWh,
+                detail: app.cpuHours)
+        }
+
         if origin == .loading {
             Group {
                 ProgressView()
@@ -417,26 +495,25 @@ struct StatsView: View {
                 Spacer()
             }
             .transition(.opacity)
+        } else if !apps.isEmpty, visibleApps.isEmpty {
+            Group {
+                StatsAppTableNoMatches(query: appFilterQuery)
+                Spacer()
+            }
+            .transition(.opacity)
         } else {
             ScrollView {
                 VStack(spacing: 8) {
-                    ForEach(apps) { app in
-                        StatsAppRow(
-                            app: app,
-                            share: app.energyWh / totalEnergy,
-                            costText: costText(app.energyWh),
-                            onTap: {
-                                AppDetailPresenter.shared.show(
-                                    appKey: app.bundleId,
-                                    displayName: app.displayName,
-                                    range: range,
-                                    origin: origin,
-                                    session: range == .session ? batterySession.result?.session : nil
-                                )
-                            })
+                    ForEach(visibleApps) { app in
+                        historicalAppRow(
+                            app,
+                            share: app.energyWh / totalEnergy)
                     }
                 }
                 .padding(.trailing, 4)
+                .animation(
+                    juiceStandardEase,
+                    value: visibleApps.map(\.id))
             }
             .transition(.opacity)
         }
@@ -472,57 +549,78 @@ struct StatsView: View {
     private func hybridAppTable(_ hybrid: HybridTodayList) -> some View {
         let maxWatts = max(hybrid.active.map(\.watts).max() ?? 0, 0.001)
         let earlierTotal = max(hybrid.earlier.reduce(0) { $0 + $1.energyWh }, 0.001)
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 4) {
-                        LiveDot()
-                        Text("DRAWING POWER NOW")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(hybrid.active) { app in
-                        StatsActiveAppRow(
-                            app: app,
-                            energyWh: app.todayWh,
-                            cpuHours: app.todayCpuHours,
-                            range: .today,
-                            share: app.watts / maxWatts,
-                            costText: costText(app.todayWh),
-                            onTap: {
-                                AppDetailPresenter.shared.show(
-                                    appKey: app.appKey,
-                                    displayName: app.displayName,
-                                    range: range,
-                                    origin: origin)
-                            })
-                    }
-                }
+        let active = AppTableSort.apply(
+            appTableSort,
+            to: hybrid.active,
+            query: appFilterQuery
+        ) { app in
+            AppTableSortValues(
+                stableID: app.appKey,
+                displayName: app.displayName,
+                liveWatts: app.watts,
+                energyWh: app.todayWh,
+                detail: app.todayCpuHours)
+        }
+        let earlier = AppTableSort.apply(
+            appTableSort,
+            to: hybrid.earlier,
+            query: appFilterQuery
+        ) { app in
+            AppTableSortValues(
+                stableID: app.bundleId,
+                displayName: app.displayName,
+                liveWatts: nil,
+                energyWh: app.energyWh,
+                detail: app.cpuHours)
+        }
 
-                if !hybrid.earlier.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("EARLIER TODAY")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        ForEach(hybrid.earlier) { app in
-                            StatsAppRow(
-                                app: app,
-                                share: app.energyWh / earlierTotal,
-                                costText: costText(app.energyWh),
-                                onTap: {
-                                    AppDetailPresenter.shared.show(
-                                        appKey: app.bundleId,
-                                        displayName: app.displayName,
-                                        range: range,
-                                        origin: origin)
-                                })
+        if active.isEmpty, earlier.isEmpty {
+            Group {
+                StatsAppTableNoMatches(query: appFilterQuery)
+                Spacer()
+            }
+            .transition(.opacity)
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    if !active.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            CollapsibleLiveHeader(
+                                isExpanded: $isLiveSectionExpanded,
+                                appCount: active.count,
+                                totalWatts: active.reduce(0) { $0 + $1.watts })
+                            if isLiveSectionExpanded {
+                                ForEach(active) { app in
+                                    activeAppRow(
+                                        app,
+                                        energyWh: app.todayWh,
+                                        cpuHours: app.todayCpuHours,
+                                        share: app.watts / maxWatts)
+                                }
+                            }
+                        }
+                    }
+
+                    if !earlier.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("EARLIER TODAY")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            ForEach(earlier) { app in
+                                historicalAppRow(
+                                    app,
+                                    share: app.energyWh / earlierTotal)
+                            }
                         }
                     }
                 }
+                .padding(.trailing, 4)
+                .animation(
+                    juiceStandardEase,
+                    value: active.map(\.id) + earlier.map(\.id))
             }
-            .padding(.trailing, 4)
+            .transition(.opacity)
         }
-        .transition(.opacity)
 
         // The coordinator's own unattributed-system figure is shown instead of
         // a battery split.
@@ -546,61 +644,80 @@ struct StatsView: View {
         let earlier = apps.filter { !activeKeys.contains($0.bundleId) }
         let maxWatts = max(hybrid.active.map(\.watts).max() ?? 0, 0.001)
         let earlierTotal = max(earlier.reduce(0) { $0 + $1.energyWh }, 0.001)
+        let activeRows = AppTableSort.apply(
+            appTableSort,
+            to: hybrid.active,
+            query: appFilterQuery
+        ) { app in
+            let sessionEnergy = sessionByKey[app.appKey]
+            return AppTableSortValues(
+                stableID: app.appKey,
+                displayName: app.displayName,
+                liveWatts: app.watts,
+                energyWh: sessionEnergy?.energyWh,
+                detail: sessionEnergy?.cpuHours)
+        }
+        let earlierRows = AppTableSort.apply(
+            appTableSort,
+            to: earlier,
+            query: appFilterQuery
+        ) { app in
+            AppTableSortValues(
+                stableID: app.bundleId,
+                displayName: app.displayName,
+                liveWatts: nil,
+                energyWh: app.energyWh,
+                detail: app.cpuHours)
+        }
 
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 4) {
-                        LiveDot()
-                        Text("DRAWING POWER NOW")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+        if activeRows.isEmpty, earlierRows.isEmpty {
+            Group {
+                StatsAppTableNoMatches(query: appFilterQuery)
+                Spacer()
+            }
+            .transition(.opacity)
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    if !activeRows.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            CollapsibleLiveHeader(
+                                isExpanded: $isLiveSectionExpanded,
+                                appCount: activeRows.count,
+                                totalWatts: activeRows.reduce(0) { $0 + $1.watts })
+                            if isLiveSectionExpanded {
+                                ForEach(activeRows) { app in
+                                    let sessionEnergy = sessionByKey[app.appKey]
+                                    activeAppRow(
+                                        app,
+                                        energyWh: sessionEnergy?.energyWh,
+                                        cpuHours: sessionEnergy?.cpuHours,
+                                        share: app.watts / maxWatts)
+                                }
+                            }
+                        }
                     }
-                    ForEach(hybrid.active) { app in
-                        let sessionEnergy = sessionByKey[app.appKey]
-                        StatsActiveAppRow(
-                            app: app,
-                            energyWh: sessionEnergy?.energyWh,
-                            cpuHours: sessionEnergy?.cpuHours,
-                            range: .session,
-                            share: app.watts / maxWatts,
-                            costText: costText(sessionEnergy?.energyWh),
-                            onTap: {
-                                AppDetailPresenter.shared.show(
-                                    appKey: app.appKey,
-                                    displayName: app.displayName,
-                                    range: .session,
-                                    origin: origin,
-                                    session: batterySession.result?.session)
-                            })
-                    }
-                }
 
-                if !earlier.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("EARLIER IN SESSION")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        ForEach(earlier) { app in
-                            StatsAppRow(
-                                app: app,
-                                share: app.energyWh / earlierTotal,
-                                costText: costText(app.energyWh),
-                                onTap: {
-                                    AppDetailPresenter.shared.show(
-                                        appKey: app.bundleId,
-                                        displayName: app.displayName,
-                                        range: .session,
-                                        origin: origin,
-                                        session: batterySession.result?.session)
-                                })
+                    if !earlierRows.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("EARLIER IN SESSION")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            ForEach(earlierRows) { app in
+                                historicalAppRow(
+                                    app,
+                                    share: app.energyWh / earlierTotal)
+                            }
                         }
                     }
                 }
+                .padding(.trailing, 4)
+                .animation(
+                    juiceStandardEase,
+                    value: activeRows.map(\.id) + earlierRows.map(\.id))
             }
-            .padding(.trailing, 4)
+            .transition(.opacity)
         }
-        .transition(.opacity)
 
         if let reading = live.reading {
             Text(String(
@@ -614,7 +731,7 @@ struct StatsView: View {
 
     private var timelinePane: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Battery level - last 7 days")
+            Text("Battery level history")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             TimelineLegend()
@@ -624,14 +741,14 @@ struct StatsView: View {
                     .font(.caption2)
                     .foregroundStyle(.orange)
                 Spacer()
-            } else if timeline.isEmpty {
+            } else if timelinePreparedData?.samples.isEmpty != false {
                 Text("Collecting local battery history.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                 Spacer()
-            } else {
+            } else if let timelinePreparedData {
                 StatsTimelineChart(
-                    samples: timeline,
+                    preparedData: timelinePreparedData,
                     hours: Self.timelineHours,
                     windowEnd: timelineWindowEnd
                 )
@@ -693,15 +810,55 @@ struct StatsView: View {
             return
         }
         do {
-            let loadedTimeline = try await timelineSource.batteryTimeline(
-                hours: Self.timelineHours, until: windowEnd)
+            let revisionBeforeLoad = await timelineSource.batteryTimelineRevision()
+            let previousWindowEnd = timelinePreparedData == nil ? nil : timelineWindowEnd
+            let requestHours = StatsTimelineRefresh.requestHours(
+                previousWindowEnd: previousWindowEnd,
+                windowEnd: windowEnd,
+                retentionHours: Self.timelineHours,
+                historyRevisionChanged: timelinePreparedData != nil
+                    && revisionBeforeLoad != timelineRevision)
+            var refreshedTimeline = try await timelineSource.batteryTimeline(
+                hours: requestHours, until: windowEnd)
             guard !Task.isCancelled else { return }
-            self.timeline = loadedTimeline
+            let windowStart = windowEnd.addingTimeInterval(
+                -Double(Self.timelineHours) * 3600)
+            let revisionAfterLoad = await timelineSource.batteryTimelineRevision()
+            if revisionAfterLoad != revisionBeforeLoad {
+                // Backfill writes its samples before advancing this revision.
+                // Re-read only its seven-day horizon so a completion racing
+                // the first query becomes visible without a 90-day reload.
+                let reconciledTimeline = try await timelineSource.batteryTimeline(
+                    hours: min(
+                        Self.timelineHours,
+                        StatsTimelineRefresh.backfillReconciliationHours),
+                    until: windowEnd)
+                refreshedTimeline = StatsTimelineRefresh.mergedSamples(
+                    existing: refreshedTimeline,
+                    refreshed: reconciledTimeline,
+                    retentionStart: windowStart)
+            }
+            guard !Task.isCancelled else { return }
+            let mergedTimeline = StatsTimelineRefresh.mergedSamples(
+                existing: timelinePreparedData?.samples ?? [],
+                refreshed: refreshedTimeline,
+                retentionStart: windowStart)
+            let preparedData = await Task.detached(priority: .userInitiated) {
+                StatsTimelinePreparedData(
+                    samples: mergedTimeline,
+                    windowStart: windowStart,
+                    windowEnd: windowEnd)
+            }.value
+            guard !Task.isCancelled else { return }
+            self.timelinePreparedData = preparedData
             self.timelineWindowEnd = windowEnd
+            self.timelineRevision = revisionAfterLoad
             timelineAvailability = .available
         } catch {
             guard !Task.isCancelled else { return }
-            timelineAvailability = .unavailable
+            if timelinePreparedData == nil {
+                timelineAvailability = .unavailable
+            }
         }
     }
 
@@ -746,216 +903,5 @@ struct StatsView: View {
             return
         }
         appsRefreshGeneration &+= 1
-    }
-}
-
-/// One row in the full app-energy table: icon, name, Wh, CPU hours, and a
-/// share-of-total bar. Tapping opens the per-app detail window; a chevron
-/// appears on hover to hint at the interaction.
-private struct StatsAppRow: View {
-    let app: AppEnergy
-    let share: Double
-    let costText: String?
-    let onTap: () -> Void
-
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: onTap) {
-            HStack(spacing: 10) {
-                StatsAppIconView(bundleId: app.bundleId, displayName: app.displayName)
-                    .frame(width: 20, height: 20)
-
-                Text(app.displayName)
-                    .font(.callout)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(Color.secondary.opacity(0.15))
-                        Capsule()
-                            .fill(Color.accentColor)
-                            .frame(width: geo.size.width * CGFloat(max(0, min(1, share))))
-                    }
-                }
-                .frame(width: 60, height: 5)
-
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text(String(format: "%.1f Wh", app.energyWh))
-                        .font(.callout)
-                    if let costText {
-                        Text(costText)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.75)
-                    }
-                }
-                .monospacedDigit()
-                .frame(width: 72, alignment: .trailing)
-
-                Text(String(format: "%.1f h CPU", app.cpuHours))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                    .frame(width: 72, alignment: .trailing)
-
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .opacity(hovering ? 1 : 0)
-            }
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(app.displayName)
-        .accessibilityValue(accessibilityValue)
-        .accessibilityHint("Opens energy details")
-    }
-
-    private var accessibilityValue: String {
-        let energy = String(
-            format: "%.1f watt-hours, %.1f CPU-hours", app.energyWh, app.cpuHours)
-        guard let costText else { return energy }
-        return "\(energy), estimated cost \(costText)"
-    }
-}
-
-/// One active-power row in the hybrid Today table, mirroring ``StatsAppRow``
-/// anatomy with an additional green watts column before the Wh column. Apps
-/// with no today history yet show "-" for Wh and CPU. Clickable: bundle ids are
-/// real, so the per-app detail window opens.
-private struct StatsActiveAppRow: View {
-    let app: HybridTodayList.ActiveApp
-    let energyWh: Double?
-    let cpuHours: Double?
-    let range: EnergyRange
-    let share: Double
-    let costText: String?
-    let onTap: () -> Void
-
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: onTap) {
-            HStack(spacing: 10) {
-                // appKey is the bundle id when resolvable, so it doubles as the
-                // icon lookup key with the display name as fallback.
-                StatsAppIconView(bundleId: app.appKey, displayName: app.displayName)
-                    .frame(width: 20, height: 20)
-
-                Text(app.displayName)
-                    .font(.callout)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(Color.secondary.opacity(0.15))
-                        Capsule()
-                            .fill(Color.accentColor)
-                            .frame(width: geo.size.width * CGFloat(max(0, min(1, share))))
-                    }
-                }
-                .frame(width: 60, height: 5)
-
-                Text(liveWattsText(app.watts))
-                    .font(.callout.weight(.semibold))
-                    .foregroundStyle(.green)
-                    .monospacedDigit()
-                    .frame(width: 60, alignment: .trailing)
-
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text(energyWh.map { String(format: "%.1f Wh", $0) } ?? "-")
-                        .font(.callout)
-                    if let costText {
-                        Text(costText)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.75)
-                    }
-                }
-                .monospacedDigit()
-                .frame(width: 72, alignment: .trailing)
-
-                Text(cpuHours.map { String(format: "%.1f h CPU", $0) } ?? "-")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                    .frame(width: 72, alignment: .trailing)
-
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .opacity(hovering ? 1 : 0)
-            }
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(app.displayName)
-        .accessibilityValue(accessibilityValue)
-        .accessibilityHint("Opens energy details")
-    }
-
-    private var accessibilityValue: String {
-        var values = [liveWattsText(app.watts)]
-        if let energyWh {
-            values.append(
-                String(format: "%.1f watt-hours", energyWh)
-                + " \(energyContext)")
-        }
-        if let costText {
-            values.append("estimated cost \(costText) \(energyContext)")
-        }
-        if let cpuHours {
-            values.append(String(format: "%.1f CPU-hours", cpuHours))
-        }
-        return values.joined(separator: ", ")
-    }
-
-    private var energyContext: String {
-        switch range {
-        case .session: return "for this session"
-        case .today: return "today"
-        case .threeDays: return "over three days"
-        case .week: return "over the last week"
-        case .allTime: return "over all recorded time"
-        }
-    }
-}
-
-/// The app's real icon when the bundle id resolves, otherwise a lettered
-/// placeholder. Mirrors the icon-loading approach in ``TopAppsView``.
-private struct StatsAppIconView: View {
-    let bundleId: String
-    let displayName: String
-
-    var body: some View {
-        if let icon = Self.icon(for: bundleId) {
-            Image(nsImage: icon)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-        } else {
-            RoundedRectangle(cornerRadius: 4)
-                .fill(Color.secondary.opacity(0.25))
-                .overlay(
-                    Text(String(displayName.prefix(1)))
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                )
-        }
-    }
-
-    private static func icon(for bundleId: String) -> NSImage? {
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) else {
-            return nil
-        }
-        return NSWorkspace.shared.icon(forFile: url.path)
     }
 }

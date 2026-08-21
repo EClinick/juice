@@ -51,7 +51,7 @@ actor SamplerService {
     /// Backfill looks this far back from now for uncovered history.
     private static let backfillWindow: TimeInterval = 7 * 24 * 3600
     /// Meta key recording the last successful backfill run.
-    private static let backfillLastRunKey = "backfill_last_run"
+    static let backfillLastRunKey = "backfill_last_run"
 
     /// Day boundaries and day keys use the same calendar as RollupBuilder.
     private let calendar = Calendar.current

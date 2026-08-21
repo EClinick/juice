@@ -16,6 +16,13 @@ public enum HelperError {
         case databaseBusy = 3
         /// Any other internal failure.
         case internalError = 4
+        /// The requested Energy Mode or scope is not something this machine
+        /// accepts (unknown raw value, or High Power on a machine whose pmset
+        /// only exposes the legacy `lowpowermode` 0/1 key).
+        case unsupportedPowerMode = 5
+        /// `pmset` was invoked but the setting did not take: non-zero exit, or
+        /// the read-back still reports a different mode.
+        case powerSettingFailed = 6
     }
 
     /// Builds an NSError in the helper error domain with a human-readable

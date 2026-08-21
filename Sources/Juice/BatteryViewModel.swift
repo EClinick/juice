@@ -6,6 +6,10 @@ final class BatteryViewModel: ObservableObject {
     @Published var reading: BatteryReading?
     @Published var lastError: String?
     @Published private(set) var isLowPowerModeEnabled: Bool
+    /// Bumped by every completed refresh, whatever it found. `reading` is not
+    /// Equatable and a percent that never moves is not a signal, so this counter
+    /// is what views observe when they need the refresh cadence itself.
+    @Published private(set) var readingGeneration = 0
     let isMacMini: Bool
 
     /// Invoked after each successful refresh with the fresh reading.
@@ -65,6 +69,7 @@ final class BatteryViewModel: ObservableObject {
             lastError = nil
             return
         }
+        defer { readingGeneration += 1 }
         do {
             let fresh = try batteryReader()
             reading = fresh
@@ -81,6 +86,9 @@ final class BatteryViewModel: ObservableObject {
         if r.onAC && !r.isCharging { return "On AC power" }
         guard let mins = r.timeRemainingMinutes else { return "Estimating…" }
         let verb = r.isCharging ? "until full" : "remaining"
-        return String(format: "%d:%02d %@", mins / 60, mins % 60, verb)
+        let duration = mins < 60
+            ? "\(mins)m"
+            : String(format: "%dh %02dm", mins / 60, mins % 60)
+        return "\(duration) \(verb)"
     }
 }

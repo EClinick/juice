@@ -22,7 +22,7 @@ DEVELOPMENT_BUILD="${DEVELOPMENT_BUILD:-1}"
 if [[ "$DEVELOPMENT_BUILD" == "1" ]]; then
     APP_BUNDLE_NAME="Juice Dev.app"
     APP_DISPLAY_NAME="Juice Dev"
-    APP_BUNDLE_ID="com.eclinick.juice.dev.ec"
+    APP_BUNDLE_ID="com.eclinick.juice.dev.v2"
     HELPER_LABEL="com.eclinick.juice.dev.helper"
     DAEMON_PLIST="$ROOT/Packaging/com.eclinick.juice.dev.helper.plist"
     BUILD_VARIANT="dev"

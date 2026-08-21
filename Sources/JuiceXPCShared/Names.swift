@@ -5,7 +5,7 @@ public enum JuiceXPC {
     #if DEV_BUILD
     /// Development builds are a separate macOS product identity so their
     /// Service Management registration can coexist with the installed app.
-    public static let appBundleID = "com.eclinick.juice.dev.ec"
+    public static let appBundleID = "com.eclinick.juice.dev.v2"
     public static let helperLabel = "com.eclinick.juice.dev.helper"
     public static let defaultsSuiteName = "com.eclinick.juice.dev"
     #else
@@ -29,5 +29,6 @@ public enum JuiceXPC {
     /// - 1: handshake, fetchEnergyIntervals
     /// - 2: adds fetchBatteryLevels
     /// - 3: adds fetchLiveEnergySample
-    public static let protocolVersion = 3
+    /// - 4: adds setPowerMode (first mutating operation)
+    public static let protocolVersion = 4
 }
