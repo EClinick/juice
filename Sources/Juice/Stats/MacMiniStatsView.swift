@@ -367,11 +367,22 @@ struct MacMiniStatsDashboard: View {
                     statsCard(
                         "PEAK",
                         data.summary.peakWatts.map(liveWattsText) ?? "—")
-                    statsCard("COVERAGE", serverCoverageText(data.summary))
                     statsCard(
                         "MONITORED",
                         serverActiveDurationText(
-                            data.summary.coveredDuration / 3600))
+                            data.summary.coveredDuration / 3600)
+                            + " · " + serverCoverageText(data.summary))
+                        .help(
+                            "Time with metered power samples in the selected "
+                            + "range and the percentage of that range covered.")
+                    TimelineView(.periodic(from: .now, by: 60)) { _ in
+                        statsCard(
+                            "SYSTEM UPTIME",
+                            systemUptimeText(ProcessInfo.processInfo.systemUptime))
+                    }
+                    .help(
+                        "Time since the last system restart. This is independent "
+                        + "of the selected Stats range and estimated cost.")
                 }
                 statsChart(data)
             } else if let loadError {

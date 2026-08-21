@@ -415,16 +415,23 @@ private struct BatteryStatsDashboard: View {
                 }
             },
             summary: {
-                HStack(spacing: 8) {
-                    totalMetricCard(
-                        "TOTAL RECORDED ENERGY",
-                        totalRecordedEnergy.map(serverEnergyText) ?? "—")
-                    totalMetricCard("ESTIMATED COST", totalCostValue)
+                TimelineView(.periodic(from: .now, by: 60)) { _ in
+                    HStack(spacing: 8) {
+                        totalMetricCard(
+                            "TOTAL RECORDED ENERGY",
+                            totalRecordedEnergy.map(serverEnergyText) ?? "—")
+                        totalMetricCard("ESTIMATED COST", totalCostValue)
+                        totalMetricCard(
+                            "SYSTEM UPTIME",
+                            systemUptimeText(ProcessInfo.processInfo.systemUptime))
+                    }
                 }
                 .help(
                     "Totals cover recorded app energy in the selected range. "
                     + "Cost uses the current kWh price and does not include "
-                    + "untracked hardware or charging losses.")
+                    + "untracked hardware or charging losses. System uptime "
+                    + "is measured since the last restart and is independent "
+                    + "of the selected range.")
             })
             // A LIVE W sort must not outlive its column: when live power goes
             // away (range switch, power source change) the header disappears,
