@@ -87,9 +87,17 @@ Security model for the privileged helper:
 ## Requirements
 
 - macOS 14 (Sonoma) or later, Apple Silicon or Intel.
-- A Swift 6 toolchain (Xcode 16 or later) to build from source.
+- A Swift 6 toolchain (Xcode 16 or later) when building from source.
 
-## Install (from source)
+## Install
+
+Install the signed and notarized release with Homebrew:
+
+```bash
+brew install --cask EClinick/tap/juice
+```
+
+## Build from source
 
 Juice can be packaged as a normal macOS application bundle for local use. A
 Developer ID certificate is required to distribute a notarized release to other
