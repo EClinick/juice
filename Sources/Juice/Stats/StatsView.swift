@@ -162,6 +162,25 @@ private struct BatteryStatsDashboard: View {
         max(apps.reduce(0) { $0 + $1.energyWh }, 0.001)
     }
 
+    /// The battery dashboard's total is the sum of the recorded app-energy
+    /// rows for the selected range. It intentionally stays unavailable while
+    /// the query is loading or failed instead of presenting a misleading zero.
+    private var totalRecordedEnergy: Double? {
+        guard origin != .loading, origin != .unavailable else { return nil }
+        if range == .session {
+            guard let result = batterySession.result, result.session != nil else {
+                return nil
+            }
+            if case .unavailable = result.energyCoverage { return nil }
+        }
+        return ElectricityCost.totalWattHours(apps.map(\.energyWh))
+    }
+
+    private var totalCostValue: String {
+        guard let totalRecordedEnergy else { return "—" }
+        return costText(totalRecordedEnergy) ?? "Set kWh price"
+    }
+
     private func costText(_ wattHours: Double?) -> String? {
         guard let wattHours else { return nil }
         return ElectricityCost.formattedEstimate(
@@ -395,7 +414,18 @@ private struct BatteryStatsDashboard: View {
                     sessionStatusBanner
                 }
             },
-            summary: { EmptyView() })
+            summary: {
+                HStack(spacing: 8) {
+                    totalMetricCard(
+                        "TOTAL RECORDED ENERGY",
+                        totalRecordedEnergy.map(serverEnergyText) ?? "—")
+                    totalMetricCard("ESTIMATED COST", totalCostValue)
+                }
+                .help(
+                    "Totals cover recorded app energy in the selected range. "
+                    + "Cost uses the current kWh price and does not include "
+                    + "untracked hardware or charging losses.")
+            })
             // A LIVE W sort must not outlive its column: when live power goes
             // away (range switch, power source change) the header disappears,
             // leaving an invisible, uncancelable sort. Reset to natural order.
@@ -404,6 +434,25 @@ private struct BatteryStatsDashboard: View {
                     appTableSort = nil
                 }
             }
+    }
+
+    private func totalMetricCard(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.tertiary)
+            Text(value)
+                .font(.callout.weight(.semibold))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(9)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityValue(value)
     }
 
     @ViewBuilder

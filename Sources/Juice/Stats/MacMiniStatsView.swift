@@ -350,6 +350,7 @@ struct MacMiniStatsDashboard: View {
                     columns: [
                         GridItem(.flexible(), spacing: 8),
                         GridItem(.flexible(), spacing: 8),
+                        GridItem(.flexible(), spacing: 8),
                     ],
                     spacing: 8
                 ) {
@@ -358,9 +359,19 @@ struct MacMiniStatsDashboard: View {
                         data.summary.averageWatts.map(liveWattsText) ?? "—")
                     statsCard("ENERGY", serverEnergyText(data.summary.energyWh))
                     statsCard(
+                        "EST. COST",
+                        costText(data.summary.energyWh) ?? "Set kWh price")
+                        .help(
+                            "Estimated from total metered energy in the selected "
+                            + "range using the current kWh price.")
+                    statsCard(
                         "PEAK",
                         data.summary.peakWatts.map(liveWattsText) ?? "—")
                     statsCard("COVERAGE", serverCoverageText(data.summary))
+                    statsCard(
+                        "MONITORED",
+                        serverActiveDurationText(
+                            data.summary.coveredDuration / 3600))
                 }
                 statsChart(data)
             } else if let loadError {
@@ -385,6 +396,8 @@ struct MacMiniStatsDashboard: View {
             Text(value)
                 .font(.callout.weight(.semibold))
                 .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(9)

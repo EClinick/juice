@@ -29,6 +29,16 @@ enum ElectricityCost {
         return cost.isFinite ? cost : nil
     }
 
+    /// Produces a stable range total even if a corrupt or partially-written
+    /// history row contains an invalid energy value.
+    static func totalWattHours(_ values: [Double]) -> Double {
+        values.reduce(0) { total, value in
+            guard value.isFinite, value > 0 else { return total }
+            let updatedTotal = total + value
+            return updatedTotal.isFinite ? updatedTotal : total
+        }
+    }
+
     /// Formats small app costs with enough precision to avoid displaying a
     /// positive estimate as zero. Values below one millionth of a currency
     /// unit use a localized less-than threshold.

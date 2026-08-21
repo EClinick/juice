@@ -21,7 +21,8 @@ struct ElectricityRateControl: View {
     }
 
     private var helpText: String {
-        let base = "Use the price per kWh from your electric bill. Juice uses it to estimate each app's cost."
+        let base = "Use the price per kWh from your electric bill. "
+            + "Juice applies it to recorded energy totals and each app's cost."
         guard let exampleCost else { return base }
         return "\(base) At this rate, 100 Wh costs \(exampleCost)."
     }
