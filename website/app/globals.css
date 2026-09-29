@@ -1,5 +1,3 @@
-@import url("https://fonts.googleapis.com/css2?family=Archivo+Narrow:wdth,wght@62.5..125,400..900&family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap");
-
 :root {
   --ink: #111110;
   --paper: #f5f5f0;
@@ -24,13 +22,13 @@ html {
 body {
   margin: 0;
   color: var(--ink);
-  font-family: Manrope, -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: var(--font-manrope), -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
 a { color: inherit; text-decoration: none; }
 button { font: inherit; }
 
-main {
+.sheet {
   min-height: 100svh;
   overflow: hidden;
   border: 12px solid var(--ink);
@@ -72,7 +70,7 @@ main {
 .brand span {
   vertical-align: top;
   margin-left: 2px;
-  font-family: "DM Mono", monospace;
+  font-family: var(--font-dm-mono), monospace;
   font-size: 8px;
   letter-spacing: 0;
 }
@@ -119,7 +117,7 @@ main {
 .eyebrow {
   margin: 0 0 22px;
   color: var(--muted);
-  font-family: "DM Mono", monospace;
+  font-family: var(--font-dm-mono), monospace;
   font-size: 10px;
   letter-spacing: .075em;
   text-transform: uppercase;
@@ -197,12 +195,14 @@ main {
   box-shadow: inset 1px 0 2px rgba(0,0,0,.7);
 }
 
+/* The charger lives in the wordmark's coordinate space so it scrolls with the hero. */
 .charging-cable {
-  position: fixed;
+  position: absolute;
   z-index: 2;
-  inset: 0;
-  width: 100vw;
-  height: 100dvh;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   overflow: visible;
   pointer-events: none;
 }
@@ -241,7 +241,7 @@ main {
 }
 
 .usb-plug {
-  position: fixed;
+  position: absolute;
   z-index: 8;
   top: 0;
   left: 0;
@@ -336,7 +336,7 @@ main {
   left: 69px;
   width: max-content;
   color: #777771;
-  font-family: "DM Mono", monospace;
+  font-family: var(--font-dm-mono), monospace;
   font-size: 9px;
   font-weight: 500;
   letter-spacing: .03em;
@@ -445,15 +445,238 @@ a:focus-visible {
   border: 0;
 }
 
+/* Trailer: sits on the ink page below the paper sheet. */
+.trailer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 112px 42px 120px;
+  color: var(--paper);
+}
+
+.trailer-header {
+  margin-bottom: 40px;
+  text-align: center;
+}
+
+.trailer-eyebrow {
+  margin: 0 0 18px;
+  color: #8a8a84;
+  font-family: var(--font-dm-mono), monospace;
+  font-size: 10px;
+  letter-spacing: .075em;
+  text-transform: uppercase;
+}
+
+.trailer-title {
+  margin: 0;
+  font-family: "Archivo Narrow", Impact, sans-serif;
+  font-size: clamp(56px, 7vw, 96px);
+  font-stretch: condensed;
+  font-weight: 900;
+  letter-spacing: -.04em;
+  line-height: .86;
+  text-transform: uppercase;
+}
+
+.trailer-title span { color: var(--acid); }
+
+.trailer-player {
+  position: relative;
+  width: min(100%, 1120px);
+}
+
+.trailer-frame {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 18px;
+  background: #050505;
+  box-shadow: 0 0 0 1px rgba(255,255,255,.08), 0 40px 90px rgba(0,0,0,.55);
+}
+
+.trailer-video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.trailer-controls {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  gap: 8px;
+}
+
+.trailer-control {
+  display: inline-flex;
+  min-width: 34px;
+  height: 34px;
+  gap: 7px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  color: var(--paper);
+  border: 0;
+  border-radius: 999px;
+  background: rgba(17,17,16,.72);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  cursor: pointer;
+  font-family: var(--font-dm-mono), monospace;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  transition: background var(--duration-color) ease, transform var(--duration-fast) var(--ease-out);
+}
+
+.trailer-control svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 13px;
+}
+
+.trailer-control:active { transform: scale(.96); }
+
+.trailer-start {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: rgba(17,17,16,.08);
+  cursor: pointer;
+}
+
+.trailer-start-pill {
+  display: inline-flex;
+  gap: 14px;
+  align-items: center;
+  padding: 8px 22px 8px 8px;
+  color: var(--paper);
+  border-radius: 999px;
+  background: var(--ink);
+  box-shadow: 0 2px 0 #000, 0 14px 30px rgba(17,17,16,.28);
+  font-family: var(--font-dm-mono), monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: .075em;
+  text-transform: uppercase;
+  transition: transform var(--duration-ui) var(--ease-out);
+}
+
+.trailer-start-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  color: var(--ink);
+  border-radius: 50%;
+  background: var(--acid);
+}
+
+.trailer-start-icon svg {
+  width: 16px;
+  height: 16px;
+  transform: translateX(1px);
+}
+
+.trailer-control:focus-visible,
+.trailer-start:focus-visible {
+  outline: 3px solid var(--acid);
+  outline-offset: 3px;
+}
+
+.trailer-start:focus-visible { outline-offset: -3px; }
+
+.trailer-cta {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: center;
+  margin-top: 48px;
+}
+
+.download-button-light {
+  color: var(--ink);
+  background: var(--paper);
+  box-shadow: 0 2px 0 #a6a6a1, 0 8px 17px rgba(0,0,0,.3);
+}
+
+.trailer-brew {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 0;
+  color: #8a8a84;
+  font-family: var(--font-dm-mono), monospace;
+  font-size: 11px;
+  letter-spacing: .02em;
+}
+
+.command {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 4px 4px 14px;
+  border-radius: 9px;
+  background: rgba(255,255,255,.05);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.09);
+}
+
+.command-text {
+  display: inline-flex;
+  gap: 8px;
+  padding-right: 12px;
+  color: #d8d8d2;
+  font: inherit;
+  white-space: nowrap;
+}
+
+.command-text span { color: var(--acid); }
+
+.command-copy {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  place-items: center;
+  padding: 0;
+  color: #a6a6a1;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(255,255,255,.06);
+  cursor: pointer;
+  transition: color var(--duration-color) ease, background var(--duration-color) ease, transform var(--duration-fast) var(--ease-out);
+}
+
+.command-copy svg { width: 14px; height: 14px; }
+.command-copy:active { transform: scale(.94); }
+.command-copy.is-copied { color: var(--ink); background: var(--acid); }
+
+.command-copy:focus-visible {
+  outline: 3px solid var(--acid);
+  outline-offset: 2px;
+}
+
 @media (hover: hover) and (pointer: fine) {
   .download-button:hover {
     transform: translateY(-2px);
     box-shadow: 0 2px 0 #000, 0 12px 20px rgba(17,17,16,.18);
   }
+
+  .download-button-light:hover { box-shadow: 0 2px 0 #a6a6a1, 0 12px 20px rgba(0,0,0,.36); }
+  .trailer-control:hover { background: rgba(17,17,16,.9); }
+  .command-copy:not(.is-copied):hover { color: var(--paper); background: rgba(255,255,255,.12); }
+  .trailer-start:hover .trailer-start-pill { transform: scale(1.04); }
 }
 
 @media (max-width: 700px) {
-  main {
+  .sheet {
     border-width: 7px;
     border-radius: 0 0 18px 18px;
   }
@@ -495,6 +718,24 @@ a:focus-visible {
   }
 
   .plug-instruction { display: none; }
+
+  .trailer { padding: 72px 16px 84px; }
+  .trailer-header { margin-bottom: 28px; }
+  .trailer-title { font-size: clamp(44px, 14vw, 64px); }
+  .trailer-frame { border-radius: 12px; }
+  /* On a small screen the controls sit under the picture instead of covering it. */
+  .trailer-controls {
+    position: static;
+    justify-content: flex-end;
+    gap: 6px;
+    margin-top: 10px;
+  }
+
+  .trailer-control { width: 32px; min-width: 32px; height: 32px; padding: 0; background: rgba(255,255,255,.08); }
+  .trailer-control-label { display: none; }
+  .trailer-start-pill { gap: 10px; padding: 6px 16px 6px 6px; font-size: 10px; }
+  .trailer-start-icon { width: 34px; height: 34px; }
+  .trailer-cta { margin-top: 36px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -511,6 +752,10 @@ a:focus-visible {
     transition-property: box-shadow;
   }
   .download-button:hover { transform: none; }
+  .trailer-control,
+  .trailer-start-pill,
+  .command-copy { transition: none; }
+  .trailer-start:hover .trailer-start-pill { transform: none; }
 }
 
 /* Carve a real notch out of the letterform where the charger docks.

@@ -2,6 +2,7 @@
 
 import { animate, motion, useMotionTemplate, useMotionValue, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { playChargeSound, preloadChargeSound, primeChargeSound } from "./charge-sound";
 
 const PLUG_WIDTH = 58;
 const PLUG_HEIGHT = 28;
@@ -13,14 +14,28 @@ const HOME_SPRING = { type: "spring", stiffness: 350, damping: 32 } as const;
 const CONNECT_SPRING = { type: "spring", stiffness: 430, damping: 30 } as const;
 
 type Point = { x: number; y: number };
+type Stage = { left: number; width: number; bottom: number };
+
+// The plug rests near the bottom of its stage, left of the port, with the cable running off the stage's bottom edge.
+function homeFor(target: Point, stage: Stage) {
+  const homeOffset = Math.min(118, stage.width * 0.1);
+  const left = Math.max(stage.left + 48, target.x - homeOffset) - PLUG_WIDTH / 2;
+  return {
+    left,
+    top: stage.bottom - PLUG_HEIGHT - 20,
+    anchor: { x: left + PLUG_BACK_X, y: stage.bottom + 18 },
+  };
+}
 
 export function ChargingWordmark() {
+  const rootRef = useRef<HTMLDivElement>(null);
   const portRef = useRef<HTMLSpanElement>(null);
   const cableRef = useRef<SVGPathElement>(null);
   const cableHighlightRef = useRef<SVGPathElement>(null);
   const guideRef = useRef<SVGPathElement>(null);
   const targetRef = useRef<Point>({ x: 0, y: 0 });
   const anchorRef = useRef<Point>({ x: 0, y: 0 });
+  const stageRef = useRef<Stage>({ left: 0, width: 0, bottom: 0 });
   const draggingRef = useRef(false);
   const movedRef = useRef(false);
   const connectedRef = useRef(false);
@@ -55,20 +70,16 @@ export function ChargingWordmark() {
 
   const moveHome = useCallback(
     (instant = false) => {
-      const target = targetRef.current;
-      const homeOffset = Math.min(118, window.innerWidth * 0.1);
-      const homeX = Math.max(48, target.x - homeOffset);
-      const homeLeft = homeX - PLUG_WIDTH / 2;
-      const homeY = window.innerHeight - PLUG_HEIGHT - 20;
-      anchorRef.current = { x: homeLeft + PLUG_BACK_X, y: window.innerHeight + 18 };
+      const home = homeFor(targetRef.current, stageRef.current);
+      anchorRef.current = home.anchor;
       if (instant || reduceMotion) {
         x.stop();
         y.stop();
-        x.set(homeLeft);
-        y.set(homeY);
+        x.set(home.left);
+        y.set(home.top);
       } else {
-        animate(x, homeLeft, HOME_SPRING);
-        animate(y, homeY, HOME_SPRING);
+        animate(x, home.left, HOME_SPRING);
+        animate(y, home.top, HOME_SPRING);
       }
     },
     [reduceMotion, x, y],
@@ -93,22 +104,29 @@ export function ChargingWordmark() {
     connectedRef.current = true;
     setConnected(true);
     positionAtPort(false);
+    playChargeSound();
   }, [positionAtPort]);
 
   const measure = useCallback(
     (preserveConnection = false) => {
+      // Everything is measured relative to the wordmark box, which the plug and cable are positioned in,
+      // so the charger scrolls with the hero instead of floating over the content below it.
+      const root = rootRef.current;
+      const stage = root?.closest<HTMLElement>("[data-charge-stage]");
       const port = portRef.current?.getBoundingClientRect();
-      if (!port) return;
+      if (!root || !stage || !port) return;
+      const origin = root.getBoundingClientRect();
+      const bounds = stage.getBoundingClientRect();
+      stageRef.current = {
+        left: bounds.left - origin.left,
+        width: bounds.width,
+        bottom: bounds.bottom - origin.top,
+      };
       targetRef.current = {
-        x: port.left + port.width / 2,
-        y: port.top + port.height / 2,
+        x: port.left + port.width / 2 - origin.left,
+        y: port.top + port.height / 2 - origin.top,
       };
-      const homeOffset = Math.min(118, window.innerWidth * 0.1);
-      const homeX = Math.max(48, targetRef.current.x - homeOffset);
-      anchorRef.current = {
-        x: homeX - PLUG_WIDTH / 2 + PLUG_BACK_X,
-        y: window.innerHeight + 18,
-      };
+      anchorRef.current = homeFor(targetRef.current, stageRef.current).anchor;
       if (preserveConnection && connectedRef.current) positionAtPort(true);
       else if (!draggingRef.current) moveHome(true);
       drawCable();
@@ -116,6 +134,16 @@ export function ChargingWordmark() {
     },
     [drawCable, moveHome, positionAtPort],
   );
+
+  // Fetch the charge sound once the page is idle, so the first plug-in plays without waiting on the network.
+  useEffect(() => {
+    if (typeof window.requestIdleCallback === "function") {
+      const id = window.requestIdleCallback(preloadChargeSound, { timeout: 3000 });
+      return () => window.cancelIdleCallback(id);
+    }
+    const id = window.setTimeout(preloadChargeSound, 1500);
+    return () => window.clearTimeout(id);
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -128,8 +156,10 @@ export function ChargingWordmark() {
     const resizeObserver = new ResizeObserver(syncPosition);
     const styleObserver = new MutationObserver(syncPosition);
     const port = portRef.current;
+    const stage = rootRef.current?.closest<HTMLElement>("[data-charge-stage]");
     if (port) resizeObserver.observe(port);
     if (port?.parentElement) resizeObserver.observe(port.parentElement);
+    if (stage) resizeObserver.observe(stage);
     styleObserver.observe(document.head, {
       attributes: true,
       childList: true,
@@ -138,14 +168,12 @@ export function ChargingWordmark() {
     });
     void document.fonts.ready.then(syncPosition);
     window.addEventListener("resize", syncPosition);
-    window.addEventListener("scroll", syncPosition, { passive: true });
     return () => {
       disposed = true;
       cancelAnimationFrame(frame);
       resizeObserver.disconnect();
       styleObserver.disconnect();
       window.removeEventListener("resize", syncPosition);
-      window.removeEventListener("scroll", syncPosition);
     };
   }, [measure]);
 
@@ -223,6 +251,7 @@ export function ChargingWordmark() {
 
   return (
     <div
+      ref={rootRef}
       className={`charging-wordmark${ready ? " is-ready" : ""}${dragging ? " is-dragging" : ""}${connected ? " is-connected" : ""}`}
     >
       <h1 id="hero-title" className="charging-title" data-text="JUICE">
@@ -242,6 +271,8 @@ export function ChargingWordmark() {
         style={{ transform: plugTransform }}
         onPointerDown={(event) => {
           if (!event.isPrimary || event.button !== 0 || pointerRef.current) return;
+          // Create the audio context inside the gesture so the dock can play the charge sound.
+          primeChargeSound();
           x.stop();
           y.stop();
           dragScale.stop();
