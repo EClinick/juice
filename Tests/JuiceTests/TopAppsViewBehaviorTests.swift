@@ -131,6 +131,18 @@ struct TopAppsViewBehaviorTests {
         #expect(serverActiveDurationText(2) == "2.0 hours")
     }
 
+    @Test("system uptime stays compact across minutes, hours, and days")
+    func systemUptimeFormatting() {
+        #expect(systemUptimeText(-1) == "0m")
+        #expect(systemUptimeText(.infinity) == "0m")
+        #expect(systemUptimeText(30) == "<1m")
+        #expect(systemUptimeText(59 * 60) == "59m")
+        #expect(systemUptimeText(60 * 60) == "1h")
+        #expect(systemUptimeText(90 * 60) == "1h 30m")
+        #expect(systemUptimeText(24 * 60 * 60) == "1d")
+        #expect(systemUptimeText((2 * 24 + 5) * 60 * 60) == "2d 5h")
+    }
+
     @Test("popover and Stats breakdown use one live snapshot formatter")
     func sharedServerPowerBreakdown() {
         let reading = LivePowerReading(

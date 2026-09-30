@@ -15,6 +15,29 @@ struct ElectricityCostTests {
         #expect(abs(cost - 0.40) < 1e-12)
     }
 
+    @Test("range totals sum valid recorded energy before applying the rate")
+    func recordedEnergyTotal() throws {
+        let total = ElectricityCost.totalWattHours([
+            750, 500, -20, .nan, .infinity,
+        ])
+        let cost = try #require(ElectricityCost.estimate(
+            wattHours: total,
+            pricePerKilowattHour: 0.32))
+
+        #expect(total == 1_250)
+        #expect(abs(cost - 0.40) < 1e-12)
+    }
+
+    @Test("range totals remain finite if valid rows would overflow")
+    func recordedEnergyOverflow() {
+        let total = ElectricityCost.totalWattHours([
+            Double.greatestFiniteMagnitude,
+            Double.greatestFiniteMagnitude,
+        ])
+
+        #expect(total == Double.greatestFiniteMagnitude)
+    }
+
     @Test("zero or invalid prices disable cost estimates")
     func invalidPricesDisableEstimates() {
         #expect(ElectricityCost.estimate(
