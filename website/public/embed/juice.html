@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Juice preview</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; background: #080808; }
+    video { display: block; width: 100%; height: 100%; object-fit: contain; }
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+    }
+  </style>
+</head>
+<body>
+  <video controls playsinline preload="none" width="1280" height="720"
+    poster="/trailer/juice-trailer-poster.jpg" aria-label="A 12-second preview of Juice for Mac" aria-describedby="preview-description">
+    <source src="/trailer/juice-share.mp4" type="video/mp4">
+    <a href="/trailer/juice-share.mp4">Watch the Juice preview</a>
+  </video>
+  <p id="preview-description" class="sr-only">
+    A 12-second tour of Juice for Mac. A battery drains from 100% to 23% and shrinks into the Juice
+    menu bar icon. Juice ranks apps such as Google Chrome, Cursor, and Visual Studio Code by live
+    power and energy used, then switches from this session to today. Chrome's detail window shows
+    its CPU, GPU, and Neural Engine energy history. A 24-hour battery chart leaves recording gaps
+    empty and shows plain-English insights, followed by the Stats window's app table and battery history.
+  </p>
+</body>
+</html>
